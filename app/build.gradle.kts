@@ -3,6 +3,26 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+fun readQuotedConstant(file: java.io.File, name: String, fallback: String): String {
+    if (!file.isFile) {
+        return fallback
+    }
+    val pattern = Regex("""$name(?:\[\])?\s*=\s*"([^"]+)"""")
+    return pattern.find(file.readText())?.groupValues?.get(1) ?: fallback
+}
+
+val sharedYumeRoot = rootProject.file("../../yume")
+val yumeProtocolVersion = readQuotedConstant(
+    sharedYumeRoot.resolve("src/core/version.hpp"),
+    "kVersion",
+    "1.0A",
+)
+val basefwxEngineVersion = readQuotedConstant(
+    sharedYumeRoot.resolve("basefwx/cpp/include/basefwx/constants.hpp"),
+    "kEngineVersion",
+    "3.6.4",
+)
+
 val basefwxJavaOutputDir = layout.buildDirectory.dir("generated/basefwx-java")
 val syncBasefwxJava by tasks.registering(Sync::class) {
     from(rootProject.file("../../yume/basefwx/java/src/main/java")) {
@@ -26,9 +46,10 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
-        buildConfigField("String", "YUME_PROTOCOL_VERSION", "\"1.0A\"")
-        buildConfigField("String", "BASEFWX_ENGINE_VERSION", "\"3.6.4\"")
+        buildConfigField("String", "YUME_PROTOCOL_VERSION", "\"$yumeProtocolVersion\"")
+        buildConfigField("String", "BASEFWX_ENGINE_VERSION", "\"$basefwxEngineVersion\"")
         buildConfigField("String", "YUME_PROTECTION_POLICY", "\"Auto (highest available)\"")
+        buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_ALPHA", "false")
         buildConfigField(
             "String",
             "YUME_ROUTING_MODE",
@@ -43,7 +64,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_ALPHA", "true")
+        }
         release {
+            buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_ALPHA", "false")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -88,6 +113,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.navigation.compose)
     implementation(libs.google.material)
     implementation(libs.bouncycastle.prov)
     implementation(libs.bouncycastle.pkix)

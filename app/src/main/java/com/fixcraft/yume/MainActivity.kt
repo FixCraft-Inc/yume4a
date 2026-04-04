@@ -16,11 +16,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.core.content.ContextCompat
 import androidx.compose.runtime.getValue
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fixcraft.yume.data.SecureMaterialType
-import com.fixcraft.yume.ui.home.HomeScreen
+import com.fixcraft.yume.ui.YumeApp
 import com.fixcraft.yume.ui.theme.YumeVPNTheme
 import com.fixcraft.yume.vpn.VpnConnectionState
 import com.fixcraft.yume.vpn.VpnLogLevel
@@ -88,8 +88,10 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-            YumeVPNTheme {
-                HomeScreen(
+            YumeVPNTheme(
+                themeColorMode = uiState.appSettings.themeColorMode,
+            ) {
+                YumeApp(
                     uiState = uiState,
                     onConnect = { requestNotificationPermissionThenConnect() },
                     onDisconnect = viewModel::disconnect,
@@ -105,6 +107,10 @@ class MainActivity : ComponentActivity() {
                         viewModel.savePastedMaterial(SecureMaterialType.AuthKey, name, pemText)
                     },
                     onDeleteMaterial = viewModel::deleteMaterial,
+                    onSelectTechnique = viewModel::updateConnectionTechnique,
+                    onSelectPerformanceProfile = viewModel::updatePerformanceProfile,
+                    onSelectThemeColorMode = viewModel::updateThemeColorMode,
+                    diagnosticsReport = viewModel.buildDiagnosticsReport(),
                     onClearNotice = viewModel::clearNotice,
                 )
             }

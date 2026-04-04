@@ -65,7 +65,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-private data class ProfileDraft(
+internal data class ProfileDraft(
     val id: String? = null,
     val name: String = "",
     val host: String = "",
@@ -79,12 +79,12 @@ private data class ProfileDraft(
     val notes: String = "",
 )
 
-private enum class MaterialTextKind {
+internal enum class MaterialTextKind {
     AnonymCa,
     AuthKey,
 }
 
-private data class MaterialTextDraft(
+internal data class MaterialTextDraft(
     val kind: MaterialTextKind,
     val title: String,
     val name: String,
@@ -396,11 +396,11 @@ private fun SelectedServerCard(
     val authReady = selectedAuthKey != null
     val showConnect = authReady &&
         phase != VpnPhase.Connecting &&
-        phase != VpnPhase.BootstrapReady &&
+        phase != VpnPhase.Verifying &&
         phase != VpnPhase.Connected &&
         phase != VpnPhase.Disconnecting
     val showDisconnect = phase == VpnPhase.Connecting ||
-        phase == VpnPhase.BootstrapReady ||
+        phase == VpnPhase.Verifying ||
         phase == VpnPhase.Connected ||
         phase == VpnPhase.Disconnecting
     val connectLabel = when (phase) {
@@ -412,7 +412,7 @@ private fun SelectedServerCard(
     Card(
         shape = RoundedCornerShape(32.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
     ) {
@@ -442,12 +442,12 @@ private fun SelectedServerCard(
                 }
                 StatusPill(
                     text = uiState.vpnState.briefStatus,
-                    containerColor = if (phase == VpnPhase.BootstrapReady || phase == VpnPhase.Connected) {
+                    containerColor = if (phase == VpnPhase.Verifying || phase == VpnPhase.Connected) {
                         MaterialTheme.colorScheme.primaryContainer
                     } else {
                         MaterialTheme.colorScheme.secondaryContainer
                     },
-                    contentColor = if (phase == VpnPhase.BootstrapReady || phase == VpnPhase.Connected) {
+                    contentColor = if (phase == VpnPhase.Verifying || phase == VpnPhase.Connected) {
                         MaterialTheme.colorScheme.onPrimaryContainer
                     } else {
                         MaterialTheme.colorScheme.onSecondaryContainer
@@ -479,7 +479,7 @@ private fun SelectedServerCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "Protection target: ${uiState.vpnState.requestedProtection}",
+                text = "Protection: ${uiState.vpnState.requestedProtection}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -492,19 +492,12 @@ private fun SelectedServerCard(
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
             )
-            uiState.vpnState.localProxyAddress?.let { proxyAddress ->
-                Text(
-                    text = "Local SOCKS5: $proxyAddress",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
             Text(
                 text = "Routing: ${
                     when {
-                        uiState.vpnState.trafficRoutedThroughYume -> "System traffic is inside Yume"
-                        uiState.vpnState.localProxyAddress != null -> "The local Yume gateway is up while routed traffic is being verified or recovered"
-                        else -> "Yume has not brought up a local gateway yet"
+                        uiState.vpnState.trafficRoutedThroughYume -> "Tunnel active"
+                        uiState.vpnState.localProxyAddress != null -> "Verifying"
+                        else -> "Idle"
                     }
                 }",
                 style = MaterialTheme.typography.bodyMedium,
@@ -541,11 +534,6 @@ private fun SelectedServerCard(
                 )
             }
 
-            Text(
-                text = "Trust and identity stay encrypted on the device. The upstream Yume control socket is explicitly protected from the VPN path to avoid routing loops.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             uiState.vpnState.eventLog.lastOrNull()?.let { entry ->
                 Text(
                     text = "Latest log: ${entry.message}",
@@ -615,7 +603,7 @@ private fun SelectedServerCard(
 }
 
 @Composable
-private fun SecureMaterialsSection(
+internal fun SecureMaterialsSection(
     caMaterials: List<SecureMaterialSummary>,
     authKeyMaterials: List<SecureMaterialSummary>,
     selectedCaMaterialId: String?,
@@ -803,7 +791,7 @@ private fun SecureMaterialRow(
 }
 
 @Composable
-private fun ServersSection(
+internal fun ServersSection(
     profiles: List<ServerProfile>,
     selectedProfileId: String?,
     activeProfileId: String?,
@@ -934,7 +922,7 @@ private fun ServerProfileRow(
 }
 
 @Composable
-private fun StatusMessage(
+internal fun StatusMessage(
     headline: String,
     detail: String,
 ) {
@@ -944,16 +932,18 @@ private fun StatusMessage(
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
         )
-        Text(
-            text = detail,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        if (detail.isNotBlank()) {
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
 @Composable
-private fun StatusPill(
+internal fun StatusPill(
     text: String,
     containerColor: Color,
     contentColor: Color,
@@ -1018,11 +1008,11 @@ private fun StatusDialog(
     }
     val packageUri = remember(context) { Uri.parse("package:${context.packageName}") }
     val routingValue = if (uiState.vpnState.trafficRoutedThroughYume) {
-        "System traffic is using the Yume tunnel"
+        "Tunnel active"
     } else if (uiState.vpnState.localProxyAddress != null) {
-        "The local Yume gateway is up at ${uiState.vpnState.localProxyAddress} while routed traffic is being verified or recovered"
+        "Verifying"
     } else {
-        "Yume has not brought up a local gateway yet, so normal apps are still using the regular WAN path"
+        "Idle"
     }
 
     AlertDialog(
@@ -1138,7 +1128,7 @@ private fun StatusDialog(
 }
 
 @Composable
-private fun StatusFactRow(
+internal fun StatusFactRow(
     label: String,
     value: String,
 ) {
@@ -1158,7 +1148,7 @@ private fun StatusFactRow(
 }
 
 @Composable
-private fun StatusLogLine(entry: VpnLogEntry) {
+internal fun StatusLogLine(entry: VpnLogEntry) {
     Text(
         text = "[${formatLogTimestamp(entry.timestampEpochMs)}] ${entry.level.name} ${entry.message}",
         style = MaterialTheme.typography.bodySmall,
@@ -1172,7 +1162,7 @@ private fun StatusLogLine(entry: VpnLogEntry) {
 }
 
 @Composable
-private fun ProfileEditorDialog(
+internal fun ProfileEditorDialog(
     draft: ProfileDraft,
     caMaterials: List<SecureMaterialSummary>,
     authKeyMaterials: List<SecureMaterialSummary>,
@@ -1425,7 +1415,7 @@ private fun SelectableMaterialChoice(
 }
 
 @Composable
-private fun MaterialTextDialog(
+internal fun MaterialTextDialog(
     draft: MaterialTextDraft,
     onDismiss: () -> Unit,
     onSave: (MaterialTextDraft) -> String?,
@@ -1484,7 +1474,7 @@ private fun MaterialTextDialog(
     )
 }
 
-private fun ServerProfile.toDraft(): ProfileDraft {
+internal fun ServerProfile.toDraft(): ProfileDraft {
     return ProfileDraft(
         id = id,
         name = name,
@@ -1504,13 +1494,13 @@ private fun phaseLabel(phase: VpnPhase): String = when (phase) {
     VpnPhase.Idle -> "Idle"
     VpnPhase.PermissionRequired -> "Permission"
     VpnPhase.Connecting -> "Connecting"
-    VpnPhase.BootstrapReady -> "Bootstrap"
+    VpnPhase.Verifying -> "Verify"
     VpnPhase.Connected -> "Connected"
     VpnPhase.Disconnecting -> "Disconnecting"
     VpnPhase.Error -> "Error"
 }
 
-private fun formatLogTimestamp(epochMs: Long): String {
+internal fun formatLogTimestamp(epochMs: Long): String {
     return DateTimeFormatter.ofPattern("HH:mm:ss")
         .withZone(ZoneId.systemDefault())
         .format(Instant.ofEpochMilli(epochMs))

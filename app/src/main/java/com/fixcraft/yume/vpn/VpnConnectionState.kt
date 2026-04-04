@@ -6,7 +6,7 @@ enum class VpnPhase {
     Idle,
     PermissionRequired,
     Connecting,
-    BootstrapReady,
+    Verifying,
     Connected,
     Disconnecting,
     Error,
@@ -28,7 +28,7 @@ data class VpnConnectionState(
     val phase: VpnPhase = VpnPhase.Idle,
     val activeProfileId: String? = null,
     val headline: String = "Disconnected",
-    val detail: String = "Add a server, assign an auth key, then grant VPN permission to begin.",
+    val detail: String = "",
     val clientPlatform: String = "android",
     val clientVariant: String = "android_vpn",
     val clientVersion: String = BuildConfig.VERSION_NAME,
@@ -41,9 +41,9 @@ data class VpnConnectionState(
     val trafficRoutedThroughYume: Boolean = false,
     val requestedProtection: String = BuildConfig.YUME_PROTECTION_POLICY,
     val transportSummary: String = "TLS 1.3 protected control path",
-    val innerSummary: String = "Requested at highest available level once the Android Yume engine is active",
-    val hopSummary: String = "Requested at highest available level once the Android Yume engine is active",
-    val veritySummary: String = "Local anonym CA selected",
+    val innerSummary: String = "Inner off",
+    val hopSummary: String = "Hop off",
+    val veritySummary: String = "Not checked",
     val routingSummary: String = BuildConfig.YUME_ROUTING_MODE,
     val yumeProtocolVersion: String = BuildConfig.YUME_PROTOCOL_VERSION,
     val basefwxVersion: String = BuildConfig.BASEFWX_ENGINE_VERSION,
@@ -51,7 +51,7 @@ data class VpnConnectionState(
     val serverVersion: String? = null,
     val peerCertificateFingerprint: String? = null,
     val exitIp: String? = null,
-    val relaySummary: String = "Relay is idle until Yume starts the authenticated gateway",
+    val relaySummary: String = "Idle",
     val localProxyAddress: String? = null,
     val latestLifecycleState: String? = null,
     val latestLifecycleMessage: String? = null,
@@ -63,7 +63,7 @@ data class VpnConnectionState(
             VpnPhase.Idle -> "Idle"
             VpnPhase.PermissionRequired -> "Permission needed"
             VpnPhase.Connecting -> "Connecting"
-            VpnPhase.BootstrapReady -> "Bootstrap ready"
+            VpnPhase.Verifying -> "Verifying"
             VpnPhase.Connected -> when {
                 trafficRoutedThroughYume -> "Protected"
                 localProxyAddress != null -> "Proxy ready"

@@ -18,7 +18,7 @@ data class ServerProfile(
     val notes: String = "",
 ) {
     val endpointLabel: String
-        get() = "$host:$port"
+        get() = if (port == 443) host else "$host:$port"
 
     val serverName: String
         get() = sni.ifBlank { host }

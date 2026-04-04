@@ -65,22 +65,44 @@ object YumeFrameCodec {
     }
 
     fun encodeFrame(frame: YumeFrame): ByteArray {
-        require(frame.streamId in 0..0xFF) { "streamId out of range" }
-        require(frame.flags in 0..0xFFFF) { "flags out of range" }
-        require(frame.payload.size <= MAX_PAYLOAD_BYTES) { "payload too large" }
+        return encodeFrame(
+            type = frame.type,
+            streamId = frame.streamId,
+            flags = frame.flags,
+            payload = frame.payload,
+        )
+    }
 
-        val payloadLength = frame.payload.size
+    fun encodeFrame(
+        type: YumeFrameType,
+        streamId: Int = 0,
+        flags: Int = 0,
+        payload: ByteArray = ByteArray(0),
+        payloadOffset: Int = 0,
+        payloadLength: Int = payload.size,
+    ): ByteArray {
+        require(streamId in 0..0xFF) { "streamId out of range" }
+        require(flags in 0..0xFFFF) { "flags out of range" }
+        require(payloadOffset in 0..payload.size) { "payloadOffset out of range" }
+        require(payloadLength >= 0 && payloadOffset + payloadLength <= payload.size) { "payloadLength out of range" }
+        require(payloadLength <= MAX_PAYLOAD_BYTES) { "payload too large" }
+
         val encoded = ByteArray(HEADER_SIZE + payloadLength)
         encoded[0] = ((payloadLength ushr 24) and 0xFF).toByte()
         encoded[1] = ((payloadLength ushr 16) and 0xFF).toByte()
         encoded[2] = ((payloadLength ushr 8) and 0xFF).toByte()
         encoded[3] = (payloadLength and 0xFF).toByte()
-        encoded[4] = (frame.type.wireValue and 0xFF).toByte()
-        encoded[5] = (frame.streamId and 0xFF).toByte()
-        encoded[6] = ((frame.flags ushr 8) and 0xFF).toByte()
-        encoded[7] = (frame.flags and 0xFF).toByte()
-        if (frame.payload.isNotEmpty()) {
-            frame.payload.copyInto(encoded, destinationOffset = HEADER_SIZE)
+        encoded[4] = (type.wireValue and 0xFF).toByte()
+        encoded[5] = (streamId and 0xFF).toByte()
+        encoded[6] = ((flags ushr 8) and 0xFF).toByte()
+        encoded[7] = (flags and 0xFF).toByte()
+        if (payloadLength > 0) {
+            payload.copyInto(
+                destination = encoded,
+                destinationOffset = HEADER_SIZE,
+                startIndex = payloadOffset,
+                endIndex = payloadOffset + payloadLength,
+            )
         }
         return encoded
     }

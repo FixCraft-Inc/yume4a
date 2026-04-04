@@ -3,19 +3,28 @@ package com.fixcraft.yume
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.fixcraft.yume.data.AppSettings
+import com.fixcraft.yume.data.AppSettingsStore
+import com.fixcraft.yume.data.ConnectionTechnique
+import com.fixcraft.yume.data.PerformanceProfile
 import com.fixcraft.yume.data.ServerProfile
 import com.fixcraft.yume.data.ServerProfileStore
 import com.fixcraft.yume.data.SecureMaterialStore
 import com.fixcraft.yume.data.SecureMaterialSummary
 import com.fixcraft.yume.data.SecureMaterialType
+import com.fixcraft.yume.data.ThemeColorMode
 import com.fixcraft.yume.vpn.VpnConnectionState
 import com.fixcraft.yume.vpn.VpnLogLevel
 import com.fixcraft.yume.vpn.VpnPhase
+import com.fixcraft.yume.vpn.NativeDirectTechniqueEngine
+import com.fixcraft.yume.vpn.Tun2SocksTechniqueEngine
+import com.fixcraft.yume.vpn.TunnelRuntimeConfig
 import com.fixcraft.yume.vpn.YumeVpnRuntime
 import com.fixcraft.yume.vpn.YumeVpnService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 
@@ -24,6 +33,7 @@ data class MainUiState(
     val selectedProfileId: String? = null,
     val caMaterials: List<SecureMaterialSummary> = emptyList(),
     val authKeyMaterials: List<SecureMaterialSummary> = emptyList(),
+    val appSettings: AppSettings = AppSettings(),
     val vpnState: VpnConnectionState = VpnConnectionState(),
     val bannerMessage: String? = null,
     val noticeMessage: String? = null,
@@ -40,11 +50,12 @@ data class MainUiState(
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val store = ServerProfileStore.get(application)
+    private val appSettingsStore = AppSettingsStore.get(application)
     private val secureStore = SecureMaterialStore.get(application)
     private val numericAddressPattern = Regex("^[0-9A-Fa-f:.]+$")
     private val _noticeMessage = MutableStateFlow<String?>(null)
 
-    val uiState: StateFlow<MainUiState> = combine(
+    private val baseUiState: Flow<MainUiState> = combine(
         store.profiles,
         store.selectedProfileId,
         secureStore.userMaterials,
@@ -60,23 +71,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             caMaterials = caMaterials,
             authKeyMaterials = authKeyMaterials,
             vpnState = vpnState,
-            bannerMessage = when {
-                profiles.isEmpty() -> "Add a Yume server profile to start."
-                authKeyMaterials.isEmpty() -> "Import a PEM auth key, then assign it to a server before connecting."
-                selectedProfile != null && selectedProfile.authKeyMaterialId.isBlank() ->
-                    "The selected server still needs an auth key before it can authenticate."
-                vpnState.phase == VpnPhase.Connected && vpnState.trafficRoutedThroughYume ->
-                    "System traffic is currently routed through Yume. Exit IP: ${vpnState.exitIp ?: "unknown"}."
-                vpnState.localProxyAddress != null && vpnState.vpnInterfaceEstablished ->
-                    "The Android Yume tunnel is up and the local gateway is ready on ${vpnState.localProxyAddress} while routed traffic is being verified."
-                vpnState.localProxyAddress != null ->
-                    "The local Yume SOCKS5 gateway is ready on ${vpnState.localProxyAddress} while the Android tunnel is finishing startup."
-                vpnState.phase == VpnPhase.BootstrapReady -> "Yume authenticated successfully and is finishing the Android tunnel startup."
-                vpnState.phase == VpnPhase.Connected -> "Yume is active and keeping its upstream control socket out of the VPN path to avoid loops."
-                else -> null
-            },
+            bannerMessage = null,
             noticeMessage = noticeMessage,
         )
+    }
+
+    val uiState: StateFlow<MainUiState> = combine(
+        baseUiState,
+        appSettingsStore.settings,
+    ) { baseState, appSettings ->
+        baseState.copy(appSettings = appSettings)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -215,6 +219,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _noticeMessage.value = null
     }
 
+    fun updateConnectionTechnique(technique: ConnectionTechnique) {
+        if (technique == ConnectionTechnique.NativeDirectAlpha && !BuildConfig.ENABLE_NATIVE_DIRECT_ALPHA) {
+            _noticeMessage.value = "Native direct alpha is only available in debug builds right now."
+            return
+        }
+        appSettingsStore.updateConnectionTechnique(technique)
+        _noticeMessage.value = if (uiState.value.vpnState.phase == VpnPhase.Idle || uiState.value.vpnState.phase == VpnPhase.Error) {
+            "Technique: ${technique.displayName}"
+        } else {
+            "Reconnect to apply ${technique.displayName}."
+        }
+    }
+
+    fun updatePerformanceProfile(profile: PerformanceProfile) {
+        appSettingsStore.updatePerformanceProfile(profile)
+        _noticeMessage.value = if (uiState.value.vpnState.phase == VpnPhase.Idle || uiState.value.vpnState.phase == VpnPhase.Error) {
+            "Profile: ${profile.displayName}"
+        } else {
+            "Reconnect to apply ${profile.displayName}."
+        }
+    }
+
+    fun updateThemeColorMode(mode: ThemeColorMode) {
+        appSettingsStore.updateThemeColorMode(mode)
+        _noticeMessage.value = "Theme: ${mode.displayName}"
+    }
+
     fun markPermissionRequired(profileId: String) {
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Android needs VPN permission before Yume can create the interface.")
         YumeVpnRuntime.update(
@@ -222,7 +253,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 phase = VpnPhase.PermissionRequired,
                 activeProfileId = profileId,
                 headline = "Permission required",
-                detail = "Android needs your approval before Yume can create a VPN interface.",
+                detail = "Android needs permission to start the VPN.",
             )
         )
     }
@@ -234,7 +265,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 phase = VpnPhase.Connecting,
                 activeProfileId = selectedProfile.id,
                 headline = "Preparing",
-                detail = "Checking local auth material and Android VPN prerequisites for ${selectedProfile.endpointLabel}.",
+                detail = "Checking keys and VPN permission for ${selectedProfile.endpointLabel}.",
                 endpointLabel = selectedProfile.endpointLabel,
                 sessionDnsServers = selectedProfile.dnsServers,
                 sessionMtu = selectedProfile.mtu,
@@ -253,7 +284,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     phase = VpnPhase.Error,
                     activeProfileId = selectedProfile.id,
                     headline = "Anonym CA missing",
-                    detail = "Import a valid anonym CA or switch this server back to the embedded CA before connecting.",
+                    detail = "Import an anonym CA or switch this server to the embedded CA.",
                 )
             )
             return
@@ -265,7 +296,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     phase = VpnPhase.Error,
                     activeProfileId = selectedProfile.id,
                     headline = "Auth key required",
-                    detail = "Import or paste a PEM private key, then assign it to this server before connecting.",
+                    detail = "Import an auth key and assign it to this server.",
                 )
             )
             return
@@ -277,7 +308,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     phase = VpnPhase.Error,
                     activeProfileId = selectedProfile.id,
                     headline = "Auth key unavailable",
-                    detail = "The auth key assigned to this server is no longer available. Edit the server and choose another one.",
+                    detail = "The assigned auth key is missing. Edit the server and choose another one.",
                 )
             )
             return
@@ -304,5 +335,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun disconnect() {
         YumeVpnService.startDisconnect(getApplication())
+    }
+
+    fun buildDiagnosticsReport(): String {
+        val current = uiState.value
+        val runtimeConfig = resolveRuntimeConfig(current.appSettings)
+        return buildString {
+            appendLine("Yume Android Diagnostics")
+            appendLine("App: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            appendLine("Technique: ${current.appSettings.connectionTechnique.displayName}")
+            appendLine("Performance profile: ${current.appSettings.performanceProfile.displayName}")
+            appendLine("Theme colors: ${current.appSettings.themeColorMode.displayName}")
+            appendLine("Phase: ${current.vpnState.phase.name}")
+            appendLine("Headline: ${current.vpnState.headline}")
+            appendLine("Detail: ${current.vpnState.detail}")
+            appendLine("Selected server: ${current.selectedProfile?.name ?: "None"}")
+            appendLine("Endpoint: ${current.selectedProfile?.endpointLabel ?: "None"}")
+            appendLine("TLS name: ${current.selectedProfile?.serverName ?: "None"}")
+            appendLine("Anonym policy: ${if (current.selectedProfile?.requireAnonymProof != false) "Required" else "Optional"}")
+            appendLine("Anonym CA: ${current.selectedCaMaterial?.displayName ?: "Missing"}")
+            appendLine("Auth key: ${current.selectedAuthKeyMaterial?.displayName ?: "Not assigned"}")
+            appendLine("Upstream network: ${current.vpnState.upstreamNetworkLabel ?: "Unavailable"}")
+            appendLine("Exit IP: ${current.vpnState.exitIp ?: "Unknown"}")
+            appendLine("Control socket protected: ${current.vpnState.controlSocketProtected}")
+            appendLine("VPN interface established: ${current.vpnState.vpnInterfaceEstablished}")
+            appendLine("Traffic routed through Yume: ${current.vpnState.trafficRoutedThroughYume}")
+            appendLine()
+            appendLine("Runtime")
+            appendLine(runtimeConfig.diagnosticsSummary)
+            appendLine()
+            appendLine("Event log")
+            if (current.vpnState.eventLog.isEmpty()) {
+                appendLine("No session events recorded.")
+            } else {
+                current.vpnState.eventLog.forEach { entry ->
+                    appendLine("[${entry.timestampEpochMs}] ${entry.level.name} ${entry.message}")
+                }
+            }
+        }.trim()
+    }
+
+    private fun resolveRuntimeConfig(settings: AppSettings): TunnelRuntimeConfig {
+        return when (settings.connectionTechnique) {
+            ConnectionTechnique.Tun2SocksStable -> Tun2SocksTechniqueEngine.runtimeConfig(settings.performanceProfile)
+            ConnectionTechnique.NativeDirectAlpha -> {
+                if (BuildConfig.ENABLE_NATIVE_DIRECT_ALPHA) {
+                    NativeDirectTechniqueEngine.runtimeConfig(settings.performanceProfile)
+                } else {
+                    Tun2SocksTechniqueEngine.runtimeConfig(settings.performanceProfile)
+                }
+            }
+        }
     }
 }

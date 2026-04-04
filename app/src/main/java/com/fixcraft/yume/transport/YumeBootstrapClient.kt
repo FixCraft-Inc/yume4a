@@ -27,6 +27,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
@@ -58,8 +59,11 @@ import javax.net.ssl.SSLSocket
 import javax.net.ssl.TrustManagerFactory
 import kotlin.math.abs
 
-private const val TCP_STREAM_MAX_BUFFERED_BYTES = 256 * 1024
-private const val UDP_STREAM_MAX_BUFFERED_BYTES = 128 * 1024
+data class YumeTransportTuning(
+    val tcpStreamMaxBufferedBytes: Int = 256 * 1024,
+    val udpStreamMaxBufferedBytes: Int = 128 * 1024,
+    val outboundFrameQueueCapacity: Int = 64,
+)
 
 private class BufferedChunkQueue(
     private val maxBufferedBytes: Int,
@@ -153,8 +157,9 @@ private interface YumeInboundStream {
 class YumeTcpStream internal constructor(
     private val session: YumeBootstrapSession,
     override val streamId: Int,
+    maxBufferedBytes: Int,
 ) : YumeInboundStream {
-    private val incomingChunks = BufferedChunkQueue(TCP_STREAM_MAX_BUFFERED_BYTES)
+    private val incomingChunks = BufferedChunkQueue(maxBufferedBytes)
     private val closedReason = CompletableDeferred<String?>()
 
     override val isClosed: Boolean
@@ -172,11 +177,13 @@ class YumeTcpStream internal constructor(
         return result.getOrNull()
     }
 
-    suspend fun write(data: ByteArray) {
-        if (data.isEmpty()) {
+    suspend fun write(data: ByteArray, offset: Int = 0, length: Int = data.size) {
+        require(offset in 0..data.size) { "offset out of range" }
+        require(length >= 0 && offset + length <= data.size) { "length out of range" }
+        if (length == 0) {
             return
         }
-        session.sendData(streamId, data)
+        session.sendData(streamId, data, offset, length)
     }
 
     suspend fun close(reason: String = "") {
@@ -208,8 +215,9 @@ class YumeTcpStream internal constructor(
 class YumeUdpStream internal constructor(
     private val session: YumeBootstrapSession,
     override val streamId: Int,
+    maxBufferedBytes: Int,
 ) : YumeInboundStream {
-    private val incomingChunks = BufferedChunkQueue(UDP_STREAM_MAX_BUFFERED_BYTES)
+    private val incomingChunks = BufferedChunkQueue(maxBufferedBytes)
     private val closedReason = CompletableDeferred<String?>()
 
     override val isClosed: Boolean
@@ -264,6 +272,7 @@ class YumeBootstrapSession internal constructor(
     private val sslSocket: SSLSocket,
     val bootstrap: YumeServerBootstrap,
     private val innerState: YumeInnerSessionState? = null,
+    private val transportTuning: YumeTransportTuning = YumeTransportTuning(),
 ) {
     private val input = sslSocket.inputStream
     private val output = sslSocket.outputStream
@@ -271,7 +280,7 @@ class YumeBootstrapSession internal constructor(
     private val stateLock = Any()
     private val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val closeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val outboundFrames = Channel<PendingWrite>(OUTBOUND_FRAME_QUEUE_CAPACITY)
+    private val outboundFrames = Channel<PendingWrite>(transportTuning.outboundFrameQueueCapacity)
     private val pendingOpen = mutableMapOf<Int, CompletableDeferred<Unit>>()
     private val pendingPongs = ArrayDeque<CompletableDeferred<Unit>>()
     private val pendingControl = mutableMapOf<String, CompletableDeferred<JSONObject>>()
@@ -327,7 +336,7 @@ class YumeBootstrapSession internal constructor(
             port = port,
             proto = "tcp",
             timeoutMs = timeoutMs,
-            createStream = { streamId -> YumeTcpStream(this, streamId) },
+            createStream = { streamId -> YumeTcpStream(this, streamId, transportTuning.tcpStreamMaxBufferedBytes) },
             buildFailure = { throwable ->
                 if (throwable is YumeBootstrapException) {
                     throwable
@@ -348,7 +357,7 @@ class YumeBootstrapSession internal constructor(
             port = port,
             proto = "udp",
             timeoutMs = timeoutMs,
-            createStream = { streamId -> YumeUdpStream(this, streamId) },
+            createStream = { streamId -> YumeUdpStream(this, streamId, transportTuning.udpStreamMaxBufferedBytes) },
             buildFailure = { throwable ->
                 if (throwable is YumeBootstrapException) {
                     throwable
@@ -436,8 +445,6 @@ class YumeBootstrapSession internal constructor(
                 streams.remove(stream.streamId)
             }
             val failure = if (throwable is TimeoutCancellationException) {
-                // The server may still be resolving or connecting. Send an explicit CLOSE so
-                // the pending remote stream does not linger after the client has given up.
                 runCatching {
                     sendFrame(
                         YumeFrame(
@@ -524,8 +531,13 @@ class YumeBootstrapSession internal constructor(
         shutdown(YumeBootstrapException("The authenticated Yume session was closed"))
     }
 
-    internal suspend fun sendData(streamId: Int, data: ByteArray) {
-        sendFrame(YumeFrame(type = YumeFrameType.DATA, streamId = streamId, payload = data))
+    internal suspend fun sendData(
+        streamId: Int,
+        data: ByteArray,
+        offset: Int = 0,
+        length: Int = data.size,
+    ) {
+        sendEncodedFrame(encodeOutgoingDataFrame(streamId, data, offset, length))
     }
 
     internal suspend fun closeStream(streamId: Int, reason: String) {
@@ -689,9 +701,13 @@ class YumeBootstrapSession internal constructor(
     }
 
     private suspend fun sendFrame(frame: YumeFrame) {
+        sendEncodedFrame(YumeFrameCodec.encodeFrame(encodeOutgoingFrame(frame)))
+    }
+
+    private suspend fun sendEncodedFrame(encodedFrame: ByteArray) {
         ensureOpen()
         val pending = PendingWrite(
-            encodedFrame = YumeFrameCodec.encodeFrame(encodeOutgoingFrame(frame)),
+            encodedFrame = encodedFrame,
             completion = CompletableDeferred(),
         )
         try {
@@ -706,6 +722,40 @@ class YumeBootstrapSession internal constructor(
                 throwable,
             )
         }
+    }
+
+    private fun encodeOutgoingDataFrame(
+        streamId: Int,
+        data: ByteArray,
+        offset: Int,
+        length: Int,
+    ): ByteArray {
+        require(offset in 0..data.size) { "offset out of range" }
+        require(length >= 0 && offset + length <= data.size) { "length out of range" }
+        if (length == 0) {
+            return YumeFrameCodec.encodeFrame(type = YumeFrameType.DATA, streamId = streamId)
+        }
+        val state = innerState
+        if (state == null || !requiresInnerEncryption(YumeFrameType.DATA)) {
+            return YumeFrameCodec.encodeFrame(
+                type = YumeFrameType.DATA,
+                streamId = streamId,
+                payload = data,
+                payloadOffset = offset,
+                payloadLength = length,
+            )
+        }
+        val payload = if (offset == 0 && length == data.size) {
+            data
+        } else {
+            data.copyOfRange(offset, offset + length)
+        }
+        return YumeFrameCodec.encodeFrame(
+            type = YumeFrameType.DATA,
+            streamId = streamId,
+            flags = INNER_ENCRYPTED_FLAG,
+            payload = YumeInnerCrypto.encrypt(state, YumeFrameType.DATA, streamId, payload),
+        )
     }
 
     private fun encodeOutgoingFrame(frame: YumeFrame): YumeFrame {
@@ -798,7 +848,6 @@ class YumeBootstrapSession internal constructor(
         private const val DEFAULT_STREAM_TIMEOUT_MS = 25_000
         private const val DEFAULT_CONTROL_TIMEOUT_MS = 5_000
         private const val MAX_PROBE_RESPONSE_BYTES = 32 * 1024
-        private const val OUTBOUND_FRAME_QUEUE_CAPACITY = 64
         private const val INNER_ENCRYPTED_FLAG = 0x8000
 
         private fun parseHttpBody(response: String): String {
@@ -946,6 +995,7 @@ object YumeBootstrapClient {
         requireAnonymProof: Boolean = true,
         preferHopRequested: Boolean = true,
         allowInnerProtection: Boolean = true,
+        transportTuning: YumeTransportTuning = YumeTransportTuning(),
         log: ((String) -> Unit)? = null,
     ): YumeBootstrapSession {
         val applicationContext = appContext.applicationContext
@@ -1009,8 +1059,16 @@ object YumeBootstrapClient {
                 }
                 log?.invoke("Received Yume AUTH challenge.")
 
-                val preparedInner = if (preference.enabled) YumeInnerCrypto.prepare(preference) else null
-                val signature = sign(authMaterial.privateKey, challenge.payload)
+                val preparedInner = if (preference.enabled) {
+                    withContext(Dispatchers.Default) {
+                        YumeInnerCrypto.prepare(preference)
+                    }
+                } else {
+                    null
+                }
+                val signature = withContext(Dispatchers.Default) {
+                    sign(authMaterial.privateKey, challenge.payload)
+                }
                 val payload = buildAuthPayload(
                     publicKeyPem = authMaterial.publicKeyPem.toByteArray(Charsets.US_ASCII),
                     signature = signature,
@@ -1157,18 +1215,19 @@ object YumeBootstrapClient {
                     sslSocket = sslSocket,
                     bootstrap = serverInfo,
                     innerState = sessionInnerState,
+                    transportTuning = transportTuning,
                 )
             } catch (throwable: Exception) {
                 runCatching { sslSocket?.close() ?: rawSocket?.close() }
                 lastFailure = if (throwable is YumeBootstrapException) {
                     throwable
                 } else {
-                    YumeBootstrapException(throwable.message ?: "Failed to complete the Yume bootstrap", throwable)
+                    YumeBootstrapException(throwable.message ?: "Failed to complete Yume session setup", throwable)
                 }
                 throw lastFailure
             }
         }
-        throw lastFailure ?: YumeBootstrapException("Failed to complete the Yume bootstrap")
+        throw lastFailure ?: YumeBootstrapException("Failed to complete Yume session setup")
     }
 
     private fun innerPreferenceCacheKey(profile: ServerProfile): String {
@@ -1639,7 +1698,7 @@ object YumeBootstrapClient {
 
         val pqMessage = "$PQ_BOOTSTRAP_PREFIX$pqPubB64:$certfp".toByteArray(Charsets.UTF_8)
         val pqSignature = try {
-            decodeBase64(pqSigB64, "PQ bootstrap signature")
+            decodeBase64(pqSigB64, "PQ session signature")
         } catch (throwable: Exception) {
             log?.invoke("Ignoring pq_pub because the signature is not valid Base64.")
             return null

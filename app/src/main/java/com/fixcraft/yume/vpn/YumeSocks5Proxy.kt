@@ -35,12 +35,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class YumeSocks5Proxy(
     private val scope: CoroutineScope,
+    private val runtimeConfig: Tun2SocksRuntimeConfig,
     private val sessionProvider: () -> YumeBootstrapSession?,
     private val dnsServersProvider: () -> List<String> = { emptyList() },
     private val ipv4OnlyMode: Boolean = false,
     private val forceTcpFallbackUdp443Provider: () -> Boolean = { true },
     private val protectedDestinationsProvider: () -> ProtectedDestinations = { ProtectedDestinations() },
     private val protectedAddressResolver: (String) -> Set<String> = { emptySet() },
+    private val mappedHostResolver: (String) -> String? = { null },
     private val log: (VpnLogLevel, String) -> Unit,
 ) {
     private val clientJobs = linkedSetOf<Job>()
@@ -50,8 +52,8 @@ class YumeSocks5Proxy(
     private val sharedUdpRelayLock = Any()
     private val tcpRelaysLock = Any()
     private val policyLock = Any()
-    private val dnsRelayLimiter = Semaphore(DNS_RELAY_MAX_CONCURRENCY)
-    private val tcpRelayLimiter = Semaphore(MAX_ACTIVE_TCP_RELAYS)
+    private val dnsRelayLimiter = Semaphore(runtimeConfig.dnsRelayMaxConcurrency)
+    private val tcpRelayLimiter = Semaphore(runtimeConfig.maxActiveTcpRelays)
     private val warmupBlockedWarnings = linkedSetOf<String>()
     private val dnsHealthLock = Any()
     private val activeTcpRelays = linkedMapOf<Int, ActiveTcpRelay>()
@@ -173,34 +175,35 @@ class YumeSocks5Proxy(
 
             when (request.command) {
                 COMMAND_CONNECT -> {
-                    if (ipv4OnlyMode && isIpv6LiteralHost(request.host)) {
+                    val effectiveRequest = request.withResolvedHost(resolveMappedHost(request.host))
+                    if (ipv4OnlyMode && isIpv6LiteralHost(effectiveRequest.host)) {
                         sendSocksReply(output, REPLY_ADDRESS_TYPE_NOT_SUPPORTED)
                         log(
                             VpnLogLevel.Warn,
-                            "SOCKS5 CONNECT ${request.host}:${request.port} blocked on Android because Yume is operating in IPv6 fail-closed mode.",
+                            "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} blocked on Android because Yume is operating in IPv6 fail-closed mode.",
                         )
                         return
                     }
-                    if (ipv4OnlyMode && isEncryptedDnsBypass(request.host, request.port)) {
+                    if (ipv4OnlyMode && isEncryptedDnsBypass(effectiveRequest.host, effectiveRequest.port)) {
                         sendSocksReply(output, REPLY_CONNECTION_NOT_ALLOWED)
                         log(
                             VpnLogLevel.Warn,
-                            "SOCKS5 CONNECT ${request.host}:${request.port} blocked because app-managed encrypted DNS would bypass Yume's IPv4-only DNS relay policy.",
+                            "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} blocked because app-managed encrypted DNS would bypass Yume's IPv4-only DNS relay policy.",
                         )
                         return
                     }
-                    val protectedMatches = protectedDestinationMatches(request.host, request.port)
+                    val protectedMatches = protectedDestinationMatches(effectiveRequest.host, effectiveRequest.port)
                     if (protectedMatches.isNotEmpty()) {
                         sendSocksReply(output, REPLY_CONNECTION_NOT_ALLOWED)
                         log(
                             VpnLogLevel.Warn,
-                            "SOCKS5 CONNECT ${request.host}:${request.port} blocked to avoid routing the active Yume server endpoint back through the Yume tunnel (matched protected IPs: ${protectedMatches.joinToString(", ")}).",
+                            "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} blocked to avoid routing the active Yume server endpoint back through the Yume tunnel (matched protected IPs: ${protectedMatches.joinToString(", ")}).",
                         )
                         return
                     }
-                    if (startupWarmupMode && !isWarmupTcpAllowed(request.port)) {
+                    if (startupWarmupMode && !isWarmupTcpAllowed(effectiveRequest.port)) {
                         sendSocksReply(output, REPLY_CONNECTION_NOT_ALLOWED)
-                        val destination = "${request.host}:${request.port}"
+                        val destination = "${effectiveRequest.host}:${effectiveRequest.port}"
                         val shouldLog = synchronized(policyLock) {
                             warmupBlockedWarnings.add(destination)
                         }
@@ -212,12 +215,12 @@ class YumeSocks5Proxy(
                         }
                         return
                     }
-                    val relaySlotAcquired = acquireTcpRelaySlot(request)
+                    val relaySlotAcquired = acquireTcpRelaySlot(effectiveRequest)
                     if (!relaySlotAcquired) {
                         sendSocksReply(output, REPLY_GENERAL_FAILURE)
                         log(
                             VpnLogLevel.Warn,
-                            "SOCKS5 CONNECT ${request.host}:${request.port} deferred because Yume is smoothing Android TCP fan-out to keep the authenticated session stable.",
+                            "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} deferred because Yume is smoothing Android TCP fan-out to keep the authenticated session stable.",
                         )
                         return
                     }
@@ -228,27 +231,27 @@ class YumeSocks5Proxy(
                         sendSocksReply(output, REPLY_GENERAL_FAILURE)
                         log(
                             VpnLogLevel.Warn,
-                            "SOCKS5 CONNECT ${request.host}:${request.port} failed because the Yume session is unavailable.",
+                            "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} failed because the Yume session is unavailable.",
                         )
                         return
                     }
 
                     stream = try {
-                        session.openTcpStream(request.host, request.port)
+                        session.openTcpStream(effectiveRequest.host, effectiveRequest.port)
                     } catch (throwable: Exception) {
                         sendSocksReply(output, mapOpenFailureToReply(throwable))
                         log(
                             VpnLogLevel.Warn,
-                            "SOCKS5 CONNECT ${request.host}:${request.port} failed: ${throwable.message ?: "open failed"}.",
+                            "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} failed: ${throwable.message ?: "open failed"}.",
                         )
                         return
                     }
 
-                    registerActiveTcpRelay(client, stream, request)
+                    registerActiveTcpRelay(client, stream, effectiveRequest)
                     sendSocksReply(output, REPLY_SUCCESS)
                     client.soTimeout = 0
-                    log(VpnLogLevel.Info, "SOCKS5 CONNECT ${request.host}:${request.port} via Yume stream ${stream.streamId}.")
-                    bridgeClient(client, input, output, stream, request)
+                    log(VpnLogLevel.Info, "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} via Yume stream ${stream.streamId}.")
+                    bridgeClient(client, input, output, stream, effectiveRequest)
                 }
 
                 COMMAND_UDP_ASSOCIATE -> {
@@ -276,13 +279,13 @@ class YumeSocks5Proxy(
     }
 
     private suspend fun acquireTcpRelaySlot(request: SocksRequest): Boolean {
-        val deadline = SystemClock.elapsedRealtime() + TCP_RELAY_SLOT_ACQUIRE_TIMEOUT_MS
+        val deadline = SystemClock.elapsedRealtime() + runtimeConfig.relayAcquireTimeoutMs
         while (true) {
             val remainingMs = deadline - SystemClock.elapsedRealtime()
             if (remainingMs <= 0L) {
                 return false
             }
-            val acquired = withTimeoutOrNull(minOf(remainingMs, TCP_RELAY_SLOT_ACQUIRE_SLICE_MS)) {
+            val acquired = withTimeoutOrNull(minOf(remainingMs, runtimeConfig.relayAcquireSliceMs)) {
                 tcpRelayLimiter.acquire()
                 true
             } ?: false
@@ -318,8 +321,8 @@ class YumeSocks5Proxy(
     ): List<ActiveTcpRelay> {
         val candidates = activeTcpRelays.values
             .filter { relay ->
-                (nowMs - relay.createdAtMs) >= TCP_RELAY_EVICTION_GRACE_MS &&
-                    (nowMs - relay.lastActivityAtMs) >= TCP_RELAY_IDLE_EVICT_AFTER_MS
+                (nowMs - relay.createdAtMs) >= runtimeConfig.tcpEvictionGraceMs &&
+                    (nowMs - relay.lastActivityAtMs) >= runtimeConfig.idleTcpEvictionMs
             }
             .sortedWith(
                 compareBy<ActiveTcpRelay> { it.lastActivityAtMs }
@@ -329,7 +332,7 @@ class YumeSocks5Proxy(
         if (candidates.isEmpty()) {
             return emptyList()
         }
-        return candidates.take(TCP_RELAY_EVICTION_BATCH_SIZE)
+        return candidates.take(runtimeConfig.tcpEvictionBatchSize)
     }
 
     private fun registerActiveTcpRelay(
@@ -484,7 +487,6 @@ class YumeSocks5Proxy(
     private suspend fun readDnsResponseFromTcp(stream: YumeTcpStream): ByteArray {
         val response = ByteArrayOutputStream()
         var expectedLength = -1
-        // Add timeout protection: DNS-over-TCP response should arrive within 5 seconds
         val timeoutMs = 5000L
         var dnsResponse: ByteArray? = null
         try {
@@ -649,14 +651,14 @@ class YumeSocks5Proxy(
         val remoteCompleted = AtomicBoolean(false)
         val clientToYume = launch(Dispatchers.IO) {
             try {
-                val buffer = ByteArray(BRIDGE_BUFFER_BYTES)
+                val buffer = ByteArray(runtimeConfig.bridgeChunkBytes)
                 while (true) {
                     val read = input.read(buffer)
                     if (read < 0) {
                         break
                     }
                     if (read > 0) {
-                        stream.write(buffer.copyOf(read))
+                        stream.write(buffer, 0, read)
                         touchActiveTcpRelay(stream.streamId)
                     }
                 }
@@ -838,11 +840,12 @@ class YumeSocks5Proxy(
         clientAddress: InetAddress,
         clientPort: Int,
     ) {
+        val effectiveDatagram = datagram.withResolvedHost(resolveMappedHost(datagram.host))
         if (clientPort <= 0) {
             return
         }
-        if (ipv4OnlyMode && isIpv6LiteralHost(datagram.host)) {
-            val destination = "${datagram.host}:${datagram.port}"
+        if (ipv4OnlyMode && isIpv6LiteralHost(effectiveDatagram.host)) {
+            val destination = "${effectiveDatagram.host}:${effectiveDatagram.port}"
             val shouldLog = synchronized(relay.policyWarnings) {
                 relay.policyWarnings.add("ipv6:$destination")
             }
@@ -854,8 +857,8 @@ class YumeSocks5Proxy(
             }
             return
         }
-        if (ipv4OnlyMode && isEncryptedDnsBypass(datagram.host, datagram.port)) {
-            val destination = "${datagram.host}:${datagram.port}"
+        if (ipv4OnlyMode && isEncryptedDnsBypass(effectiveDatagram.host, effectiveDatagram.port)) {
+            val destination = "${effectiveDatagram.host}:${effectiveDatagram.port}"
             val shouldLog = synchronized(relay.policyWarnings) {
                 relay.policyWarnings.add("dns-bypass:$destination")
             }
@@ -867,8 +870,8 @@ class YumeSocks5Proxy(
             }
             return
         }
-        if (shouldForceTcpFallback(datagram.port)) {
-            val destination = "${datagram.host}:${datagram.port}"
+        if (shouldForceTcpFallback(effectiveDatagram.port)) {
+            val destination = "${effectiveDatagram.host}:${effectiveDatagram.port}"
             val shouldLog = synchronized(relay.policyWarnings) {
                 relay.policyWarnings.add("force-tcp:$destination")
             }
@@ -880,9 +883,9 @@ class YumeSocks5Proxy(
             }
             return
         }
-        val protectedMatches = protectedDestinationMatches(datagram.host, datagram.port)
+        val protectedMatches = protectedDestinationMatches(effectiveDatagram.host, effectiveDatagram.port)
         if (protectedMatches.isNotEmpty()) {
-            val destination = "${datagram.host}:${datagram.port}"
+            val destination = "${effectiveDatagram.host}:${effectiveDatagram.port}"
             val shouldLog = synchronized(relay.policyWarnings) {
                 relay.policyWarnings.add("protected:$destination")
             }
@@ -896,19 +899,19 @@ class YumeSocks5Proxy(
         }
         val session = sessionProvider()
         if (session == null || !session.isAlive) {
-            if (datagram.port == DNS_PORT) {
-                noteDnsTransportFailure(session, datagram.host, "The authenticated Yume session is unavailable")
+            if (effectiveDatagram.port == DNS_PORT) {
+                noteDnsTransportFailure(session, effectiveDatagram.host, "The authenticated Yume session is unavailable")
             }
-            log(VpnLogLevel.Warn, "SOCKS5 UDP ${datagram.host}:${datagram.port} failed: The authenticated Yume session is unavailable.")
+            log(VpnLogLevel.Warn, "SOCKS5 UDP ${effectiveDatagram.host}:${effectiveDatagram.port} failed: The authenticated Yume session is unavailable.")
             return
         }
 
-        if (datagram.port == DNS_PORT) {
+        if (effectiveDatagram.port == DNS_PORT) {
             relayDnsDatagram(
                 relay = relay,
                 session = session,
-                requestedHost = datagram.host,
-                payload = datagram.payload,
+                requestedHost = effectiveDatagram.host,
+                payload = effectiveDatagram.payload,
                 clientAddress = clientAddress,
                 clientPort = clientPort,
             )
@@ -919,21 +922,21 @@ class YumeSocks5Proxy(
             val association = obtainUdpAssociation(
                 relay = relay,
                 session = session,
-                host = datagram.host,
-                port = datagram.port,
+                host = effectiveDatagram.host,
+                port = effectiveDatagram.port,
                 udpSocket = relay.socket,
                 clientAddress = clientAddress,
                 clientPort = clientPort,
             )
             association.touch()
-            association.stream.sendDatagram(datagram.payload)
+            association.stream.sendDatagram(effectiveDatagram.payload)
             association.touch()
         } catch (_: CancellationException) {
         } catch (throwable: Exception) {
             if (!isExpectedSocketShutdown(throwable)) {
                 log(
                     VpnLogLevel.Warn,
-                    "SOCKS5 UDP ${datagram.host}:${datagram.port} failed: ${throwable.message ?: "udp relay failed"}.",
+                    "SOCKS5 UDP ${effectiveDatagram.host}:${effectiveDatagram.port} failed: ${throwable.message ?: "udp relay failed"}.",
                 )
             }
         }
@@ -1353,6 +1356,16 @@ class YumeSocks5Proxy(
             .lowercase()
     }
 
+    private fun resolveMappedHost(host: String): String {
+        val normalized = normalizeHost(host)
+        if (normalized.isEmpty()) {
+            return host
+        }
+        return mappedHostResolver(normalized)
+            ?.takeIf { it.isNotBlank() }
+            ?: host
+    }
+
     private fun isIpv6LiteralHost(host: String): Boolean {
         val normalized = normalizeHost(host)
         if (!normalized.contains(':')) {
@@ -1593,14 +1606,14 @@ class YumeSocks5Proxy(
                 .forEach(selected::add)
         }
 
-        val totalOverflow = (relay.associations.size + 1) - MAX_ACTIVE_UDP_ASSOCIATIONS
+        val totalOverflow = (relay.associations.size + 1) - runtimeConfig.maxUdpAssociations
         if (totalOverflow > 0) {
             selectOldest(candidates, totalOverflow)
         }
 
         if (requestedPort == DNS_PORT) {
             val dnsAssociations = candidates.filter { it.port == DNS_PORT }
-            val dnsOverflow = (dnsAssociations.size + 1) - MAX_ACTIVE_DNS_ASSOCIATIONS
+            val dnsOverflow = (dnsAssociations.size + 1) - runtimeConfig.maxDnsUdpAssociations
             if (dnsOverflow > 0) {
                 selectOldest(dnsAssociations, dnsOverflow)
             }
@@ -1632,13 +1645,27 @@ class YumeSocks5Proxy(
         val command: Int,
         val host: String,
         val port: Int,
-    )
+    ) {
+        fun withResolvedHost(resolvedHost: String): SocksRequest {
+            if (resolvedHost == host) {
+                return this
+            }
+            return copy(host = resolvedHost)
+        }
+    }
 
     private data class SocksUdpDatagram(
         val host: String,
         val port: Int,
         val payload: ByteArray,
-    )
+    ) {
+        fun withResolvedHost(resolvedHost: String): SocksUdpDatagram {
+            if (resolvedHost == host) {
+                return this
+            }
+            return copy(host = resolvedHost)
+        }
+    }
 
     private data class UdpAssociation(
         val key: String,
@@ -1721,10 +1748,6 @@ class YumeSocks5Proxy(
     companion object {
         private const val DEFAULT_PROXY_PORT = 1088
         private const val HANDSHAKE_TIMEOUT_MS = 10_000
-        // Smaller bridge chunks reduce head-of-line blocking across many multiplexed Android
-        // streams riding one outer TLS/TCP carrier, which matters more for latency than peak
-        // throughput on mobile.
-        private const val BRIDGE_BUFFER_BYTES = 4 * 1024
         private const val MAX_UDP_PACKET_BYTES = 65_535
         private const val MAX_DNS_RESPONSE_BYTES = 65_535
         private const val DNS_HEADER_BYTES = 12
@@ -1733,27 +1756,12 @@ class YumeSocks5Proxy(
         private const val DNS_TYPE_HTTPS = 65
         private const val DNS_PORT = 53
         private const val DNS_OVER_TCP_TIMEOUT_MS = 10_000
-        private const val DNS_RELAY_MAX_CONCURRENCY = 8
-        // Android runs all VPN traffic through one outer Yume session. Keeping relay fan-out too
-        // high improves burst throughput on paper but destroys interactive latency under real
-        // mobile background traffic, so bias the bridge toward low queueing delay instead.
-        private const val MAX_ACTIVE_TCP_RELAYS = 20
-        private const val TCP_RELAY_SLOT_ACQUIRE_TIMEOUT_MS = 3_000L
-        private const val TCP_RELAY_SLOT_ACQUIRE_SLICE_MS = 250L
-        private const val TCP_RELAY_IDLE_EVICT_AFTER_MS = 4_000L
-        private const val TCP_RELAY_EVICTION_GRACE_MS = 2_000L
-        private const val TCP_RELAY_EVICTION_BATCH_SIZE = 4
         private const val DNS_FAILURE_THRESHOLD = 6
         private const val DNS_FAILURE_WINDOW_MS = 15_000L
         private const val DNS_PENDING_ROUTE_TIMEOUT_MS = 15_000L
         private const val DNS_UDP_ASSOCIATION_IDLE_TIMEOUT_MS = 8_000L
         private const val UDP_ASSOCIATION_IDLE_TIMEOUT_MS = 15_000L
         private const val UDP_ASSOCIATION_CLEANUP_INTERVAL_MS = 5_000L
-        private const val MAX_ACTIVE_DNS_ASSOCIATIONS = 24
-        private const val MAX_ACTIVE_UDP_ASSOCIATIONS = 32
-        // Native UDP 443 on Android effectively turns QUIC into many long-lived relay streams
-        // multiplexed over one outer TLS/TCP carrier. That hurts latency far more than it helps, so
-        // keep 443 on TCP fallback until Yume has a packet-native transport.
         private val TCP_FALLBACK_UDP_PORTS = setOf(443)
         private const val LOOPBACK_HOST = "127.0.0.1"
         private const val BRIDGE_DRAIN_TIMEOUT_MS = 1_500L

@@ -22,6 +22,10 @@ import hev.htproxy.TProxyService
 import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.MainActivity
 import com.fixcraft.yume.R
+import com.fixcraft.yume.data.AppSettings
+import com.fixcraft.yume.data.AppSettingsStore
+import com.fixcraft.yume.data.ConnectionTechnique
+import com.fixcraft.yume.data.PerformanceProfile
 import com.fixcraft.yume.data.ServerProfile
 import com.fixcraft.yume.data.ServerProfileStore
 import com.fixcraft.yume.data.SecureMaterialStore
@@ -62,6 +66,7 @@ class YumeVpnService : VpnService() {
     }
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + serviceExceptionHandler)
     private val profileStore by lazy { ServerProfileStore.get(applicationContext) }
+    private val appSettingsStore by lazy { AppSettingsStore.get(applicationContext) }
     private val secureMaterialStore by lazy { SecureMaterialStore.get(applicationContext) }
     private val tun2SocksBridge by lazy { TProxyService() }
     private val connectivityManager by lazy {
@@ -103,7 +108,9 @@ class YumeVpnService : VpnService() {
     @Volatile
     private var innerCompatibilityMode = false
     @Volatile
-    private var selfExcludedFromVpnPath = false
+    private var activeTun2SocksConfig: Tun2SocksRuntimeConfig? = null
+    @Volatile
+    private var activeTechniqueDataPlane: TechniqueDataPlane? = null
     private val lifecycleMutex = Mutex()
     private val sessionGeneration = AtomicLong(0)
 
@@ -214,6 +221,11 @@ class YumeVpnService : VpnService() {
             fail("Selected server profile no longer exists")
             return
         }
+        val appSettings = appSettingsStore.settings.value
+        val techniqueEngine = resolveTechniqueEngine(appSettings)
+        val runtimeConfig = techniqueEngine.runtimeConfig(appSettings.performanceProfile)
+        val tun2SocksConfig = effectiveTun2SocksConfig(runtimeConfig)
+        activeTun2SocksConfig = tun2SocksConfig
         ensureSessionActive(generation)
         activeProfile = profile
         val caSummary = secureMaterialStore.getSummary(profile.anonymCaMaterialId)
@@ -245,7 +257,7 @@ class YumeVpnService : VpnService() {
                 phase = VpnPhase.Connecting,
                 activeProfileId = profile.id,
                 headline = "Connecting",
-                detail = "Loading ${authKeySummary.displayName} and ${caSummary.displayName}, then opening an authenticated Yume control path to ${profile.endpointLabel}.",
+                detail = "Loading keys and opening a control path to ${profile.endpointLabel}.",
                 endpointLabel = profile.endpointLabel,
                 sessionDnsServers = profile.dnsServers,
                 sessionMtu = profile.mtu,
@@ -259,8 +271,8 @@ class YumeVpnService : VpnService() {
         metadataChannelEnabled = false
         hopCompatibilityMode = ANDROID_HOP_COMPATIBILITY_DEFAULT
         innerCompatibilityMode = ANDROID_INNER_COMPATIBILITY_DEFAULT
-        selfExcludedFromVpnPath = false
         currentPresence = null
+        YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Technique: ${runtimeConfig.summary}.")
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Starting Yume Android session for ${profile.name} (${profile.endpointLabel}).")
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Requested protection policy: ${YumeVpnRuntime.state.value.requestedProtection}.")
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Loaded anonym CA: ${caSummary.displayName}.")
@@ -319,6 +331,17 @@ class YumeVpnService : VpnService() {
             ensureSessionActive(generation)
             awaitPreRoutingStability(session, generation)
             val proxyAddress = ensureSocksProxyStarted()
+            val dataPlane = techniqueEngine.createDataPlane(
+                runtimeConfig = runtimeConfig,
+                start = { ensureTun2SocksRunning(profile, proxyAddress) },
+                stop = {
+                    runCatching { tun2SocksBridge.TProxyStopService() }
+                    tun2SocksActive = false
+                },
+                setVerificationMode = { enabled -> setProxyWarmupMode(enabled) },
+                stats = ::readActiveTechniqueStats,
+            )
+            activeTechniqueDataPlane = dataPlane
             val verifiedExitIpResult = Result.success(relayExitIp)
             markRelayReady(profile, bootstrap, verifiedExitIpResult, proxyAddress)
 
@@ -331,8 +354,8 @@ class YumeVpnService : VpnService() {
                     "Android VPN interface established in dual-stack fail-closed mode with local mapped DNS $MAPDNS_ADDRESS, remote resolvers ${effectiveVpnDnsServers(profile).joinToString(", ")}, and MTU ${profile.mtu}.",
                 )
             }
-            setProxyWarmupMode(true)
-            ensureTun2SocksRunning(profile, proxyAddress)
+            dataPlane.setVerificationMode(true)
+            dataPlane.start()
             markRelayReady(profile, bootstrap, exitIpResult, proxyAddress)
             val routedExitIp = verifySystemTrafficFlow(
                 profile = profile,
@@ -343,7 +366,7 @@ class YumeVpnService : VpnService() {
                 generation = generation,
             )
             awaitPostRoutingTrafficRamp(session, generation)
-            setProxyWarmupMode(false)
+            dataPlane.setVerificationMode(false)
             markTrafficFlowing(profile, bootstrap, verifiedExitIpResult, routedExitIp, proxyAddress)
             updateForeground(profile, "Protected via Yume")
             var nextPingAtMs = System.currentTimeMillis() + KEEPALIVE_PING_INTERVAL_MS
@@ -354,7 +377,7 @@ class YumeVpnService : VpnService() {
                 delay(1_500)
                 val network = upstreamNetwork ?: connectivityManager.activeNetwork
                 if (network == null) {
-                    setProxyWarmupMode(true)
+                    setTechniqueVerificationMode(true)
                     waitForUpstreamNetwork(profile)
                     ensureSessionActive(generation)
                     bootstrapSession = reconnectBootstrapSession(
@@ -390,7 +413,7 @@ class YumeVpnService : VpnService() {
                     awaitPreRoutingStability(session, generation)
                     val verifiedRelayExitIpResult = Result.success(relayExitIp)
                     markRelayReady(profile, bootstrap, verifiedRelayExitIpResult, ensureSocksProxyStarted())
-                    setProxyWarmupMode(true)
+                    setTechniqueVerificationMode(true)
                     verifySystemTrafficFlow(
                         profile = profile,
                         bootstrap = bootstrap,
@@ -400,7 +423,7 @@ class YumeVpnService : VpnService() {
                         generation = generation,
                     ).also { routedExitIp ->
                         awaitPostRoutingTrafficRamp(session, generation)
-                        setProxyWarmupMode(false)
+                        setTechniqueVerificationMode(false)
                         markTrafficFlowing(profile, bootstrap, verifiedRelayExitIpResult, routedExitIp, ensureSocksProxyStarted())
                     }
                     nextPingAtMs = System.currentTimeMillis() + KEEPALIVE_PING_INTERVAL_MS
@@ -410,7 +433,7 @@ class YumeVpnService : VpnService() {
                 if (liveSession == null || !liveSession.isAlive) {
                     val closeDetail = liveSession?.closeReason?.takeIf { it.isNotBlank() } ?: "unknown reason"
                     val reopenedWithoutInner = maybeEnableInnerCompatibilityForCorruption(liveSession, closeDetail)
-                    setProxyWarmupMode(true)
+                    setTechniqueVerificationMode(true)
                     bootstrapSession = reconnectBootstrapSession(
                         profile = profile,
                         anonymCaPem = anonymCaPem,
@@ -448,7 +471,7 @@ class YumeVpnService : VpnService() {
                     awaitPreRoutingStability(session, generation)
                     val verifiedRelayExitIpResult = Result.success(relayExitIp)
                     markRelayReady(profile, bootstrap, verifiedRelayExitIpResult, ensureSocksProxyStarted())
-                    setProxyWarmupMode(true)
+                    setTechniqueVerificationMode(true)
                     verifySystemTrafficFlow(
                         profile = profile,
                         bootstrap = bootstrap,
@@ -458,7 +481,7 @@ class YumeVpnService : VpnService() {
                         generation = generation,
                     ).also { routedExitIp ->
                         awaitPostRoutingTrafficRamp(session, generation)
-                        setProxyWarmupMode(false)
+                        setTechniqueVerificationMode(false)
                         markTrafficFlowing(profile, bootstrap, verifiedRelayExitIpResult, routedExitIp, ensureSocksProxyStarted())
                     }
                     nextPingAtMs = System.currentTimeMillis() + KEEPALIVE_PING_INTERVAL_MS
@@ -474,7 +497,7 @@ class YumeVpnService : VpnService() {
                             VpnLogLevel.Warn,
                             "Yume PING failed: $pingDetail. Re-authenticating.",
                         )
-                        setProxyWarmupMode(true)
+                        setTechniqueVerificationMode(true)
                         bootstrapSession = reconnectBootstrapSession(
                             profile = profile,
                             anonymCaPem = anonymCaPem,
@@ -512,7 +535,7 @@ class YumeVpnService : VpnService() {
                         awaitPreRoutingStability(session, generation)
                         val verifiedRelayExitIpResult = Result.success(relayExitIp)
                         markRelayReady(profile, bootstrap, verifiedRelayExitIpResult, ensureSocksProxyStarted())
-                        setProxyWarmupMode(true)
+                        setTechniqueVerificationMode(true)
                         verifySystemTrafficFlow(
                             profile = profile,
                             bootstrap = bootstrap,
@@ -522,7 +545,7 @@ class YumeVpnService : VpnService() {
                             generation = generation,
                         ).also { routedExitIp ->
                             awaitPostRoutingTrafficRamp(session, generation)
-                            setProxyWarmupMode(false)
+                            setTechniqueVerificationMode(false)
                             markTrafficFlowing(profile, bootstrap, verifiedRelayExitIpResult, routedExitIp, ensureSocksProxyStarted())
                         }
                     }
@@ -578,18 +601,13 @@ class YumeVpnService : VpnService() {
                 )
             )
         }
-        
-        // Cancel and wait for connect job to complete before proceeding
         if (connectJob != null) {
             connectJob?.cancel()
-            // Note: We intentionally do NOT join here synchronously as we're on the main handler thread.
-            // The connectJob will be properly cleaned up in the disconnectJob finally block.
         }
         
         val session = bootstrapSession
         disconnectJob = serviceScope.launch {
             try {
-                // Send lifecycle update with strict timeout to prevent hanging
                 if (session != null && session.isAlive) {
                     try {
                         withContext(Dispatchers.IO) {
@@ -602,20 +620,17 @@ class YumeVpnService : VpnService() {
                                     effectiveProtection = buildEffectiveProtectionSummary(session.bootstrap),
                                     trafficVerified = currentState.trafficRoutedThroughYume,
                                     exitIp = currentState.exitIp.orEmpty(),
-                                    timeoutMs = 500,  // Reduced from 1200ms to prevent disconnect hangs
+                                    timeoutMs = 500,
                                 )
                             }
                         }
                     } catch (e: CancellationException) {
                         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Lifecycle update cancelled during disconnect")
-                        // Continue with disconnect even if cancelled
                     } catch (e: Throwable) {
                         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Lifecycle update failed during disconnect: ${e.javaClass.simpleName}")
-                        // Continue with disconnect even if lifecycle update fails
                     }
                 }
             } finally {
-                // Always cleanup resources, even if lifecycle update fails
                 lifecycleMutex.withLock {
                     disconnectResources()
                 }
@@ -639,25 +654,13 @@ class YumeVpnService : VpnService() {
     }
 
     private fun disconnectResources() {
-        // Cleanup in proper order: stop active components first, then close file descriptors
-        
-        // 1. Stop SOCKS5 proxy (this should happen BEFORE stopping tun2socks)
         runCatching { socksProxy?.setStartupWarmupMode(false) }
         runCatching { socksProxy?.stop() }
-        
-        // 2. Stop TUN2SOCKS bridge (only after proxy is stopped)
-        runCatching { tun2SocksBridge.TProxyStopService() }
-        
-        // 3. Close bootstrap session
+        runCatching { activeTechniqueDataPlane?.stop() }
+        activeTechniqueDataPlane = null
         runCatching { bootstrapSession?.close() }
-        
-        // 4. Close socket if still open
         runCatching { inFlightSocket?.close() }
-        
-        // 5. Close TUN interface file descriptor
         runCatching { tunInterface?.close() }
-        
-        // 6. Clear all references
         detachedTunFd = -1
         inFlightSocket = null
         tun2SocksActive = false
@@ -667,7 +670,8 @@ class YumeVpnService : VpnService() {
         localProxyAddress = null
         hopCompatibilityMode = ANDROID_HOP_COMPATIBILITY_DEFAULT
         innerCompatibilityMode = ANDROID_INNER_COMPATIBILITY_DEFAULT
-        selfExcludedFromVpnPath = false
+        activeTun2SocksConfig = null
+        activeTechniqueDataPlane = null
         lastLoggedUpstreamHandle = Long.MIN_VALUE
         lastLoggedUpstreamLabel = null
     }
@@ -678,8 +682,6 @@ class YumeVpnService : VpnService() {
         connectJob = null
         disconnectJob?.cancel()
         disconnectJob = null
-        
-        // Use try-finally to ensure proper lock release even if disconnectResources fails
         serviceScope.launch {
             try {
                 lifecycleMutex.withLock {
@@ -687,7 +689,6 @@ class YumeVpnService : VpnService() {
                 }
             } catch (e: Throwable) {
                 YumeVpnRuntime.appendLog(VpnLogLevel.Error, "Error during disconnect in fail(): ${e.message}")
-                // Even if lock fails, still try to disconnect
                 runCatching { disconnectResources() }
             }
         }
@@ -750,6 +751,7 @@ class YumeVpnService : VpnService() {
                 requireAnonymProof = profile.requireAnonymProof,
                 preferHopRequested = !hopCompatibilityMode,
                 allowInnerProtection = !innerCompatibilityMode,
+                transportTuning = currentTun2SocksConfig().toBootstrapTuning(),
                 log = { message -> YumeVpnRuntime.appendLog(VpnLogLevel.Info, message) },
             )
         } catch (throwable: Exception) {
@@ -1250,25 +1252,26 @@ class YumeVpnService : VpnService() {
         session: YumeBootstrapSession,
         generation: Long,
     ) {
+        val runtimeConfig = currentTun2SocksConfig()
         ensureSessionActive(generation)
         YumeVpnRuntime.appendLog(
             VpnLogLevel.Info,
-            "Holding the authenticated Yume session briefly before enabling full Android routing.",
+            "Holding the authenticated Yume session briefly before creating Android routing.",
         )
         YumeVpnRuntime.update { state ->
             if (state.phase == VpnPhase.Disconnecting || state.phase == VpnPhase.Idle || state.phase == VpnPhase.Error) {
                 state
             } else {
                 state.copy(
-                    phase = VpnPhase.BootstrapReady,
-                    headline = "Verifying stability",
-                    detail = "Authenticated Yume relay traffic is ready. Waiting briefly before enabling full Android routing.",
+                    phase = VpnPhase.Verifying,
+                    headline = "Verifying route",
+                    detail = "Route is up. Verifying traffic.",
                     controlSocketProtected = true,
                     localProxyAddress = localProxyAddress,
                 )
             }
         }
-        delay(PRE_ROUTING_STABILITY_DELAY_MS)
+        delay(runtimeConfig.preRoutingStabilityDelayMs)
         ensureSessionActive(generation)
         session.ping(timeoutMs = PRE_ROUTING_PING_TIMEOUT_MS)
         YumeVpnRuntime.appendLog(
@@ -1303,6 +1306,7 @@ class YumeVpnService : VpnService() {
     }
 
     private fun writeTun2SocksConfig(profile: ServerProfile, proxyHost: String, proxyPort: Int): File {
+        val runtimeConfig = currentTun2SocksConfig()
         val dir = File(noBackupFilesDir, "tun2socks").apply { mkdirs() }
         val configFile = File(dir, "yume-tun2socks.yml")
         val config = buildString {
@@ -1327,9 +1331,9 @@ class YumeVpnService : VpnService() {
             appendLine("misc:")
             appendLine("  log-file: stderr")
             appendLine("  log-level: warn")
-            appendLine("  connect-timeout: 5000")
-            appendLine("  tcp-read-write-timeout: 120000")
-            appendLine("  udp-read-write-timeout: 15000")
+            appendLine("  connect-timeout: ${runtimeConfig.tun2SocksConnectTimeoutMs}")
+            appendLine("  tcp-read-write-timeout: ${runtimeConfig.tun2SocksTcpReadWriteTimeoutMs}")
+            appendLine("  udp-read-write-timeout: ${runtimeConfig.tun2SocksUdpReadWriteTimeoutMs}")
         }
         configFile.writeText(config)
         return configFile
@@ -1345,28 +1349,7 @@ class YumeVpnService : VpnService() {
     ): RouteVerificationResult {
         ensureSessionActive(generation)
         delay(TUN2SOCKS_STARTUP_DELAY_MS)
-        val relayExitIp = relayExitIpResult.getOrNull()?.trim().orEmpty()
-        if (selfExcludedFromVpnPath) {
-            YumeVpnRuntime.appendLog(
-                VpnLogLevel.Info,
-                "Yume is excluding its own package from the Android VPN path for stability. Skipping the in-app routed socket probe and relying on the authenticated relay canary plus a live control-path keepalive.",
-            )
-            session.ping(timeoutMs = PRE_ROUTING_PING_TIMEOUT_MS)
-            sendLifecycleUpdate(
-                session = session,
-                state = "traffic_flowing",
-                message = "success, traffic flowing",
-                detail = "android vpn tunnel is active; routed verification uses relay canaries because yume is excluded from its own vpn path",
-                effectiveProtection = buildEffectiveProtectionSummary(bootstrap),
-                trafficVerified = false,
-                exitIp = relayExitIp,
-            )
-            return RouteVerificationResult(
-                exitIp = relayExitIp.ifBlank { null },
-                systemTrafficVerified = false,
-            )
-        }
-        YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Running a systemwide Android traffic probe through Yume.")
+        YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Running an in-app routed Android traffic probe through Yume.")
         val routedExitIp = probeSystemExitIp().getOrElse { throwable ->
             sendLifecycleUpdate(
                 session = session,
@@ -1408,15 +1391,17 @@ class YumeVpnService : VpnService() {
         session: YumeBootstrapSession,
         generation: Long,
     ) {
+        val runtimeConfig = currentTun2SocksConfig()
+        val halfRampDelayMs = runtimeConfig.postRoutingTrafficRampDelayMs / 2
         ensureSessionActive(generation)
         YumeVpnRuntime.appendLog(
             VpnLogLevel.Info,
             "Keeping Android traffic in warm-up briefly so the first post-connect burst does not overload the authenticated Yume session.",
         )
-        delay(POST_ROUTING_TRAFFIC_RAMP_DELAY_MS / 2)
+        delay(halfRampDelayMs)
         ensureSessionActive(generation)
         session.ping(timeoutMs = PRE_ROUTING_PING_TIMEOUT_MS)
-        delay(POST_ROUTING_TRAFFIC_RAMP_DELAY_MS - (POST_ROUTING_TRAFFIC_RAMP_DELAY_MS / 2))
+        delay(runtimeConfig.postRoutingTrafficRampDelayMs - halfRampDelayMs)
         ensureSessionActive(generation)
         session.ping(timeoutMs = PRE_ROUTING_PING_TIMEOUT_MS)
     }
@@ -1430,20 +1415,10 @@ class YumeVpnService : VpnService() {
     ) {
         val appRelayIp = relayExitIpResult.getOrNull()?.trim().orEmpty().ifBlank { null }
         val effectiveExitIp = verification.exitIp ?: appRelayIp
-        val relaySummary = if (verification.systemTrafficVerified && verification.exitIp != null) {
-            buildString {
-                append("System traffic verified through Yume: ${verification.exitIp}.")
-                if (appRelayIp != null && appRelayIp != verification.exitIp) {
-                    append(" Control-path relay canary: $appRelayIp.")
-                }
-            }
-        } else {
-            buildString {
-                append("Relay canary is stable")
-                if (appRelayIp != null) {
-                    append(" with Yume exit IP $appRelayIp")
-                }
-                append(". The Yume app is excluded from its own VPN path for control-socket stability, so routed verification does not use an in-app raw socket.")
+        val relaySummary = buildString {
+            append("System traffic verified through Yume: ${verification.exitIp ?: "unknown"}.")
+            if (appRelayIp != null && appRelayIp != verification.exitIp) {
+                append(" Control-path relay canary: $appRelayIp.")
             }
         }
         YumeVpnRuntime.update { current ->
@@ -1451,11 +1426,7 @@ class YumeVpnService : VpnService() {
                 phase = VpnPhase.Connected,
                 activeProfileId = profile.id,
                 headline = "Protected",
-                detail = if (verification.systemTrafficVerified) {
-                    "Systemwide Android VPN traffic is flowing through Yume ${bootstrap.serverVersion} with ${bootstrap.verity.summary}."
-                } else {
-                    "Android VPN traffic is flowing through Yume ${bootstrap.serverVersion} with ${bootstrap.verity.summary}. The Yume app itself stays outside the tunnel so the authenticated control path remains stable."
-                },
+                detail = "Traffic is flowing through Yume.",
                 endpointLabel = profile.endpointLabel,
                 sessionDnsServers = effectiveVpnDnsServers(profile),
                 sessionMtu = profile.mtu,
@@ -1468,11 +1439,7 @@ class YumeVpnService : VpnService() {
                 innerSummary = buildInnerSummary(bootstrap),
                 hopSummary = buildHopSummary(bootstrap),
                 veritySummary = bootstrap.verity.summary,
-                routingSummary = if (verification.systemTrafficVerified) {
-                    "${BuildConfig.YUME_ROUTING_MODE} (IPv4 relay, IPv6 fail-closed)"
-                } else {
-                    "${BuildConfig.YUME_ROUTING_MODE} (IPv4 relay, IPv6 fail-closed; Yume app excluded from the VPN path for control stability)"
-                },
+                routingSummary = "${BuildConfig.YUME_ROUTING_MODE} (IPv4 relay, IPv6 fail-closed)",
                 yumeProtocolVersion = BuildConfig.YUME_PROTOCOL_VERSION,
                 basefwxVersion = BuildConfig.BASEFWX_ENGINE_VERSION,
                 serverMode = bootstrap.serverMode,
@@ -1495,15 +1462,15 @@ class YumeVpnService : VpnService() {
         val relaySummary = relayExitIp?.let { "Verified app relay traffic via Yume. Exit IP: $it." }
             ?: "Authenticated control path is up, but the relay canary failed."
         val detail = if (tun2SocksActive || tunInterface != null) {
-            "The Android VPN tunnel is up and the local Yume gateway at $proxyAddress is being verified for routed traffic."
+            "Tunnel is up. Verifying traffic."
         } else {
-            "Authenticated Yume relay traffic is ready at $proxyAddress while Android finishes tunnel startup."
+            "Relay is ready. Waiting to start routing."
         }
         YumeVpnRuntime.update { current ->
             current.copy(
-                phase = VpnPhase.BootstrapReady,
+                phase = VpnPhase.Verifying,
                 activeProfileId = profile.id,
-                headline = "Relay ready",
+                headline = "Verifying route",
                 detail = detail,
                 endpointLabel = profile.endpointLabel,
                 sessionDnsServers = effectiveVpnDnsServers(profile),
@@ -1517,7 +1484,7 @@ class YumeVpnService : VpnService() {
                 innerSummary = buildInnerSummary(bootstrap),
                 hopSummary = buildHopSummary(bootstrap),
                 veritySummary = bootstrap.verity.summary,
-                routingSummary = "Local Yume SOCKS5 gateway $proxyAddress is ready while Android verifies routed traffic with IPv6 held fail-closed.",
+                routingSummary = "Android is verifying routed traffic against the authenticated relay canary with IPv6 held fail-closed.",
                 yumeProtocolVersion = BuildConfig.YUME_PROTOCOL_VERSION,
                 basefwxVersion = BuildConfig.BASEFWX_ENGINE_VERSION,
                 serverMode = bootstrap.serverMode,
@@ -1736,40 +1703,34 @@ class YumeVpnService : VpnService() {
 
     private fun buildInnerSummary(bootstrap: com.fixcraft.yume.transport.YumeServerBootstrap): String {
         if (!bootstrap.innerSupported || !bootstrap.capPq) {
-            return "Server does not support PQ inner crypto"
+            return "Inner off"
         }
-        val mode = when {
-            bootstrap.innerDual -> "dual"
-            bootstrap.innerMode.isNotBlank() -> bootstrap.innerMode
-            else -> "available"
+        if (!bootstrap.innerActive) {
+            return "Inner available"
         }
-        val kdf = when {
-            bootstrap.capArgon2 -> "Argon2 preferred"
-            bootstrap.capPbkdf2 -> "PBKDF2 fallback"
-            else -> "server default KDF"
+        return when {
+            bootstrap.innerDual -> "Inner dual"
+            bootstrap.innerMode.equals("heavy", ignoreCase = true) -> "Inner heavy"
+            bootstrap.innerMode.equals("light", ignoreCase = true) -> "Inner light"
+            bootstrap.innerMode.isNotBlank() -> "Inner ${bootstrap.innerMode.lowercase(Locale.US)}"
+            else -> "Inner on"
         }
-        val active = if (bootstrap.innerActive) {
-            "active for this Android Yume session"
-        } else {
-            "supported by the server but not active for this session"
-        }
-        return "Supports $mode inner crypto; $kdf; $active"
     }
 
     private fun buildHopSummary(bootstrap: com.fixcraft.yume.transport.YumeServerBootstrap): String {
         if (hopCompatibilityMode) {
-            return "Server hop disabled for this Android compatibility session"
+            return "Hop off"
         }
         if (!bootstrap.hopEnabled) {
-            return "Server hopping is off"
+            return "Hop off"
         }
         if (bootstrap.hopIntervalMs <= 0) {
-            return "Server hopping is enabled"
+            return "Hop on"
         }
         val hz = 1000.0 / bootstrap.hopIntervalMs.toDouble()
         return String.format(
             java.util.Locale.US,
-            "Server hop ON - %.2fHz | active for this Android Yume session",
+            "Hop %.2f Hz",
             hz,
         )
     }
@@ -1834,6 +1795,7 @@ class YumeVpnService : VpnService() {
         }
         val proxy = socksProxy ?: YumeSocks5Proxy(
             scope = serviceScope,
+            runtimeConfig = currentTun2SocksConfig(),
             sessionProvider = { bootstrapSession },
             dnsServersProvider = { activeProfile?.let(::effectiveVpnDnsServers).orEmpty() },
             ipv4OnlyMode = true,
@@ -1842,6 +1804,7 @@ class YumeVpnService : VpnService() {
             protectedAddressResolver = { host ->
                 runCatching { resolveProtectedAddresses(host) }.getOrDefault(emptySet())
             },
+            mappedHostResolver = { host -> lookupMappedTunnelHost(host) },
             log = { level, message -> YumeVpnRuntime.appendLog(level, message) },
         ).also { socksProxy = it }
         val address = proxy.start()
@@ -1887,25 +1850,14 @@ class YumeVpnService : VpnService() {
             .lowercase(Locale.US)
     }
 
+    private fun lookupMappedTunnelHost(host: String): String? {
+        return runCatching { tun2SocksBridge.TProxyLookupMappedHost(host) }
+            .getOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+    }
+
     private fun applyVpnBypassPolicy(builder: Builder) {
-        selfExcludedFromVpnPath = false
-        if (ANDROID_SELF_EXCLUDED_FROM_VPN_DEFAULT) {
-            val excluded = runCatching {
-                builder.addDisallowedApplication(packageName)
-            }.isSuccess
-            if (excluded) {
-                selfExcludedFromVpnPath = true
-                YumeVpnRuntime.appendLog(
-                    VpnLogLevel.Info,
-                    "Excluding the Yume app from its own Android VPN path so the authenticated control socket and local gateway stay outside the tunnel.",
-                )
-                return
-            }
-            YumeVpnRuntime.appendLog(
-                VpnLogLevel.Warn,
-                "Android refused to exclude the Yume app from its own VPN path. Falling back to protected-socket routing inside the tunnel.",
-            )
-        }
         YumeVpnRuntime.appendLog(
             VpnLogLevel.Info,
             "Keeping the Yume app inside the Android VPN path. Control sockets are protected individually and the active server IPv4 routes are excluded explicitly.",
@@ -2009,6 +1961,10 @@ class YumeVpnService : VpnService() {
         socksProxy?.setStartupWarmupMode(enabled)
     }
 
+    private fun setTechniqueVerificationMode(enabled: Boolean) {
+        activeTechniqueDataPlane?.setVerificationMode(enabled) ?: setProxyWarmupMode(enabled)
+    }
+
     private fun updateUnderlyingNetworks() {
         if (tunInterface == null) {
             return
@@ -2065,6 +2021,47 @@ class YumeVpnService : VpnService() {
     private fun describeUpstreamNetwork(): String {
         val network = upstreamNetwork ?: connectivityManager.activeNetwork ?: return "Unavailable"
         return describeNetwork(network)
+    }
+
+    private fun resolveTechniqueEngine(settings: AppSettings): TunnelTechniqueEngine {
+        return when (settings.connectionTechnique) {
+            ConnectionTechnique.Tun2SocksStable -> Tun2SocksTechniqueEngine
+            ConnectionTechnique.NativeDirectAlpha -> {
+                if (BuildConfig.ENABLE_NATIVE_DIRECT_ALPHA) {
+                    NativeDirectTechniqueEngine
+                } else {
+                    Tun2SocksTechniqueEngine
+                }
+            }
+        }
+    }
+
+    private fun effectiveTun2SocksConfig(runtimeConfig: TunnelRuntimeConfig): Tun2SocksRuntimeConfig {
+        return when (runtimeConfig) {
+            is Tun2SocksRuntimeConfig -> runtimeConfig
+            is NativeDirectRuntimeConfig -> runtimeConfig.bridgeTuning
+        }
+    }
+
+    private fun readActiveTechniqueStats(): TechniqueStats? {
+        if (!tun2SocksActive) {
+            return null
+        }
+        val values = runCatching { tun2SocksBridge.TProxyGetStats() }.getOrNull() ?: return null
+        if (values.size < 4) {
+            return null
+        }
+        return TechniqueStats(
+            txPackets = values[0],
+            txBytes = values[1],
+            rxPackets = values[2],
+            rxBytes = values[3],
+        )
+    }
+
+    private fun currentTun2SocksConfig(): Tun2SocksRuntimeConfig {
+        return activeTun2SocksConfig
+            ?: (Tun2SocksTechniqueEngine.runtimeConfig(PerformanceProfile.Balanced) as Tun2SocksRuntimeConfig)
     }
 
     private fun ensureSessionActive(generation: Long) {
@@ -2153,18 +2150,10 @@ class YumeVpnService : VpnService() {
         private const val EXTRA_PROFILE_ID = "extra_profile_id"
         private const val LOOPBACK_HOST = "127.0.0.1"
         private const val CONNECT_TIMEOUT_MS = 8_000
-        // Start Android on the same full-protection path as the desktop client now that the
-        // original transport/session corruption fixes are in place. Compatibility mode remains
-        // available as an automatic fallback after a real corruption-style reset.
         private const val ANDROID_HOP_COMPATIBILITY_DEFAULT = false
         private const val ANDROID_INNER_COMPATIBILITY_DEFAULT = false
-        // Excluding the app from its own VPN path avoids Android hairpinning the control socket
-        // and the local SOCKS gateway back through the tunnel under load.
-        private const val ANDROID_SELF_EXCLUDED_FROM_VPN_DEFAULT = true
         private const val KEEPALIVE_PING_INTERVAL_MS = 15_000L
-        private const val PRE_ROUTING_STABILITY_DELAY_MS = 1_500L
         private const val PRE_ROUTING_PING_TIMEOUT_MS = 3_000
-        private const val POST_ROUTING_TRAFFIC_RAMP_DELAY_MS = 8_000L
         private const val TUN2SOCKS_STARTUP_DELAY_MS = 800L
         private val RELAY_PROBE_TARGETS = listOf(
             Triple("ifconfig.me", "/ip", 80),
