@@ -1,0 +1,101 @@
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
+}
+
+val basefwxJavaOutputDir = layout.buildDirectory.dir("generated/basefwx-java")
+val syncBasefwxJava by tasks.registering(Sync::class) {
+    from(rootProject.file("../../yume/basefwx/java/src/main/java")) {
+        include("com/fixcraft/basefwx/Crypto.java")
+        include("com/fixcraft/basefwx/Constants.java")
+    }
+    into(basefwxJavaOutputDir)
+}
+
+android {
+    namespace = "com.fixcraft.yume"
+    compileSdk {
+        version = release(36) {
+            minorApiLevel = 1
+        }
+    }
+
+    defaultConfig {
+        applicationId = "com.fixcraft.yume"
+        minSdk = 28
+        targetSdk = 36
+        versionCode = 1
+        versionName = "1.0"
+        buildConfigField("String", "YUME_PROTOCOL_VERSION", "\"1.0A\"")
+        buildConfigField("String", "BASEFWX_ENGINE_VERSION", "\"3.6.4\"")
+        buildConfigField("String", "YUME_PROTECTION_POLICY", "\"Auto (highest available)\"")
+        buildConfigField(
+            "String",
+            "YUME_ROUTING_MODE",
+            "\"Systemwide Android VpnService routing through tun2socks into the local Yume SOCKS5 gateway; the upstream control socket is protected to avoid loops.\""
+        )
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    externalNativeBuild {
+        ndkBuild {
+            path = file("src/main/jni/hev-socks5-tunnel/Android.mk")
+        }
+    }
+
+    sourceSets {
+        getByName("main") {
+            java.srcDir(basefwxJavaOutputDir.get().asFile)
+        }
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn(syncBasefwxJava)
+}
+
+dependencies {
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.activity.compose)
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.google.material)
+    implementation(libs.bouncycastle.prov)
+    implementation(libs.bouncycastle.pkix)
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    debugImplementation(libs.androidx.compose.ui.tooling)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
+}
