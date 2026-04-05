@@ -6,6 +6,7 @@ import com.fixcraft.yume.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.Locale
 
 enum class ConnectionTechnique(
     val wireValue: String,
@@ -17,14 +18,19 @@ enum class ConnectionTechnique(
         displayName = "Tun2Socks stable",
         description = "Stable Android path through tun2socks.",
     ),
-    NativeDirectAlpha(
-        wireValue = "native_direct_alpha",
-        displayName = "Native direct",
-        description = "Experimental native path.",
+    NativeDirectBeta(
+        wireValue = "native_direct_beta",
+        displayName = "Native direct beta",
+        description = "Bridge-backed beta path with tighter tuning.",
     );
 
     companion object {
-        fun fromWireValue(value: String): ConnectionTechnique? = entries.firstOrNull { it.wireValue == value }
+        fun fromWireValue(value: String): ConnectionTechnique? {
+            return when (value) {
+                "native_direct_alpha" -> NativeDirectBeta
+                else -> entries.firstOrNull { it.wireValue == value }
+            }
+        }
     }
 }
 
@@ -56,23 +62,12 @@ enum class PerformanceProfile(
 
 enum class ThemeColorMode(
     val wireValue: String,
-    val displayName: String,
-    val description: String,
 ) {
     Yume(
         wireValue = "yume",
-        displayName = "Yume",
-        description = "Muted built-in colors.",
     ),
     System(
         wireValue = "system",
-        displayName = "System",
-        description = "Material You on Android 12+.",
-    ),
-    Amoled(
-        wireValue = "amoled",
-        displayName = "AMOLED",
-        description = "True black dark theme.",
     );
 
     companion object {
@@ -80,14 +75,109 @@ enum class ThemeColorMode(
     }
 }
 
+sealed class AppLanguage(
+    val wireValue: String,
+) {
+    open val localeTag: String? = null
+
+    data object SystemDefault : AppLanguage("system")
+
+    sealed class Maintained(
+        wireValue: String,
+        final override val localeTag: String,
+    ) : AppLanguage(wireValue) {
+        data object English : Maintained("en", "en")
+
+        data object Russian : Maintained("ru", "ru")
+
+        data object Japanese : Maintained("ja", "ja")
+    }
+
+    data class AutoTranslated(
+        private val targetLocaleTag: String,
+    ) : AppLanguage("auto:${normalizeLanguageTag(targetLocaleTag)}") {
+        override val localeTag: String = normalizeLanguageTag(targetLocaleTag)
+    }
+
+    val isMaintained: Boolean
+        get() = this is Maintained
+
+    val isAutoTranslated: Boolean
+        get() = this is AutoTranslated
+
+    fun resolve(systemLocale: Locale = Locale.getDefault()): ResolvedAppLanguage {
+        val requestedTag = when (this) {
+            SystemDefault -> systemLocale.toLanguageTag()
+            is Maintained -> localeTag
+            is AutoTranslated -> localeTag
+        }
+        val normalizedTag = normalizeLanguageTag(requestedTag)
+        return when (Locale.forLanguageTag(normalizedTag).language.lowercase(Locale.ROOT)) {
+            Maintained.English.localeTag -> ResolvedAppLanguage.English
+            Maintained.Russian.localeTag -> ResolvedAppLanguage.Russian
+            Maintained.Japanese.localeTag -> ResolvedAppLanguage.Japanese
+            else -> ResolvedAppLanguage.AutoTranslated(normalizedTag)
+        }
+    }
+
+    companion object {
+        val maintainedEntries: List<Maintained> = listOf(
+            Maintained.English,
+            Maintained.Russian,
+            Maintained.Japanese,
+        )
+
+        fun fromWireValue(value: String?): AppLanguage {
+            val normalizedValue = value.orEmpty().trim()
+            if (normalizedValue.isEmpty() || normalizedValue == SystemDefault.wireValue) {
+                return SystemDefault
+            }
+            maintainedEntries.firstOrNull { it.wireValue == normalizedValue }?.let { return it }
+            if (normalizedValue.startsWith("auto:", ignoreCase = true)) {
+                val localeTag = normalizedValue.substringAfter(':').trim()
+                if (localeTag.isNotEmpty()) {
+                    return AutoTranslated(localeTag)
+                }
+            }
+            return AutoTranslated(normalizedValue)
+        }
+
+        fun fromLocaleTag(localeTag: String): AppLanguage {
+            val normalizedTag = normalizeLanguageTag(localeTag)
+            val languageCode = Locale.forLanguageTag(normalizedTag).language.lowercase(Locale.ROOT)
+            return maintainedEntries.firstOrNull { it.localeTag == languageCode } ?: AutoTranslated(normalizedTag)
+        }
+
+        private fun normalizeLanguageTag(localeTag: String): String {
+            return Locale.forLanguageTag(localeTag.trim()).toLanguageTag().ifBlank { "en" }
+        }
+    }
+}
+
+sealed class ResolvedAppLanguage(
+    open val localeTag: String,
+) {
+    data object English : ResolvedAppLanguage("en")
+
+    data object Russian : ResolvedAppLanguage("ru")
+
+    data object Japanese : ResolvedAppLanguage("ja")
+
+    data class AutoTranslated(
+        override val localeTag: String,
+    ) : ResolvedAppLanguage(localeTag)
+}
+
 data class AppSettings(
     val connectionTechnique: ConnectionTechnique = ConnectionTechnique.Tun2SocksStable,
     val performanceProfile: PerformanceProfile = PerformanceProfile.Balanced,
     val themeColorMode: ThemeColorMode = ThemeColorMode.Yume,
+    val amoledDarkTheme: Boolean = false,
+    val language: AppLanguage = AppLanguage.SystemDefault,
 )
 
 class AppSettingsStore private constructor(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private val _settings = MutableStateFlow(loadSettings())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
@@ -105,6 +195,14 @@ class AppSettingsStore private constructor(context: Context) {
         persist(_settings.value.copy(themeColorMode = mode))
     }
 
+    fun updateAmoledDarkTheme(enabled: Boolean) {
+        persist(_settings.value.copy(amoledDarkTheme = enabled))
+    }
+
+    fun updateLanguage(language: AppLanguage) {
+        persist(_settings.value.copy(language = language))
+    }
+
     private fun loadSettings(): AppSettings {
         val storedTechnique = prefs.getString(KEY_CONNECTION_TECHNIQUE, null)
             ?.let(ConnectionTechnique::fromWireValue)
@@ -112,13 +210,21 @@ class AppSettingsStore private constructor(context: Context) {
         val storedProfile = prefs.getString(KEY_PERFORMANCE_PROFILE, null)
             ?.let(PerformanceProfile::fromWireValue)
             ?: PerformanceProfile.Balanced
-        val storedThemeColorMode = prefs.getString(KEY_THEME_COLOR_MODE, null)
+        val storedThemeModeValue = prefs.getString(KEY_THEME_COLOR_MODE, null)
+        val storedThemeColorMode = storedThemeModeValue
             ?.let(ThemeColorMode::fromWireValue)
             ?: ThemeColorMode.Yume
+        val storedAmoledDarkTheme = prefs.getBoolean(
+            KEY_AMOLED_DARK_THEME,
+            storedThemeModeValue == LEGACY_THEME_MODE_AMOLED,
+        )
+        val storedLanguage = AppLanguage.fromWireValue(prefs.getString(KEY_LANGUAGE, null))
         return AppSettings(
             connectionTechnique = sanitizeTechnique(storedTechnique),
             performanceProfile = storedProfile,
             themeColorMode = storedThemeColorMode,
+            amoledDarkTheme = storedAmoledDarkTheme,
+            language = storedLanguage,
         )
     }
 
@@ -127,12 +233,14 @@ class AppSettingsStore private constructor(context: Context) {
             putString(KEY_CONNECTION_TECHNIQUE, settings.connectionTechnique.wireValue)
             putString(KEY_PERFORMANCE_PROFILE, settings.performanceProfile.wireValue)
             putString(KEY_THEME_COLOR_MODE, settings.themeColorMode.wireValue)
+            putBoolean(KEY_AMOLED_DARK_THEME, settings.amoledDarkTheme)
+            putString(KEY_LANGUAGE, settings.language.wireValue)
         }
         _settings.value = settings
     }
 
     private fun sanitizeTechnique(technique: ConnectionTechnique): ConnectionTechnique {
-        return if (technique == ConnectionTechnique.NativeDirectAlpha && !BuildConfig.ENABLE_NATIVE_DIRECT_ALPHA) {
+        return if (technique == ConnectionTechnique.NativeDirectBeta && !BuildConfig.ENABLE_NATIVE_DIRECT_BETA) {
             ConnectionTechnique.Tun2SocksStable
         } else {
             technique
@@ -144,13 +252,24 @@ class AppSettingsStore private constructor(context: Context) {
         private const val KEY_CONNECTION_TECHNIQUE = "connection_technique"
         private const val KEY_PERFORMANCE_PROFILE = "performance_profile"
         private const val KEY_THEME_COLOR_MODE = "theme_color_mode"
+        private const val KEY_AMOLED_DARK_THEME = "amoled_dark_theme"
+        private const val KEY_LANGUAGE = "language"
+        private const val LEGACY_THEME_MODE_AMOLED = "amoled"
 
         @Volatile
         private var instance: AppSettingsStore? = null
 
+        fun readLanguage(context: Context): AppLanguage {
+            return AppLanguage.fromWireValue(
+                context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .getString(KEY_LANGUAGE, null)
+            )
+        }
+
         fun get(context: Context): AppSettingsStore {
+            val storeContext = context.applicationContext ?: context
             return instance ?: synchronized(this) {
-                instance ?: AppSettingsStore(context).also { instance = it }
+                instance ?: AppSettingsStore(storeContext).also { instance = it }
             }
         }
     }

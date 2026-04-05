@@ -1,5 +1,7 @@
 package com.fixcraft.yume.vpn
 
+import java.util.Locale
+
 internal object YumeTrafficPolicy {
     private val dedicatedEncryptedDnsPorts = setOf(853)
 
@@ -24,6 +26,6 @@ internal object YumeTrafficPolicy {
             .removePrefix("[")
             .removeSuffix("]")
             .substringBefore('%')
-            .lowercase()
+            .lowercase(Locale.ROOT)
     }
 }

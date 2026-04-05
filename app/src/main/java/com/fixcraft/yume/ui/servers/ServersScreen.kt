@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.fixcraft.yume.MainUiState
 import com.fixcraft.yume.data.SecureMaterialStore
+import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.home.ProfileDraft
 import com.fixcraft.yume.ui.home.ProfileEditorDialog
 import com.fixcraft.yume.ui.home.ServersSection
@@ -33,6 +34,7 @@ fun ServersScreen(
     onDeleteProfile: (String) -> Unit,
     onSaveProfile: (String?, String, String, String, String, String, String, Boolean, String, String, String) -> String?,
 ) {
+    val strings = appStrings()
     var editorDraft by remember { mutableStateOf<ProfileDraft?>(null) }
 
     LazyColumn(
@@ -42,6 +44,7 @@ fun ServersScreen(
     ) {
         item {
             Card(
+                modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)),
             ) {
                 Column(
@@ -49,11 +52,11 @@ fun ServersScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Text(
-                        text = "Saved servers",
+                        text = strings.serversTitle,
                         style = MaterialTheme.typography.headlineSmall,
                     )
                     Text(
-                        text = "Host, TLS name, DNS, MTU, and assigned keys.",
+                        text = strings.serversSubtitle,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -66,24 +69,27 @@ fun ServersScreen(
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Add server")
+                        Text(strings.addServer)
                     }
                 }
             }
         }
 
-        item {
-            ServersSection(
-                profiles = uiState.profiles,
-                selectedProfileId = uiState.selectedProfileId,
-                activeProfileId = uiState.vpnState.activeProfileId,
-                vpnPhase = uiState.vpnState.phase,
-                onSelectProfile = onSelectProfile,
-                onDeleteProfile = onDeleteProfile,
-                onEditProfile = { profile ->
-                    editorDraft = profile.toDraft()
-                },
-            )
+        if (uiState.profiles.isNotEmpty()) {
+            item {
+                ServersSection(
+                    profiles = uiState.profiles,
+                    selectedProfileId = uiState.selectedProfileId,
+                    activeProfileId = uiState.vpnState.activeProfileId,
+                    vpnPhase = uiState.vpnState.phase,
+                    onSelectProfile = onSelectProfile,
+                    onDeleteProfile = onDeleteProfile,
+                    onEditProfile = { profile ->
+                        editorDraft = profile.toDraft()
+                    },
+                    showHeader = false,
+                )
+            }
         }
     }
 

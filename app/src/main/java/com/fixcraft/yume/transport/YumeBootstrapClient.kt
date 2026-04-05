@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.SystemClock
 import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.data.ServerProfile
+import org.conscrypt.Conscrypt
 import org.bouncycastle.asn1.ASN1OctetString
 import org.bouncycastle.asn1.edec.EdECObjectIdentifiers
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo
@@ -54,7 +55,9 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLHandshakeException
 import javax.net.ssl.SSLParameters
+import javax.net.ssl.SSLProtocolException
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.TrustManagerFactory
 import kotlin.math.abs
@@ -980,6 +983,9 @@ object YumeBootstrapClient {
             "-----END PUBLIC KEY-----\n"
 
     private val provider: Provider by lazy { BouncyCastleProvider() }
+    private val tlsProvider: Provider? by lazy {
+        runCatching { Conscrypt.newProvider() }.getOrNull()
+    }
     private val pemConverter: JcaPEMKeyConverter by lazy {
         JcaPEMKeyConverter().setProvider(provider)
     }
@@ -1016,20 +1022,42 @@ object YumeBootstrapClient {
                 if (attempt > 1) {
                     log?.invoke("Retry attempt $attempt/$MAX_CONNECT_ATTEMPTS with a fresh protected socket.")
                 }
-                val sslContext = buildSystemTlsContext()
-                sslSocket = (sslContext.socketFactory.createSocket(
+                val tlsContext = buildSystemTlsContext()
+                log?.invoke("Using TLS provider: ${tlsContext.providerLabel}.")
+                sslSocket = (tlsContext.context.socketFactory.createSocket(
                     rawSocket,
                     profile.serverName,
                     profile.port,
                     true,
                 ) as SSLSocket).apply {
                     useClientMode = true
+                    val supportedProtocols = supportedProtocols.toSet()
+                    if ("TLSv1.3" !in supportedProtocols) {
+                        throw YumeBootstrapException(
+                            "This Android TLS stack does not support TLS 1.3, which Yume requires on :443",
+                        )
+                    }
                     sslParameters = SSLParameters().also { parameters ->
                         parameters.endpointIdentificationAlgorithm = "HTTPS"
                         parameters.serverNames = listOf(SNIHostName(profile.serverName))
                     }
                     soTimeout = AUTH_TIMEOUT_MS
-                    startHandshake()
+                    try {
+                        startHandshake()
+                    } catch (throwable: Exception) {
+                        val detail = throwable.message?.trim().orEmpty()
+                        if (throwable is SSLHandshakeException || throwable is SSLProtocolException) {
+                            throw YumeBootstrapException(
+                                if (detail.isNotEmpty()) {
+                                    "TLS handshake failed: $detail"
+                                } else {
+                                    "TLS handshake failed on this Android TLS provider"
+                                },
+                                throwable,
+                            )
+                        }
+                        throw throwable
+                    }
                 }
                 log?.invoke("TLS handshake completed: ${sslSocket.session.protocol} ${sslSocket.session.cipherSuite}.")
 
@@ -1929,16 +1957,27 @@ object YumeBootstrapClient {
         return digest.joinToString(separator = "") { byte -> "%02x".format(Locale.US, byte) }
     }
 
-    private fun buildSystemTlsContext(): SSLContext {
+    private fun buildSystemTlsContext(): TlsContext {
         val trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
         trustManagerFactory.init(null as KeyStore?)
-        return SSLContext.getInstance("TLS").apply {
-            init(null, trustManagerFactory.trustManagers, SecureRandom())
+        val provider = tlsProvider
+        val context = if (provider != null) {
+            SSLContext.getInstance("TLS", provider)
+        } else {
+            SSLContext.getInstance("TLS")
         }
+        context.init(null, trustManagerFactory.trustManagers, SecureRandom())
+        val providerLabel = provider?.name ?: context.provider?.name ?: "System"
+        return TlsContext(context, providerLabel)
     }
 
     private data class LoadedAuthMaterial(
         val privateKey: PrivateKey,
         val publicKeyPem: String,
+    )
+
+    private data class TlsContext(
+        val context: SSLContext,
+        val providerLabel: String,
     )
 }

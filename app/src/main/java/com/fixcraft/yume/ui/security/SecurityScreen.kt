@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Card
@@ -18,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.fixcraft.yume.MainUiState
+import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.home.MaterialTextDialog
 import com.fixcraft.yume.ui.home.MaterialTextDraft
 import com.fixcraft.yume.ui.home.MaterialTextKind
@@ -32,6 +34,7 @@ fun SecurityScreen(
     onSaveAuthKeyText: (String, String) -> String?,
     onDeleteMaterial: (String) -> Unit,
 ) {
+    val strings = appStrings()
     var materialDraft by remember { mutableStateOf<MaterialTextDraft?>(null) }
 
     LazyColumn(
@@ -41,6 +44,7 @@ fun SecurityScreen(
     ) {
         item {
             Card(
+                modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)),
             ) {
                 Column(
@@ -48,17 +52,21 @@ fun SecurityScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        text = "Trust and auth material",
+                        text = strings.selectedServerLabel,
                         style = MaterialTheme.typography.headlineSmall,
                     )
                     Text(
-                        text = "Manage CA and auth keys.",
+                        text = strings.securitySubtitle,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     uiState.selectedProfile?.let { profile ->
                         Text(
-                            text = "Selected server: ${profile.name} • Anonym CA ${uiState.selectedCaMaterial?.displayName ?: "Missing"} • Auth key ${uiState.selectedAuthKeyMaterial?.displayName ?: "Not assigned"}",
+                            text = strings.selectedServerSummary(
+                                profile.name,
+                                uiState.selectedCaMaterial?.displayName ?: strings.missing,
+                                uiState.selectedAuthKeyMaterial?.displayName ?: strings.notAssigned,
+                            ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -78,18 +86,19 @@ fun SecurityScreen(
                 onPasteCa = {
                     materialDraft = MaterialTextDraft(
                         kind = MaterialTextKind.AnonymCa,
-                        title = "Paste anonym CA",
-                        name = "Imported CA",
+                        title = strings.pasteAnonymCaTitle,
+                        name = strings.importedCaName,
                     )
                 },
                 onPasteAuthKey = {
                     materialDraft = MaterialTextDraft(
                         kind = MaterialTextKind.AuthKey,
-                        title = "Paste auth key",
-                        name = "Imported auth key",
+                        title = strings.pasteAuthKeyTitle,
+                        name = strings.importedAuthKeyName,
                     )
                 },
                 onDeleteMaterial = onDeleteMaterial,
+                showHeader = false,
             )
         }
     }

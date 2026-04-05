@@ -2,6 +2,7 @@ package com.fixcraft.yume
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.net.Uri
@@ -16,19 +17,40 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fixcraft.yume.data.AppLanguage
 import com.fixcraft.yume.data.SecureMaterialType
+import com.fixcraft.yume.i18n.AppLanguageCatalog
+import com.fixcraft.yume.i18n.AppLocaleManager
+import com.fixcraft.yume.i18n.AutoTranslationRuntime
+import com.fixcraft.yume.i18n.LanguagePreparationProgress
+import com.fixcraft.yume.i18n.LanguagePreparationStage
+import com.fixcraft.yume.i18n.appStrings
+import com.fixcraft.yume.ui.LanguagePreparationUiState
 import com.fixcraft.yume.ui.YumeApp
 import com.fixcraft.yume.ui.theme.YumeVPNTheme
 import com.fixcraft.yume.vpn.VpnConnectionState
 import com.fixcraft.yume.vpn.VpnLogLevel
 import com.fixcraft.yume.vpn.VpnPhase
 import com.fixcraft.yume.vpn.YumeVpnRuntime
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLocaleManager.wrap(newBase))
+    }
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -41,8 +63,8 @@ class MainActivity : ComponentActivity() {
             YumeVpnRuntime.update(
                 VpnConnectionState(
                     phase = VpnPhase.Error,
-                    headline = "Permission denied",
-                    detail = "Android VPN permission was denied. Yume cannot create a VPN interface without it.",
+                    headline = appStrings(this, viewModel.uiState.value.appSettings.language).permissionDeniedHeadline,
+                    detail = appStrings(this, viewModel.uiState.value.appSettings.language).permissionDeniedDetail,
                 )
             )
         }
@@ -88,8 +110,35 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+            val darkTheme = isSystemInDarkTheme()
+            val scope = rememberCoroutineScope()
+            var languagePreparationState by remember { mutableStateOf<LanguagePreparationUiState?>(null) }
+            LaunchedEffect(darkTheme, uiState.appSettings.amoledDarkTheme) {
+                viewModel.syncAmoledDarkTheme(darkTheme)
+            }
+            LaunchedEffect(uiState.appSettings.language.wireValue) {
+                if (languagePreparationState == null &&
+                    AutoTranslationRuntime.needsPreparation(this@MainActivity, uiState.appSettings.language)
+                ) {
+                    val currentStrings = appStrings(this@MainActivity, uiState.appSettings.language)
+                    val prepared = prepareLanguageForUse(
+                        language = uiState.appSettings.language,
+                        strings = currentStrings,
+                        onStateChanged = { languagePreparationState = it },
+                    )
+                    if (!prepared) {
+                        viewModel.reportUiNotice(
+                            currentStrings.languagePreparationFailed(
+                                languageDisplayName(uiState.appSettings.language, currentStrings)
+                            )
+                        )
+                    }
+                }
+            }
             YumeVPNTheme(
+                darkTheme = darkTheme,
                 themeColorMode = uiState.appSettings.themeColorMode,
+                amoledDarkTheme = uiState.appSettings.amoledDarkTheme,
             ) {
                 YumeApp(
                     uiState = uiState,
@@ -110,10 +159,118 @@ class MainActivity : ComponentActivity() {
                     onSelectTechnique = viewModel::updateConnectionTechnique,
                     onSelectPerformanceProfile = viewModel::updatePerformanceProfile,
                     onSelectThemeColorMode = viewModel::updateThemeColorMode,
+                    onSetAmoledDarkTheme = viewModel::updateAmoledDarkTheme,
+                    isDarkTheme = darkTheme,
+                    onSelectLanguage = { language ->
+                        if (uiState.appSettings.language == language || languagePreparationState != null) {
+                            Unit
+                        } else {
+                            scope.launch {
+                                val currentStrings = appStrings(this@MainActivity, uiState.appSettings.language)
+                                val prepared = prepareLanguageForUse(
+                                    language = language,
+                                    strings = currentStrings,
+                                    onStateChanged = { languagePreparationState = it },
+                                )
+                                if (!prepared) {
+                                    viewModel.reportUiNotice(
+                                        currentStrings.languagePreparationFailed(
+                                            languageDisplayName(language, currentStrings)
+                                        )
+                                    )
+                                    return@launch
+                                }
+                                val shouldRecreate = uiState.appSettings.language != language
+                                viewModel.updateLanguage(language)
+                                if (shouldRecreate) {
+                                    recreate()
+                                }
+                            }
+                        }
+                    },
+                    onDeleteDownloadedLanguage = viewModel::deleteDownloadedLanguage,
+                    languagePreparationState = languagePreparationState,
                     diagnosticsReport = viewModel.buildDiagnosticsReport(),
                     onClearNotice = viewModel::clearNotice,
                 )
             }
+        }
+    }
+
+    private suspend fun prepareLanguageForUse(
+        language: AppLanguage,
+        strings: com.fixcraft.yume.i18n.AppStrings,
+        onStateChanged: (LanguagePreparationUiState?) -> Unit,
+    ): Boolean {
+        if (!AutoTranslationRuntime.needsPreparation(this, language)) {
+            onStateChanged(null)
+            return true
+        }
+        val languageName = languageDisplayName(language, strings)
+        onStateChanged(
+            LanguagePreparationUiState(
+                title = strings.preparingLanguageTitle,
+                detail = strings.preparingLanguage(languageName),
+                progress = null,
+            )
+        )
+        val prepared = withContext(Dispatchers.IO) {
+            AutoTranslationRuntime.prepareLanguage(
+                context = this@MainActivity,
+                language = language,
+                onProgress = { progress ->
+                    runOnUiThread {
+                        onStateChanged(buildLanguagePreparationState(strings, languageName, progress))
+                    }
+                },
+            )
+        }
+        if (prepared) {
+            viewModel.refreshDownloadedLanguages()
+        }
+        onStateChanged(null)
+        return prepared
+    }
+
+    private fun buildLanguagePreparationState(
+        strings: com.fixcraft.yume.i18n.AppStrings,
+        languageName: String,
+        progress: LanguagePreparationProgress,
+    ): LanguagePreparationUiState {
+        return when (progress.stage) {
+            LanguagePreparationStage.Downloading -> LanguagePreparationUiState(
+                title = strings.downloadingLanguageTitle,
+                detail = strings.downloadingLanguage(languageName),
+                progress = null,
+            )
+
+            LanguagePreparationStage.Translating -> LanguagePreparationUiState(
+                title = strings.translatingLanguageTitle,
+                detail = strings.translatingLanguage(languageName, progress.done, progress.total),
+                progress = if (progress.total > 0) {
+                    progress.done.toFloat() / progress.total.toFloat()
+                } else {
+                    null
+                },
+            )
+        }
+    }
+
+    private fun languageDisplayName(
+        language: AppLanguage,
+        strings: com.fixcraft.yume.i18n.AppStrings,
+    ): String {
+        return when (language) {
+            AppLanguage.SystemDefault -> {
+                val effective = AppLanguage.fromLocaleTag(AppLocaleManager.resolveSystemLocale(this).toLanguageTag())
+                when (effective) {
+                    is AppLanguage.AutoTranslated -> AppLanguageCatalog.displayName(effective)
+                    else -> strings.languageName(effective)
+                }
+            }
+
+            is AppLanguage.AutoTranslated -> AppLanguageCatalog.displayName(language)
+            else -> strings.languageName(language)
         }
     }
 
@@ -168,7 +325,7 @@ class MainActivity : ComponentActivity() {
                 VpnConnectionState(
                     phase = VpnPhase.Error,
                     activeProfileId = selectedProfileId,
-                    headline = "VPN prepare failed",
+                    headline = appStrings(this, viewModel.uiState.value.appSettings.language).vpnPrepareFailedHeadline,
                     detail = detail,
                 )
             )
@@ -189,13 +346,15 @@ class MainActivity : ComponentActivity() {
             return
         }
         val displayName = queryDisplayName(uri).orEmpty().ifBlank {
-            if (type == SecureMaterialType.AnonymCa) "Imported CA" else "Imported auth key"
+            val strings = appStrings(this, viewModel.uiState.value.appSettings.language)
+            if (type == SecureMaterialType.AnonymCa) strings.importedCaFallbackName else strings.importedAuthKeyFallbackName
         }
         val bytes = runCatching {
             contentResolver.openInputStream(uri)?.use { it.readBytes() }
         }.getOrNull()
         if (bytes == null) {
-            viewModel.reportUiNotice("Failed to read the selected ${type.label.lowercase()}")
+            val strings = appStrings(this, viewModel.uiState.value.appSettings.language)
+            viewModel.reportUiNotice(strings.failedToReadSelected(strings.materialTypeLabel(type)))
             return
         }
         viewModel.importMaterialFromBytes(type, displayName, bytes)

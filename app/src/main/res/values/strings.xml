@@ -1,6 +1,6 @@
 <resources>
     <string name="app_name">Yume VPN</string>
-    <string name="notification_title">Yume VPN · %1$s</string>
+    <string name="notification_title">Yume VPN: %1$s</string>
     <string name="notification_channel_name">Yume VPN session</string>
     <string name="notification_channel_description">Foreground status for active Yume VPN sessions.</string>
     <string name="disconnect">Disconnect</string>

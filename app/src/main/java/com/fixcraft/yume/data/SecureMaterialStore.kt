@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import androidx.core.content.edit
 import com.fixcraft.yume.R
+import com.fixcraft.yume.i18n.appStrings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,9 +25,9 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-enum class SecureMaterialType(val wireValue: String, val label: String) {
-    AnonymCa("anonym_ca", "Anonym CA"),
-    AuthKey("auth_key", "Auth key");
+enum class SecureMaterialType(val wireValue: String) {
+    AnonymCa("anonym_ca"),
+    AuthKey("auth_key");
 
     companion object {
         fun fromWireValue(value: String): SecureMaterialType? = entries.firstOrNull { it.wireValue == value }
@@ -68,11 +69,9 @@ data class SecureMaterialSummary(
             }
             return SecureMaterialSummary(
                 id = id,
-                displayName = json.optString("display_name").ifBlank {
-                    if (type == SecureMaterialType.AnonymCa) "Imported CA" else "Imported auth key"
-                },
+                displayName = json.optString("display_name").trim(),
                 type = type,
-                sourceLabel = json.optString("source_label").ifBlank { "Imported" },
+                sourceLabel = json.optString("source_label").trim(),
                 fingerprint = json.optString("fingerprint"),
                 createdAtEpochMs = json.optLong("created_at_epoch_ms", System.currentTimeMillis()),
             )
@@ -123,10 +122,11 @@ class SecureMaterialStore private constructor(context: Context) {
         rawPemText: String,
         sourceLabel: String = displayName,
     ): SecureMaterialSummary {
+        val strings = strings()
         val normalizedName = displayName.trim().ifEmpty {
-            if (type == SecureMaterialType.AnonymCa) "Imported CA" else "Imported auth key"
+            if (type == SecureMaterialType.AnonymCa) strings.importedCaFallbackName else strings.importedAuthKeyFallbackName
         }
-        val normalizedSource = sourceLabel.trim().ifEmpty { "Imported" }
+        val normalizedSource = sourceLabel.trim().ifEmpty { strings.importedLabel }
         val normalizedPem = normalizeAndValidate(type, rawPemText)
         val summary = SecureMaterialSummary(
             id = UUID.randomUUID().toString(),
@@ -160,13 +160,16 @@ class SecureMaterialStore private constructor(context: Context) {
         return existing
     }
 
+    private fun strings() = appStrings(appContext, AppSettingsStore.readLanguage(appContext))
+
     private fun defaultAnonymCaSummary(): SecureMaterialSummary {
         val pem = normalizePem(readDefaultAnonymCaPem())
+        val strings = strings()
         return SecureMaterialSummary(
             id = DEFAULT_ANONYM_CA_ID,
-            displayName = "Embedded anonym CA",
+            displayName = strings.embeddedAnonymCaName,
             type = SecureMaterialType.AnonymCa,
-            sourceLabel = "Built in",
+            sourceLabel = strings.builtIn,
             fingerprint = shortFingerprint(pem),
             isDefault = true,
             createdAtEpochMs = 0L,
@@ -180,7 +183,7 @@ class SecureMaterialStore private constructor(context: Context) {
     private fun normalizeAndValidate(type: SecureMaterialType, rawPemText: String): String {
         val normalizedPem = normalizePem(rawPemText)
         if (normalizedPem.isBlank()) {
-            throw IllegalArgumentException("${type.label} text is empty")
+            throw IllegalArgumentException(strings().materialTextEmpty(strings().materialTypeLabel(type)))
         }
         when (type) {
             SecureMaterialType.AnonymCa -> validateCaPem(normalizedPem)
@@ -216,12 +219,24 @@ class SecureMaterialStore private constructor(context: Context) {
             return emptyList()
         }
         return runCatching {
+            val strings = strings()
             val array = JSONArray(raw)
             buildList {
                 for (index in 0 until array.length()) {
                     val summary = SecureMaterialSummary.fromJson(array.getJSONObject(index))
                     if (summary != null) {
-                        add(summary)
+                        add(
+                            summary.copy(
+                                displayName = summary.displayName.ifBlank {
+                                    if (summary.type == SecureMaterialType.AnonymCa) {
+                                        strings.importedCaFallbackName
+                                    } else {
+                                        strings.importedAuthKeyFallbackName
+                                    }
+                                },
+                                sourceLabel = summary.sourceLabel.ifBlank { strings.importedLabel },
+                            )
+                        )
                     }
                 }
             }

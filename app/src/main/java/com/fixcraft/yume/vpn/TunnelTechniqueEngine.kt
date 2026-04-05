@@ -95,20 +95,13 @@ data class NativeDirectRuntimeConfig(
     val bridgeTuning: Tun2SocksRuntimeConfig,
     val compatibilityBridgeEnabled: Boolean = true,
 ) : TunnelRuntimeConfig {
-    override val technique: ConnectionTechnique = ConnectionTechnique.NativeDirectAlpha
-    override val summary: String = buildString {
-        append(technique.displayName)
-        append(" / ")
-        append(performanceProfile.displayName)
-        if (compatibilityBridgeEnabled) {
-            append(" (compatibility bridge)")
-        }
-    }
+    override val technique: ConnectionTechnique = ConnectionTechnique.NativeDirectBeta
+    override val summary: String = "${technique.displayName} / ${performanceProfile.displayName}"
     override val diagnosticsSummary: String = buildString {
         appendLine("Technique: ${technique.displayName}")
         appendLine("Profile: ${performanceProfile.displayName}")
         if (compatibilityBridgeEnabled) {
-            appendLine("Status: experimental alpha using the Android compatibility bridge with technique-specific tuning")
+            appendLine("Status: bridge-backed beta path with technique-specific tuning")
         } else {
             appendLine("Status: packet-native data plane")
         }
@@ -188,8 +181,8 @@ object Tun2SocksTechniqueEngine : TunnelTechniqueEngine {
 }
 
 object NativeDirectTechniqueEngine : TunnelTechniqueEngine {
-    override val technique: ConnectionTechnique = ConnectionTechnique.NativeDirectAlpha
-    override val isAvailable: Boolean = BuildConfig.ENABLE_NATIVE_DIRECT_ALPHA
+    override val technique: ConnectionTechnique = ConnectionTechnique.NativeDirectBeta
+    override val isAvailable: Boolean = BuildConfig.ENABLE_NATIVE_DIRECT_BETA
 
     override fun runtimeConfig(profile: PerformanceProfile): TunnelRuntimeConfig {
         return NativeDirectRuntimeConfig(

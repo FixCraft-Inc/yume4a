@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Yume VPN</string>
+    <string name="notification_title">Yume VPN: %1$s</string>
+    <string name="notification_channel_name">Yume VPN セッション</string>
+    <string name="notification_channel_description">アクティブな Yume VPN セッションの foreground 状態です。</string>
+    <string name="disconnect">切断</string>
+</resources>

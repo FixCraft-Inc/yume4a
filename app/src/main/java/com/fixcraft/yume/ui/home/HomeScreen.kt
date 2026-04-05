@@ -17,10 +17,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -30,6 +34,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -50,14 +55,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.fixcraft.yume.AndroidSystemSettings
 import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.MainUiState
+import com.fixcraft.yume.R
 import com.fixcraft.yume.data.SecureMaterialStore
 import com.fixcraft.yume.data.SecureMaterialSummary
 import com.fixcraft.yume.data.ServerProfile
+import com.fixcraft.yume.i18n.appStrings
+import com.fixcraft.yume.ui.theme.YumeErrorContainer
+import com.fixcraft.yume.ui.theme.YumeErrorContent
+import com.fixcraft.yume.ui.theme.YumeProtectedContainer
+import com.fixcraft.yume.ui.theme.YumeProtectedContent
+import com.fixcraft.yume.ui.theme.YumeVerifyContainer
+import com.fixcraft.yume.ui.theme.YumeVerifyContent
+import com.fixcraft.yume.vpn.VpnConnectionState
 import com.fixcraft.yume.vpn.VpnLogEntry
 import com.fixcraft.yume.vpn.VpnLogLevel
 import com.fixcraft.yume.vpn.VpnPhase
@@ -106,6 +122,7 @@ fun HomeScreen(
     onDeleteMaterial: (String) -> Unit,
     onClearNotice: () -> Unit,
 ) {
+    val strings = appStrings()
     val snackbarHostState = remember { SnackbarHostState() }
     var editorDraft by remember { mutableStateOf<ProfileDraft?>(null) }
     var materialDraft by remember { mutableStateOf<MaterialTextDraft?>(null) }
@@ -138,7 +155,7 @@ fun HomeScreen(
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
                 ) {
-                    Text("Add server")
+                    Text(strings.addServer)
                 }
             }
         },
@@ -164,11 +181,11 @@ fun HomeScreen(
             ) {
                 item {
                     IntroBlock(
-                        title = if (hasProfiles) "Your Yume tunnel" else "Set up Yume VPN",
+                        title = if (hasProfiles) strings.yourYumeTunnelTitle else strings.setUpYumeVpnTitle,
                         subtitle = if (hasProfiles) {
-                            "Save trust and auth material locally, pick a gateway, and bring up a loop-safe systemwide Yume VPN on Android."
+                            strings.yourYumeTunnelSubtitle
                         } else {
-                            "Import trust or auth material at any time, then add your first server profile."
+                            strings.setUpYumeVpnSubtitle
                         },
                     )
                 }
@@ -218,15 +235,15 @@ fun HomeScreen(
                         onPasteCa = {
                             materialDraft = MaterialTextDraft(
                                 kind = MaterialTextKind.AnonymCa,
-                                title = "Paste anonym CA",
-                                name = "Imported CA",
+                                title = strings.pasteAnonymCaTitle,
+                                name = strings.importedCaName,
                             )
                         },
                         onPasteAuthKey = {
                             materialDraft = MaterialTextDraft(
                                 kind = MaterialTextKind.AuthKey,
-                                title = "Paste auth key",
-                                name = "Imported auth key",
+                                title = strings.pasteAuthKeyTitle,
+                                name = strings.importedAuthKeyName,
                             )
                         },
                         onDeleteMaterial = onDeleteMaterial,
@@ -336,6 +353,7 @@ private fun EmptyStateCard(
     vpnDetail: String,
     onAddServer: () -> Unit,
 ) {
+    val strings = appStrings()
     Card(
         shape = RoundedCornerShape(30.dp),
         colors = CardDefaults.cardColors(
@@ -348,17 +366,17 @@ private fun EmptyStateCard(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             StatusPill(
-                text = "No servers configured",
+                text = strings.noServersConfigured,
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             )
             Text(
-                text = "Add your first gateway",
+                text = strings.addFirstGatewayTitle,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                text = "Server profiles hold the host, TLS name, DNS, MTU, selected anonym CA, and selected auth key. Saving the first profile auto-selects it.",
+                text = strings.addFirstGatewayDetail,
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -374,7 +392,7 @@ private fun EmptyStateCard(
                 shape = RoundedCornerShape(18.dp),
                 contentPadding = PaddingValues(vertical = 14.dp),
             ) {
-                Text("Add server")
+                Text(strings.addServer)
             }
         }
     }
@@ -392,6 +410,7 @@ private fun SelectedServerCard(
     onShowStatus: () -> Unit,
     onEditServer: () -> Unit,
 ) {
+    val strings = appStrings()
     val phase = uiState.vpnState.phase
     val authReady = selectedAuthKey != null
     val showConnect = authReady &&
@@ -404,9 +423,9 @@ private fun SelectedServerCard(
         phase == VpnPhase.Connected ||
         phase == VpnPhase.Disconnecting
     val connectLabel = when (phase) {
-        VpnPhase.Error -> "Try again"
-        VpnPhase.PermissionRequired -> "Continue"
-        else -> "Connect"
+        VpnPhase.Error -> strings.tryAgain
+        VpnPhase.PermissionRequired -> strings.continueAction
+        else -> strings.connect
     }
 
     Card(
@@ -442,27 +461,19 @@ private fun SelectedServerCard(
                 }
                 StatusPill(
                     text = uiState.vpnState.briefStatus,
-                    containerColor = if (phase == VpnPhase.Verifying || phase == VpnPhase.Connected) {
-                        MaterialTheme.colorScheme.primaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.secondaryContainer
-                    },
-                    contentColor = if (phase == VpnPhase.Verifying || phase == VpnPhase.Connected) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSecondaryContainer
-                    },
+                    containerColor = vpnStatusTone(uiState.vpnState).container,
+                    contentColor = vpnStatusTone(uiState.vpnState).content,
                 )
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatusPill(
-                    text = if (uiState.vpnState.controlSocketProtected) "Loop-safe" else "Waiting",
+                    text = if (uiState.vpnState.controlSocketProtected) strings.loopSafeShort else strings.waiting,
                     containerColor = MaterialTheme.colorScheme.tertiaryContainer,
                     contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
                 )
                 StatusPill(
-                    text = if (uiState.vpnState.vpnInterfaceEstablished) "Interface up" else "Interface idle",
+                    text = if (uiState.vpnState.vpnInterfaceEstablished) strings.interfaceUp else strings.interfaceIdle,
                     containerColor = MaterialTheme.colorScheme.secondaryContainer,
                     contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                 )
@@ -474,17 +485,17 @@ private fun SelectedServerCard(
             )
 
             Text(
-                text = "TLS ${profile.serverName}  •  DNS ${profile.dnsSummary}  •  MTU ${profile.mtu}",
+                text = "${strings.tlsNameLabel}: ${profile.serverName}  •  ${strings.dnsLabel}: ${profile.dnsSummary}  •  ${strings.mtuLabel}: ${profile.mtu}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "Protection: ${uiState.vpnState.requestedProtection}",
+                text = "${strings.protectionShortLabel}: ${uiState.vpnState.requestedProtection}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "Relay: ${uiState.vpnState.relaySummary}",
+                text = "${strings.relayShortLabel}: ${uiState.vpnState.relaySummary}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (uiState.vpnState.exitIp == null) {
                     MaterialTheme.colorScheme.error
@@ -493,11 +504,11 @@ private fun SelectedServerCard(
                 },
             )
             Text(
-                text = "Routing: ${
+                text = "${strings.routingShortLabel}: ${
                     when {
-                        uiState.vpnState.trafficRoutedThroughYume -> "Tunnel active"
-                        uiState.vpnState.localProxyAddress != null -> "Verifying"
-                        else -> "Idle"
+                        uiState.vpnState.trafficRoutedThroughYume -> strings.tunnelActive
+                        uiState.vpnState.localProxyAddress != null -> strings.phaseStatus(VpnPhase.Verifying, protected = false, proxyReady = false)
+                        else -> strings.phaseStatus(VpnPhase.Idle, protected = false, proxyReady = false)
                     }
                 }",
                 style = MaterialTheme.typography.bodyMedium,
@@ -508,12 +519,12 @@ private fun SelectedServerCard(
                 },
             )
             Text(
-                text = "Anonym CA: ${selectedCa?.displayName ?: "Missing"}",
+                text = "${strings.anonymCaLabel}: ${selectedCa?.displayName ?: strings.missing}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "Auth key: ${selectedAuthKey?.displayName ?: "Not assigned"}",
+                text = "${strings.authKeyLabel}: ${selectedAuthKey?.displayName ?: strings.notAssigned}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (selectedAuthKey == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -528,7 +539,7 @@ private fun SelectedServerCard(
 
             uiState.vpnState.upstreamNetworkLabel?.let { upstream ->
                 Text(
-                    text = "Upstream network: $upstream",
+                    text = "${strings.upstreamNetworkReportLabel}: $upstream",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -536,7 +547,7 @@ private fun SelectedServerCard(
 
             uiState.vpnState.eventLog.lastOrNull()?.let { entry ->
                 Text(
-                    text = "Latest log: ${entry.message}",
+                    text = "${strings.latestLogLabel}: ${entry.message}",
                     style = MaterialTheme.typography.bodySmall,
                     color = when (entry.level) {
                         VpnLogLevel.Info -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -549,9 +560,9 @@ private fun SelectedServerCard(
             if (!authReady) {
                 Text(
                     text = if (availableAuthKeyCount == 0) {
-                        "Import a PEM auth key below, then edit this server to assign it before connecting."
+                        strings.importPemAuthKeyHint
                     } else {
-                        "Edit this server and assign one of the imported auth keys before connecting."
+                        strings.assignImportedAuthKeyHint
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
@@ -566,6 +577,11 @@ private fun SelectedServerCard(
                         shape = RoundedCornerShape(18.dp),
                         contentPadding = PaddingValues(vertical = 14.dp),
                     ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_login_action),
+                            contentDescription = null,
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(connectLabel)
                     }
                 }
@@ -577,7 +593,12 @@ private fun SelectedServerCard(
                         shape = RoundedCornerShape(18.dp),
                         contentPadding = PaddingValues(vertical = 14.dp),
                     ) {
-                        Text("Disconnect")
+                        Icon(
+                            painter = painterResource(R.drawable.ic_logout_action),
+                            contentDescription = null,
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.disconnect)
                     }
                 } else {
                     FilledTonalButton(
@@ -586,7 +607,7 @@ private fun SelectedServerCard(
                         shape = RoundedCornerShape(18.dp),
                         contentPadding = PaddingValues(vertical = 14.dp),
                     ) {
-                        Text(if (authReady) "Edit server" else "Assign auth key")
+                        Text(if (authReady) strings.editServerButton else strings.assignAuthKeyButton)
                     }
                 }
                 OutlinedButton(
@@ -595,7 +616,7 @@ private fun SelectedServerCard(
                     shape = RoundedCornerShape(18.dp),
                     contentPadding = PaddingValues(vertical = 14.dp),
                 ) {
-                    Text("Status")
+                    Text(strings.statusButton)
                 }
             }
         }
@@ -613,8 +634,11 @@ internal fun SecureMaterialsSection(
     onPasteCa: () -> Unit,
     onPasteAuthKey: () -> Unit,
     onDeleteMaterial: (String) -> Unit,
+    showHeader: Boolean = true,
 ) {
+    val strings = appStrings()
     Surface(
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(28.dp),
         tonalElevation = 8.dp,
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
@@ -623,32 +647,34 @@ internal fun SecureMaterialsSection(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text(
-                text = "Trust & auth",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = "Imported PEM certificates and keys are encrypted at rest inside the app and stored outside cloud backup.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (showHeader) {
+                Text(
+                    text = strings.trustAuthHeader,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = strings.trustAuthDescription,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             MaterialGroupCard(
-                title = "Anonym CA certificates",
-                subtitle = "The embedded anonym CA is always available. Import your own PEM CA if you need a different trust anchor.",
+                title = strings.anonymCaCertificatesTitle,
+                subtitle = strings.anonymCaCertificatesSubtitle,
                 materials = caMaterials,
                 selectedMaterialId = selectedCaMaterialId,
-                emptyMessage = "No custom CAs imported.",
+                emptyMessage = strings.noCustomCaImported,
                 onImportFile = onImportCaFile,
                 onPasteText = onPasteCa,
                 onDeleteMaterial = onDeleteMaterial,
             )
             MaterialGroupCard(
-                title = "Auth keys",
-                subtitle = "Yume auth uses a PEM private key. Import it from a file or paste the PEM text and then assign it to a server.",
+                title = strings.authKeysTitle,
+                subtitle = strings.authKeysSubtitle,
                 materials = authKeyMaterials,
                 selectedMaterialId = selectedAuthKeyMaterialId,
-                emptyMessage = "No auth keys imported yet.",
+                emptyMessage = strings.noAuthKeysImported,
                 onImportFile = onImportAuthKeyFile,
                 onPasteText = onPasteAuthKey,
                 onDeleteMaterial = onDeleteMaterial,
@@ -668,7 +694,9 @@ private fun MaterialGroupCard(
     onPasteText: () -> Unit,
     onDeleteMaterial: (String) -> Unit,
 ) {
+    val strings = appStrings()
     Surface(
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
     ) {
@@ -691,14 +719,14 @@ private fun MaterialGroupCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
             ) {
-                Text("Import file")
+                Text(strings.importFile)
             }
             OutlinedButton(
                 onClick = onPasteText,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
             ) {
-                Text("Paste text")
+                Text(strings.pasteText)
             }
             if (materials.isEmpty()) {
                 Text(
@@ -730,6 +758,7 @@ private fun SecureMaterialRow(
     selected: Boolean,
     onDelete: (() -> Unit)?,
 ) {
+    val strings = appStrings()
     val background = if (selected) {
         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.60f)
     } else {
@@ -762,15 +791,9 @@ private fun SecureMaterialRow(
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (selected) {
+                if (!selected && material.isDefault) {
                     StatusPill(
-                        text = "Selected",
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                } else if (material.isDefault) {
-                    StatusPill(
-                        text = "Built in",
+                        text = strings.builtIn,
                         containerColor = MaterialTheme.colorScheme.secondaryContainer,
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                     )
@@ -782,8 +805,14 @@ private fun SecureMaterialRow(
                             contentColor = MaterialTheme.colorScheme.error,
                         ),
                     ) {
-                        Text("Remove")
+                        Icon(
+                            painter = painterResource(R.drawable.ic_delete_action),
+                            contentDescription = null,
+                        )
                     }
+                }
+                if (selected) {
+                    SelectionBadge()
                 }
             }
         }
@@ -799,8 +828,14 @@ internal fun ServersSection(
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
     onEditProfile: (ServerProfile) -> Unit,
+    showHeader: Boolean = true,
 ) {
+    val strings = appStrings()
+    if (profiles.isEmpty()) {
+        return
+    }
     Surface(
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(28.dp),
         tonalElevation = 8.dp,
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
@@ -809,16 +844,18 @@ internal fun ServersSection(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(
-                text = "Saved servers",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = "Tap a server to select it. Edit opens the CA/auth assignment and connection settings.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (showHeader) {
+                Text(
+                    text = strings.savedServersTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = strings.savedServersSubtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             profiles.forEachIndexed { index, profile ->
                 ServerProfileRow(
                     profile = profile,
@@ -845,6 +882,7 @@ private fun ServerProfileRow(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val strings = appStrings()
     val rowColor = if (selected) {
         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.64f)
     } else {
@@ -864,7 +902,7 @@ private fun ServerProfileRow(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+                verticalAlignment = Alignment.Top,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -877,26 +915,36 @@ private fun ServerProfileRow(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Text(
+                        text = "${strings.dnsLabel} ${profile.dnsSummary}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (profile.mtu != 1500) {
+                        Text(
+                            text = "${strings.mtuLabel} ${profile.mtu}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 if (connected) {
                     StatusPill(
-                        text = "Live",
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        text = strings.live,
+                        containerColor = YumeProtectedContainer,
+                        contentColor = YumeProtectedContent,
+                        borderColor = YumeProtectedContent.copy(alpha = 0.32f),
                     )
                 } else if (selected) {
                     StatusPill(
-                        text = "Selected",
+                        text = strings.selected,
+                        iconRes = R.drawable.ic_check_small,
+                        iconTrailing = true,
                         containerColor = MaterialTheme.colorScheme.primaryContainer,
                         contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                 }
             }
-            Text(
-                text = "TLS ${profile.serverName}  •  DNS ${profile.dnsSummary}  •  MTU ${profile.mtu}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             profile.notes.takeIf { it.isNotBlank() }?.let { notes ->
                 Text(
                     text = notes,
@@ -905,8 +953,19 @@ private fun ServerProfileRow(
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = onEdit) {
-                    Text("Edit")
+                FilledTonalButton(
+                    onClick = onEdit,
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_edit_action),
+                        contentDescription = null,
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(strings.edit)
                 }
                 TextButton(
                     onClick = onDelete,
@@ -914,9 +973,31 @@ private fun ServerProfileRow(
                         contentColor = MaterialTheme.colorScheme.error,
                     ),
                 ) {
-                    Text("Delete")
+                    Icon(
+                        painter = painterResource(R.drawable.ic_delete_action),
+                        contentDescription = null,
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(strings.delete)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SelectionBadge() {
+    Surface(
+        modifier = Modifier.size(30.dp),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.primaryContainer,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                painter = painterResource(R.drawable.ic_check_small),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
         }
     }
 }
@@ -944,31 +1025,81 @@ internal fun StatusMessage(
 
 @Composable
 internal fun StatusPill(
-    text: String,
+    text: String? = null,
+    iconRes: Int? = null,
+    iconTrailing: Boolean = false,
+    compact: Boolean = false,
     containerColor: Color,
     contentColor: Color,
+    borderColor: Color? = null,
 ) {
     Surface(
         shape = RoundedCornerShape(999.dp),
         color = containerColor,
+        border = borderColor?.let { BorderStroke(1.dp, it) },
     ) {
-        Text(
-            text = text,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.SemiBold,
-            color = contentColor,
-        )
+        Row(
+            modifier = Modifier.padding(
+                horizontal = if (compact || text.isNullOrBlank()) 8.dp else 12.dp,
+                vertical = if (compact || text.isNullOrBlank()) 6.dp else 7.dp,
+            ),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (iconRes != null && !iconTrailing) {
+                Icon(
+                    painter = painterResource(iconRes),
+                    contentDescription = null,
+                    tint = contentColor,
+                )
+            }
+            if (!text.isNullOrBlank()) {
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = contentColor,
+                )
+            }
+            if (iconRes != null && iconTrailing) {
+                Icon(
+                    painter = painterResource(iconRes),
+                    contentDescription = null,
+                    tint = contentColor,
+                )
+            }
+        }
+    }
+}
+
+internal data class StatusTone(
+    val container: Color,
+    val content: Color,
+)
+
+@Composable
+internal fun vpnStatusTone(state: VpnConnectionState): StatusTone {
+    return when {
+        state.phase == VpnPhase.Error -> StatusTone(YumeErrorContainer, YumeErrorContent)
+        state.phase == VpnPhase.Verifying -> StatusTone(YumeVerifyContainer, YumeVerifyContent)
+        state.phase == VpnPhase.Connected && state.trafficRoutedThroughYume -> {
+            StatusTone(YumeProtectedContainer, YumeProtectedContent)
+        }
+        state.phase == VpnPhase.Connected -> {
+            StatusTone(MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer)
+        }
+        else -> StatusTone(MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer)
     }
 }
 
 @Composable
 private fun BuildStampFooter() {
-    val message = if (BuildConfig.DEBUG) {
-        "DEBUG build v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
-    } else {
-        "v${BuildConfig.VERSION_NAME}"
-    }
+    val strings = appStrings()
+    val message = strings.buildVersionLabel(
+        versionName = BuildConfig.VERSION_NAME,
+        versionCode = BuildConfig.VERSION_CODE,
+        debug = BuildConfig.DEBUG,
+    )
     Surface(
         shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
@@ -985,7 +1116,7 @@ private fun BuildStampFooter() {
             )
             if (BuildConfig.DEBUG) {
                 Text(
-                    text = "If the installed app does not match this UI, uninstall it and reinstall the fresh debug APK.",
+                    text = strings.debugBuildHint,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -999,25 +1130,24 @@ private fun StatusDialog(
     uiState: MainUiState,
     onDismiss: () -> Unit,
 ) {
+    val strings = appStrings()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
     val selectedProfile = uiState.selectedProfile
     val batteryExempt = remember(context) {
-        val powerManager = context.getSystemService(PowerManager::class.java)
-        powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+        AndroidSystemSettings.isIgnoringBatteryOptimizations(context)
     }
-    val packageUri = remember(context) { Uri.parse("package:${context.packageName}") }
     val routingValue = if (uiState.vpnState.trafficRoutedThroughYume) {
-        "Tunnel active"
+        strings.tunnelActive
     } else if (uiState.vpnState.localProxyAddress != null) {
-        "Verifying"
+        strings.phaseStatus(VpnPhase.Verifying, protected = false, proxyReady = false)
     } else {
-        "Idle"
+        strings.phaseStatus(VpnPhase.Idle, protected = false, proxyReady = false)
     }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Yume status") },
+        title = { Text(strings.yumeStatusTitle) },
         text = {
             Column(
                 modifier = Modifier
@@ -1030,45 +1160,45 @@ private fun StatusDialog(
                     headline = uiState.vpnState.headline,
                     detail = uiState.vpnState.detail,
                 )
-                StatusFactRow("Brief", uiState.vpnState.briefStatus)
-                StatusFactRow("Client", "${uiState.vpnState.clientPlatform}/${uiState.vpnState.clientVariant} ${uiState.vpnState.clientVersion}")
-                StatusFactRow("Lifecycle", uiState.vpnState.latestLifecycleState ?: "Unknown")
-                StatusFactRow("Lifecycle msg", uiState.vpnState.latestLifecycleMessage ?: "None")
-                StatusFactRow("Connection", uiState.vpnState.transportSummary)
-                StatusFactRow("Protection", uiState.vpnState.requestedProtection)
-                StatusFactRow("Server mode", uiState.vpnState.serverMode ?: "Unknown")
-                StatusFactRow("Inner", uiState.vpnState.innerSummary)
-                StatusFactRow("Hop", uiState.vpnState.hopSummary)
-                StatusFactRow("Verity", uiState.vpnState.veritySummary)
-                StatusFactRow("Relay", uiState.vpnState.relaySummary)
-                StatusFactRow("Exit IP", uiState.vpnState.exitIp ?: "Unknown")
-                StatusFactRow("Local SOCKS5", uiState.vpnState.localProxyAddress ?: "Unavailable")
-                StatusFactRow("Peer cert", uiState.vpnState.peerCertificateFingerprint ?: "Unknown")
-                StatusFactRow("Routing", routingValue)
-                StatusFactRow("Loop-safe", if (uiState.vpnState.controlSocketProtected) "Yes" else "No")
-                StatusFactRow("Interface", if (uiState.vpnState.vpnInterfaceEstablished) "Established" else "Idle")
-                StatusFactRow("Background", if (batteryExempt) "Unrestricted" else "Battery optimized")
-                StatusFactRow("Upstream", uiState.vpnState.upstreamNetworkLabel ?: "Unavailable")
-                StatusFactRow("Endpoint", selectedProfile?.endpointLabel ?: "No server selected")
-                StatusFactRow("TLS name", selectedProfile?.serverName ?: "Not set")
+                StatusFactRow(strings.briefLabel, uiState.vpnState.briefStatus)
+                StatusFactRow(strings.clientLabel, "${uiState.vpnState.clientPlatform}/${uiState.vpnState.clientVariant} ${uiState.vpnState.clientVersion}")
+                StatusFactRow(strings.lifecycleLabel, uiState.vpnState.latestLifecycleState ?: strings.unknown)
+                StatusFactRow(strings.lifecycleMessageLabel, uiState.vpnState.latestLifecycleMessage ?: strings.none)
+                StatusFactRow(strings.connectionLabel, uiState.vpnState.transportSummary)
+                StatusFactRow(strings.protectionShortLabel, uiState.vpnState.requestedProtection)
+                StatusFactRow(strings.serverModeLabel, uiState.vpnState.serverMode ?: strings.unknown)
+                StatusFactRow(strings.innerLabel, uiState.vpnState.innerSummary)
+                StatusFactRow(strings.hopLabel, uiState.vpnState.hopSummary)
+                StatusFactRow(strings.verityLabel, uiState.vpnState.veritySummary)
+                StatusFactRow(strings.relayShortLabel, uiState.vpnState.relaySummary)
+                StatusFactRow(strings.exitIpLabel, uiState.vpnState.exitIp ?: strings.unknown)
+                StatusFactRow(strings.localSocks5Label, uiState.vpnState.localProxyAddress ?: strings.unavailable)
+                StatusFactRow(strings.peerCertLabel, uiState.vpnState.peerCertificateFingerprint ?: strings.unknown)
+                StatusFactRow(strings.routingShortLabel, routingValue)
+                StatusFactRow(strings.loopSafeLabel, strings.boolValue(uiState.vpnState.controlSocketProtected))
+                StatusFactRow(strings.interfaceLabel, if (uiState.vpnState.vpnInterfaceEstablished) strings.established else strings.phaseStatus(VpnPhase.Idle, protected = false, proxyReady = false))
+                StatusFactRow(strings.backgroundLabel, if (batteryExempt) strings.unrestricted else strings.batteryOptimized)
+                StatusFactRow(strings.upstreamLabel, uiState.vpnState.upstreamNetworkLabel ?: strings.unavailable)
+                StatusFactRow(strings.endpointLabel, selectedProfile?.endpointLabel ?: strings.noServerSelected)
+                StatusFactRow(strings.tlsNameLabel, selectedProfile?.serverName ?: strings.notSet)
                 StatusFactRow(
-                    "Anonym policy",
+                    strings.anonymPolicyLabel,
                     when {
-                        selectedProfile == null -> "Not set"
-                        selectedProfile.requireAnonymProof -> "Required"
-                        else -> "Optional"
+                        selectedProfile == null -> strings.notSet
+                        selectedProfile.requireAnonymProof -> strings.anonymRequired
+                        else -> strings.anonymOptional
                     },
                 )
-                StatusFactRow("Anonym CA", uiState.selectedCaMaterial?.displayName ?: "Missing")
-                StatusFactRow("Auth key", uiState.selectedAuthKeyMaterial?.displayName ?: "Not assigned")
-                StatusFactRow("DNS", selectedProfile?.dnsSummary ?: "Not set")
-                StatusFactRow("MTU", selectedProfile?.mtu?.toString() ?: "Not set")
-                StatusFactRow("Yume", uiState.vpnState.yumeProtocolVersion)
-                StatusFactRow("BaseFWX", uiState.vpnState.basefwxVersion)
-                StatusFactRow("App", "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+                StatusFactRow(strings.anonymCaLabel, uiState.selectedCaMaterial?.displayName ?: strings.missing)
+                StatusFactRow(strings.authKeyLabel, uiState.selectedAuthKeyMaterial?.displayName ?: strings.notAssigned)
+                StatusFactRow(strings.dnsLabel, selectedProfile?.dnsSummary ?: strings.notSet)
+                StatusFactRow(strings.mtuLabel, selectedProfile?.mtu?.toString() ?: strings.notSet)
+                StatusFactRow(strings.yumeLabel, uiState.vpnState.yumeProtocolVersion)
+                StatusFactRow(strings.basefwxLabel, uiState.vpnState.basefwxVersion)
+                StatusFactRow(strings.appLabel, "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
                 StatusFactRow(
-                    "Server version",
-                    uiState.vpnState.serverVersion ?: "Unknown"
+                    strings.serverVersionLabel,
+                    uiState.vpnState.serverVersion ?: strings.unknown
                 )
                 if (!batteryExempt) {
                     Row(
@@ -1077,38 +1207,29 @@ private fun StatusDialog(
                     ) {
                         OutlinedButton(
                             onClick = {
-                                runCatching {
-                                    context.startActivity(
-                                        Intent(
-                                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                                            packageUri,
-                                        )
-                                    )
-                                }.onFailure {
-                                    context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                                }
+                                AndroidSystemSettings.openBatteryOptimizationControls(context)
                             },
                         ) {
-                            Text("Allow background")
+                            Text(strings.allowBackground)
                         }
                         TextButton(
                             onClick = {
-                                context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                AndroidSystemSettings.openAppDetails(context)
                             },
                         ) {
-                            Text("Battery settings")
+                            Text(strings.batterySettingsButton)
                         }
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 Text(
-                    text = "Session log",
+                    text = strings.sessionLogTitle,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
                 if (uiState.vpnState.eventLog.isEmpty()) {
                     Text(
-                        text = "No session events yet.",
+                        text = strings.noSessionEventsYet,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1121,7 +1242,7 @@ private fun StatusDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Close")
+                Text(strings.close)
             }
         },
     )
@@ -1169,6 +1290,7 @@ internal fun ProfileEditorDialog(
     onDismiss: () -> Unit,
     onSave: (ProfileDraft) -> String?,
 ) {
+    val strings = appStrings()
     var localDraft by remember(draft) { mutableStateOf(draft) }
     var error by remember(draft) { mutableStateOf<String?>(null) }
     val scrollState = rememberScrollState()
@@ -1176,7 +1298,7 @@ internal fun ProfileEditorDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text(if (draft.id == null) "Add server" else "Edit server")
+            Text(if (draft.id == null) strings.addServerTitle else strings.editServerTitle)
         },
         text = {
             Column(
@@ -1190,51 +1312,51 @@ internal fun ProfileEditorDialog(
                     value = localDraft.name,
                     onValueChange = { localDraft = localDraft.copy(name = it) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Profile name") },
+                    label = { Text(strings.profileNameLabel) },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = localDraft.host,
                     onValueChange = { localDraft = localDraft.copy(host = it) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Server host") },
+                    label = { Text(strings.serverHostLabel) },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = localDraft.port,
                     onValueChange = { localDraft = localDraft.copy(port = it.filter(Char::isDigit)) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Port") },
+                    label = { Text(strings.portLabel) },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = localDraft.sni,
                     onValueChange = { localDraft = localDraft.copy(sni = it) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("TLS server name") },
+                    label = { Text(strings.tlsServerNameLabel) },
                     singleLine = true,
                     supportingText = {
-                        Text("Optional. Leave blank to use the server host.")
+                        Text(strings.tlsServerNameHelper)
                     },
                 )
                 OutlinedTextField(
                     value = localDraft.dnsServers,
                     onValueChange = { localDraft = localDraft.copy(dnsServers = it) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("DNS servers") },
+                    label = { Text(strings.dnsServersLabel) },
                     minLines = 2,
                     supportingText = {
-                        Text("Comma or newline separated numeric IPv4 or IPv6 addresses.")
+                        Text(strings.dnsServersHelper)
                     },
                 )
                 OutlinedTextField(
                     value = localDraft.mtu,
                     onValueChange = { localDraft = localDraft.copy(mtu = it.filter(Char::isDigit)) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("MTU") },
+                    label = { Text(strings.mtuLabel) },
                     singleLine = true,
                     supportingText = {
-                        Text("Android VPNs are most stable between 1280 and 1500.")
+                        Text(strings.mtuHelper)
                     },
                 )
                 Surface(
@@ -1259,15 +1381,15 @@ internal fun ProfileEditorDialog(
                         )
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(
-                                text = "Require anonym proof",
+                                text = strings.requireAnonymProofTitle,
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
                                 text = if (localDraft.requireAnonymProof) {
-                                    "Only allow servers running trusted anonym proof mode."
+                                    strings.requireAnonymProofEnabled
                                 } else {
-                                    "Allow normal-mode servers too. Verity will show FAIL and the server operator may monitor proxied traffic."
+                                    strings.requireAnonymProofDisabled
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1277,11 +1399,11 @@ internal fun ProfileEditorDialog(
                 }
 
                 MaterialChoiceSection(
-                    title = "Anonym CA",
+                    title = strings.anonymCaChoiceTitle,
                     helper = if (localDraft.requireAnonymProof) {
-                        "Choose the trust anchor for anonym verification."
+                        strings.anonymCaChoiceHelperRequired
                     } else {
-                        "Choose the trust anchor for anonym verification when this server runs anonym mode. Normal-mode servers can connect without requiring it."
+                        strings.anonymCaChoiceHelperOptional
                     },
                     materials = caMaterials,
                     selectedMaterialId = localDraft.anonymCaMaterialId.ifBlank { SecureMaterialStore.DEFAULT_ANONYM_CA_ID },
@@ -1292,8 +1414,8 @@ internal fun ProfileEditorDialog(
                 )
 
                 MaterialChoiceSection(
-                    title = "Auth key",
-                    helper = "Choose the PEM private key used for client auth. Leave empty only if you are not ready to connect yet.",
+                    title = strings.authKeyChoiceTitle,
+                    helper = strings.authKeyChoiceHelper,
                     materials = authKeyMaterials,
                     selectedMaterialId = localDraft.authKeyMaterialId,
                     allowUnassigned = true,
@@ -1306,7 +1428,7 @@ internal fun ProfileEditorDialog(
                     value = localDraft.notes,
                     onValueChange = { localDraft = localDraft.copy(notes = it) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Notes") },
+                    label = { Text(strings.notesLabel) },
                     minLines = 3,
                 )
                 if (!error.isNullOrBlank()) {
@@ -1320,12 +1442,12 @@ internal fun ProfileEditorDialog(
         },
         confirmButton = {
             Button(onClick = { error = onSave(localDraft) }) {
-                Text(if (draft.id == null) "Save" else "Update")
+                Text(if (draft.id == null) strings.save else strings.update)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text(strings.cancel)
             }
         },
     )
@@ -1340,6 +1462,7 @@ private fun MaterialChoiceSection(
     allowUnassigned: Boolean,
     onSelect: (String) -> Unit,
 ) {
+    val strings = appStrings()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = title,
@@ -1353,15 +1476,15 @@ private fun MaterialChoiceSection(
         )
         if (allowUnassigned) {
             SelectableMaterialChoice(
-                label = "Not assigned",
-                subtitle = "Import a PEM private key later if you are only saving the server for now.",
+                label = strings.notAssignedChoice,
+                subtitle = strings.notAssignedChoiceSubtitle,
                 selected = selectedMaterialId.isBlank(),
                 onClick = { onSelect("") },
             )
         }
         if (materials.isEmpty()) {
             Text(
-                text = "Nothing imported yet.",
+                text = strings.nothingImportedYet,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1390,36 +1513,50 @@ private fun SelectableMaterialChoice(
             .fillMaxWidth()
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(18.dp),
+        border = if (selected) {
+            BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+        } else {
+            null
+        },
         color = if (selected) {
             MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
         } else {
             MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f)
         },
     ) {
-        Column(
+        Row(
             modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top,
         ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (selected) {
+                SelectionBadge()
+            }
         }
     }
 }
-
 @Composable
 internal fun MaterialTextDialog(
     draft: MaterialTextDraft,
     onDismiss: () -> Unit,
     onSave: (MaterialTextDraft) -> String?,
 ) {
+    val strings = appStrings()
     var localDraft by remember(draft) { mutableStateOf(draft) }
     var error by remember(draft) { mutableStateOf<String?>(null) }
     val scrollState = rememberScrollState()
@@ -1439,17 +1576,17 @@ internal fun MaterialTextDialog(
                     value = localDraft.name,
                     onValueChange = { localDraft = localDraft.copy(name = it) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Saved name") },
+                    label = { Text(strings.savedNameLabel) },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = localDraft.content,
                     onValueChange = { localDraft = localDraft.copy(content = it) },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("PEM text") },
+                    label = { Text(strings.pemTextLabel) },
                     minLines = 8,
                     supportingText = {
-                        Text("Paste the full PEM including BEGIN/END lines.")
+                        Text(strings.pemTextHelper)
                     },
                 )
                 if (!error.isNullOrBlank()) {
@@ -1463,12 +1600,12 @@ internal fun MaterialTextDialog(
         },
         confirmButton = {
             Button(onClick = { error = onSave(localDraft) }) {
-                Text("Save")
+                Text(strings.save)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text(strings.cancel)
             }
         },
     )
@@ -1488,16 +1625,6 @@ internal fun ServerProfile.toDraft(): ProfileDraft {
         authKeyMaterialId = authKeyMaterialId,
         notes = notes,
     )
-}
-
-private fun phaseLabel(phase: VpnPhase): String = when (phase) {
-    VpnPhase.Idle -> "Idle"
-    VpnPhase.PermissionRequired -> "Permission"
-    VpnPhase.Connecting -> "Connecting"
-    VpnPhase.Verifying -> "Verify"
-    VpnPhase.Connected -> "Connected"
-    VpnPhase.Disconnecting -> "Disconnecting"
-    VpnPhase.Error -> "Error"
 }
 
 internal fun formatLogTimestamp(epochMs: Long): String {

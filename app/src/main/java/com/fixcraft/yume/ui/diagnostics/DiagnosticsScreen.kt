@@ -22,12 +22,14 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.fixcraft.yume.MainUiState
+import com.fixcraft.yume.i18n.appStrings
 
 @Composable
 fun DiagnosticsScreen(
     uiState: MainUiState,
     diagnosticsReport: String,
 ) {
+    val strings = appStrings()
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
 
@@ -45,16 +47,24 @@ fun DiagnosticsScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Text(
-                        text = "Diagnostics",
+                        text = strings.diagnosticsTitle,
                         style = MaterialTheme.typography.headlineSmall,
                     )
                     Text(
-                        text = "Logs and build info.",
+                        text = strings.diagnosticsSubtitle,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = "Current phase: ${uiState.vpnState.briefStatus} • Technique: ${uiState.appSettings.connectionTechnique.displayName} • Profile: ${uiState.appSettings.performanceProfile.displayName}",
+                        text = strings.currentPhaseSummary(
+                            strings.phaseStatus(
+                                phase = uiState.vpnState.phase,
+                                protected = uiState.vpnState.trafficRoutedThroughYume,
+                                proxyReady = uiState.vpnState.localProxyAddress != null,
+                            ),
+                            strings.connectionTechniqueName(uiState.appSettings.connectionTechnique),
+                            strings.performanceProfileName(uiState.appSettings.performanceProfile),
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -64,7 +74,7 @@ fun DiagnosticsScreen(
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Copy diagnostics")
+                        Text(strings.copyDiagnostics)
                     }
                     OutlinedButton(
                         onClick = {
@@ -72,16 +82,16 @@ fun DiagnosticsScreen(
                                 Intent.createChooser(
                                     Intent(Intent.ACTION_SEND).apply {
                                         type = "text/plain"
-                                        putExtra(Intent.EXTRA_SUBJECT, "Yume Android diagnostics")
+                                        putExtra(Intent.EXTRA_SUBJECT, strings.shareDiagnosticsSubject)
                                         putExtra(Intent.EXTRA_TEXT, diagnosticsReport)
                                     },
-                                    "Share diagnostics",
+                                    strings.shareDiagnosticsChooser,
                                 ),
                             )
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Share diagnostics")
+                        Text(strings.shareDiagnostics)
                     }
                 }
             }
@@ -96,7 +106,7 @@ fun DiagnosticsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        text = "Report",
+                        text = strings.reportTitle,
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Text(

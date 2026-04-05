@@ -15,6 +15,7 @@ import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.system.OsConstants
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -29,6 +30,9 @@ import com.fixcraft.yume.data.PerformanceProfile
 import com.fixcraft.yume.data.ServerProfile
 import com.fixcraft.yume.data.ServerProfileStore
 import com.fixcraft.yume.data.SecureMaterialStore
+import com.fixcraft.yume.geo.CountryLookup
+import com.fixcraft.yume.i18n.AppLocaleManager
+import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.transport.YumeBootstrapClient
 import com.fixcraft.yume.transport.YumeBootstrapException
 import com.fixcraft.yume.transport.YumeBootstrapSession
@@ -72,6 +76,7 @@ class YumeVpnService : VpnService() {
     private val connectivityManager by lazy {
         getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     }
+    private fun strings() = appStrings(this, appSettingsStore.settings.value.language)
 
     private var connectJob: Job? = null
     private var disconnectJob: Job? = null
@@ -111,12 +116,27 @@ class YumeVpnService : VpnService() {
     private var activeTun2SocksConfig: Tun2SocksRuntimeConfig? = null
     @Volatile
     private var activeTechniqueDataPlane: TechniqueDataPlane? = null
+    @Volatile
+    private var warmupAllowedProbeHosts: Set<String> = emptySet()
+    @Volatile
+    private var warmupAllowedProbeAddresses: Set<String> = emptySet()
+    @Volatile
+    private var protectedSinceEpochMs: Long = 0L
+    @Volatile
+    private var lastNotificationRefreshElapsedMs: Long = 0L
     private val lifecycleMutex = Mutex()
     private val sessionGeneration = AtomicLong(0)
 
     private data class RouteVerificationResult(
         val exitIp: String?,
         val systemTrafficVerified: Boolean,
+    )
+
+    private data class ResolvedProbeTarget(
+        val host: String,
+        val path: String,
+        val port: Int,
+        val connectHosts: List<String>,
     )
 
     private val upstreamCallback = object : ConnectivityManager.NetworkCallback() {
@@ -143,16 +163,16 @@ class YumeVpnService : VpnService() {
                         } else {
                             state.copy(
                                 phase = VpnPhase.Connecting,
-                                headline = "Upstream lost",
-                                detail = "Wi-Fi or cellular disappeared. Yume is waiting to rebuild the authenticated control path.",
-                                upstreamNetworkLabel = "Unavailable",
+                                headline = strings().upstreamLostHeadline,
+                                detail = strings().upstreamLostDetail,
+                                upstreamNetworkLabel = strings().unavailable,
                                 controlSocketProtected = false,
                                 localProxyAddress = this@YumeVpnService.localProxyAddress,
                             )
                         }
                     }
                     activeProfile?.let { profile ->
-                        updateForeground(profile, "Waiting for network")
+                        updateForeground(profile, strings().waitingForNetworkHeadline)
                     }
                 } else {
                     handleUpstreamUpdate(replacement)
@@ -256,13 +276,13 @@ class YumeVpnService : VpnService() {
             VpnConnectionState(
                 phase = VpnPhase.Connecting,
                 activeProfileId = profile.id,
-                headline = "Connecting",
-                detail = "Loading keys and opening a control path to ${profile.endpointLabel}.",
+                headline = strings().connectingHeadline,
+                detail = strings().loadingKeysFor(profile.endpointLabel),
                 endpointLabel = profile.endpointLabel,
                 sessionDnsServers = profile.dnsServers,
                 sessionMtu = profile.mtu,
                 upstreamNetworkLabel = describeUpstreamNetwork(),
-                veritySummary = "Using ${caSummary.displayName}",
+                veritySummary = strings().usingAnonymCa(caSummary.displayName),
             )
         )
         lastLoggedUpstreamHandle = Long.MIN_VALUE
@@ -277,7 +297,7 @@ class YumeVpnService : VpnService() {
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Requested protection policy: ${YumeVpnRuntime.state.value.requestedProtection}.")
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Loaded anonym CA: ${caSummary.displayName}.")
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Loaded auth key: ${authKeySummary.displayName}.")
-        startInForeground(profile, "Authenticating to Yume over 443")
+        startInForeground(profile, strings().authenticatingNotification)
 
         lifecycleMutex.withLock {
             disconnectResources()
@@ -368,13 +388,19 @@ class YumeVpnService : VpnService() {
             awaitPostRoutingTrafficRamp(session, generation)
             dataPlane.setVerificationMode(false)
             markTrafficFlowing(profile, bootstrap, verifiedExitIpResult, routedExitIp, proxyAddress)
-            updateForeground(profile, "Protected via Yume")
+            updateForeground(profile, strings().protectedNotification)
             var nextPingAtMs = System.currentTimeMillis() + KEEPALIVE_PING_INTERVAL_MS
+            var nextNotificationRefreshAtMs = SystemClock.elapsedRealtime() + NOTIFICATION_REFRESH_INTERVAL_MS
 
             while (true) {
                 currentCoroutineContext().ensureActive()
                 ensureSessionActive(generation)
                 delay(1_500)
+                val nowElapsed = SystemClock.elapsedRealtime()
+                if (nowElapsed >= nextNotificationRefreshAtMs) {
+                    maybeRefreshForeground(profile)
+                    nextNotificationRefreshAtMs = nowElapsed + NOTIFICATION_REFRESH_INTERVAL_MS
+                }
                 val network = upstreamNetwork ?: connectivityManager.activeNetwork
                 if (network == null) {
                     setTechniqueVerificationMode(true)
@@ -595,7 +621,7 @@ class YumeVpnService : VpnService() {
             YumeVpnRuntime.update(
                 currentState.copy(
                     phase = VpnPhase.Disconnecting,
-                    headline = "Disconnecting",
+                    headline = strings().disconnectingHeadline,
                     detail = message,
                     upstreamNetworkLabel = describeUpstreamNetwork(),
                 )
@@ -639,7 +665,7 @@ class YumeVpnService : VpnService() {
                 YumeVpnRuntime.update(
                     VpnConnectionState(
                         phase = VpnPhase.Idle,
-                        headline = "Disconnected",
+                        headline = strings().disconnectedHeadline,
                         detail = message,
                         upstreamNetworkLabel = describeUpstreamNetwork(),
                     )
@@ -672,6 +698,10 @@ class YumeVpnService : VpnService() {
         innerCompatibilityMode = ANDROID_INNER_COMPATIBILITY_DEFAULT
         activeTun2SocksConfig = null
         activeTechniqueDataPlane = null
+        warmupAllowedProbeHosts = emptySet()
+        warmupAllowedProbeAddresses = emptySet()
+        protectedSinceEpochMs = 0L
+        lastNotificationRefreshElapsedMs = 0L
         lastLoggedUpstreamHandle = Long.MIN_VALUE
         lastLoggedUpstreamLabel = null
     }
@@ -699,7 +729,7 @@ class YumeVpnService : VpnService() {
             VpnConnectionState(
                 phase = VpnPhase.Error,
                 activeProfileId = profileId,
-                headline = "Connection failed",
+                headline = strings().connectionFailedHeadline,
                 detail = message,
                 upstreamNetworkLabel = describeUpstreamNetwork(),
                 requestedProtection = YumeVpnRuntime.state.value.requestedProtection,
@@ -849,13 +879,13 @@ class YumeVpnService : VpnService() {
                 YumeVpnRuntime.update { state ->
                     state.copy(
                         phase = VpnPhase.Connecting,
-                        headline = "Waiting for network",
-                        detail = "Wi-Fi or cellular is unavailable, so Yume cannot rebuild the protected control path yet.",
-                        upstreamNetworkLabel = "Unavailable",
+                        headline = strings().waitingForNetworkHeadline,
+                        detail = strings().waitingForNetworkDetail,
+                        upstreamNetworkLabel = strings().unavailable,
                         controlSocketProtected = false,
                     )
                 }
-                updateForeground(profile, "Waiting for network")
+                updateForeground(profile, strings().waitingForNetworkHeadline)
             }
             delay(1_000)
         }
@@ -1167,7 +1197,7 @@ class YumeVpnService : VpnService() {
             .mapNotNull { current -> current.message?.trim()?.takeIf { it.isNotEmpty() } }
             .forEach(parts::add)
         session.closeReason?.trim()?.takeIf { it.isNotEmpty() }?.let(parts::add)
-        return parts.joinToString(" ").lowercase()
+        return parts.joinToString(" ").lowercase(Locale.ROOT)
     }
 
     private fun buildThrowableDetail(throwable: Throwable?): String {
@@ -1264,8 +1294,8 @@ class YumeVpnService : VpnService() {
             } else {
                 state.copy(
                     phase = VpnPhase.Verifying,
-                    headline = "Verifying route",
-                    detail = "Route is up. Verifying traffic.",
+                    headline = strings().verifyingRouteHeadline,
+                    detail = strings().verifyingRouteDetail,
                     controlSocketProtected = true,
                     localProxyAddress = localProxyAddress,
                 )
@@ -1349,6 +1379,9 @@ class YumeVpnService : VpnService() {
     ): RouteVerificationResult {
         ensureSessionActive(generation)
         delay(TUN2SOCKS_STARTUP_DELAY_MS)
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            delay(1_200L)
+        }
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Running an in-app routed Android traffic probe through Yume.")
         val routedExitIp = probeSystemExitIp().getOrElse { throwable ->
             sendLifecycleUpdate(
@@ -1376,7 +1409,7 @@ class YumeVpnService : VpnService() {
             session = session,
             state = "traffic_flowing",
             message = "success, traffic flowing",
-            detail = "systemwide android vpn routing is active",
+            detail = strings().systemwideRoutingActiveDetail,
             effectiveProtection = buildEffectiveProtectionSummary(bootstrap),
             trafficVerified = true,
             exitIp = routedExitIp,
@@ -1415,6 +1448,9 @@ class YumeVpnService : VpnService() {
     ) {
         val appRelayIp = relayExitIpResult.getOrNull()?.trim().orEmpty().ifBlank { null }
         val effectiveExitIp = verification.exitIp ?: appRelayIp
+        if (protectedSinceEpochMs == 0L) {
+            protectedSinceEpochMs = System.currentTimeMillis()
+        }
         val relaySummary = buildString {
             append("System traffic verified through Yume: ${verification.exitIp ?: "unknown"}.")
             if (appRelayIp != null && appRelayIp != verification.exitIp) {
@@ -1425,8 +1461,8 @@ class YumeVpnService : VpnService() {
             current.copy(
                 phase = VpnPhase.Connected,
                 activeProfileId = profile.id,
-                headline = "Protected",
-                detail = "Traffic is flowing through Yume.",
+                headline = strings().protectedHeadline,
+                detail = strings().protectedDetail,
                 endpointLabel = profile.endpointLabel,
                 sessionDnsServers = effectiveVpnDnsServers(profile),
                 sessionMtu = profile.mtu,
@@ -1470,7 +1506,7 @@ class YumeVpnService : VpnService() {
             current.copy(
                 phase = VpnPhase.Verifying,
                 activeProfileId = profile.id,
-                headline = "Verifying route",
+                headline = strings().verifyingRouteHeadline,
                 detail = detail,
                 endpointLabel = profile.endpointLabel,
                 sessionDnsServers = effectiveVpnDnsServers(profile),
@@ -1554,6 +1590,7 @@ class YumeVpnService : VpnService() {
 
     private suspend fun probeSystemExitIp(): Result<String> {
         var lastFailure: Throwable? = null
+        val resolvedTargets = mutableListOf<ResolvedProbeTarget>()
         for ((host, path, port) in RELAY_PROBE_TARGETS) {
             val connectHosts = try {
                 resolveProbeConnectHosts(host)
@@ -1561,19 +1598,28 @@ class YumeVpnService : VpnService() {
                 lastFailure = throwable
                 continue
             }
-            for (connectHost in connectHosts) {
+            if (connectHosts.isNotEmpty()) {
+                resolvedTargets += ResolvedProbeTarget(host, path, port, connectHosts)
+            }
+        }
+        warmupAllowedProbeHosts = resolvedTargets.mapTo(linkedSetOf()) { normalizeProtectedHost(it.host) }
+        warmupAllowedProbeAddresses = resolvedTargets.flatMapTo(linkedSetOf()) { target ->
+            target.connectHosts.map(::normalizeProtectedHost)
+        }
+        for (target in resolvedTargets) {
+            for (connectHost in target.connectHosts) {
                 try {
                     return Result.success(
                         runSystemProbeRequest(
                             connectHost = connectHost,
-                            hostHeader = host,
-                            path = path,
-                            port = port,
+                            hostHeader = target.host,
+                            path = target.path,
+                            port = target.port,
                         ),
                     )
                 } catch (throwable: Throwable) {
                     lastFailure = IOException(
-                        "system traffic probe via $host [$connectHost] failed: ${throwable.message ?: throwable.javaClass.simpleName}",
+                        "system traffic probe via ${target.host} [$connectHost] failed: ${throwable.message ?: throwable.javaClass.simpleName}",
                         throwable,
                     )
                 }
@@ -1666,7 +1712,7 @@ class YumeVpnService : VpnService() {
     private fun androidClientName(profile: ServerProfile): String {
         val raw = "android-${profile.name}"
         val sanitized = buildString {
-            raw.lowercase().forEach { char ->
+            raw.lowercase(Locale.ROOT).forEach { char ->
                 append(
                     when {
                         char.isLetterOrDigit() -> char
@@ -1803,6 +1849,12 @@ class YumeVpnService : VpnService() {
             protectedDestinationsProvider = { currentProtectedDestinations() },
             protectedAddressResolver = { host ->
                 runCatching { resolveProtectedAddresses(host) }.getOrDefault(emptySet())
+            },
+            warmupTcpDestinationAllowedProvider = { host, port ->
+                port == 80 && (
+                    host in warmupAllowedProbeHosts ||
+                        host in warmupAllowedProbeAddresses
+                    )
             },
             mappedHostResolver = { host -> lookupMappedTunnelHost(host) },
             log = { level, message -> YumeVpnRuntime.appendLog(level, message) },
@@ -1958,6 +2010,10 @@ class YumeVpnService : VpnService() {
     private fun isIpv4AddressLiteral(address: String): Boolean = normalizeIpv4Literal(address) != null
 
     private fun setProxyWarmupMode(enabled: Boolean) {
+        if (!enabled) {
+            warmupAllowedProbeHosts = emptySet()
+            warmupAllowedProbeAddresses = emptySet()
+        }
         socksProxy?.setStartupWarmupMode(enabled)
     }
 
@@ -2010,24 +2066,24 @@ class YumeVpnService : VpnService() {
 
     private fun describeNetwork(capabilities: NetworkCapabilities): String {
         return when {
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
-            else -> "Other"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> strings().wifi
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> strings().cellular
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> strings().ethernet
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> strings().vpn
+            else -> strings().otherNetwork
         }
     }
 
     private fun describeUpstreamNetwork(): String {
-        val network = upstreamNetwork ?: connectivityManager.activeNetwork ?: return "Unavailable"
+        val network = upstreamNetwork ?: connectivityManager.activeNetwork ?: return strings().unavailable
         return describeNetwork(network)
     }
 
     private fun resolveTechniqueEngine(settings: AppSettings): TunnelTechniqueEngine {
         return when (settings.connectionTechnique) {
             ConnectionTechnique.Tun2SocksStable -> Tun2SocksTechniqueEngine
-            ConnectionTechnique.NativeDirectAlpha -> {
-                if (BuildConfig.ENABLE_NATIVE_DIRECT_ALPHA) {
+            ConnectionTechnique.NativeDirectBeta -> {
+                if (BuildConfig.ENABLE_NATIVE_DIRECT_BETA) {
                     NativeDirectTechniqueEngine
                 } else {
                     Tun2SocksTechniqueEngine
@@ -2102,11 +2158,38 @@ class YumeVpnService : VpnService() {
         ) {
             return
         }
+        lastNotificationRefreshElapsedMs = SystemClock.elapsedRealtime()
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, buildNotification(profile, status))
     }
 
     private fun buildNotification(profile: ServerProfile, status: String): Notification {
+        val localizedContext = AppLocaleManager.current(this)
+        val state = YumeVpnRuntime.state.value
+        val strings = strings()
+        val countryMatch = CountryLookup.lookup(localizedContext, state.exitIp, appSettingsStore.settings.value.language)
+        val location = countryMatch?.let { strings.notificationLocation(it.flagEmoji, it.displayName) }
+        val primaryText = when {
+            state.phase == VpnPhase.Connected && state.trafficRoutedThroughYume && location != null -> {
+                strings.notificationProtectedIn(location)
+            }
+            state.phase == VpnPhase.Connected && state.trafficRoutedThroughYume -> strings.notificationConnected
+            state.phase == VpnPhase.Verifying -> strings.notificationVerifying
+            state.phase == VpnPhase.Connecting -> status.ifBlank { strings.notificationConnecting }
+            state.phase == VpnPhase.Disconnecting -> strings.notificationDisconnecting
+            state.phase == VpnPhase.Error -> state.headline.ifBlank { strings.notificationError }
+            else -> status
+        }
+        val stats = activeTechniqueDataPlane?.stats()
+        val trafficLine = stats
+            ?.takeIf { it.rxBytes > 0L || it.txBytes > 0L }
+            ?.let { strings.notificationTrafficTotals(formatTrafficBytes(it.rxBytes), formatTrafficBytes(it.txBytes)) }
+        val exitLine = state.exitIp?.takeIf { it.isNotBlank() }?.let { "${strings.exitIpLabel}: $it" }
+        val expandedText = buildList {
+            add(primaryText)
+            trafficLine?.let(::add)
+            exitLine?.let(::add)
+        }.joinToString("\n")
         val disconnectIntent = Intent(this, YumeVpnService::class.java).apply {
             action = ACTION_DISCONNECT
         }
@@ -2117,29 +2200,68 @@ class YumeVpnService : VpnService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+        return NotificationCompat.Builder(localizedContext, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(getString(R.string.notification_title, profile.name))
-            .setContentText(status)
+            .setContentTitle(AppLocaleManager.getString(localizedContext, R.string.notification_title, profile.name))
+            .setContentText(primaryText)
+            .setSubText(trafficLine)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(expandedText))
+            .setShowWhen(protectedSinceEpochMs > 0L)
+            .setWhen(if (protectedSinceEpochMs > 0L) protectedSinceEpochMs else System.currentTimeMillis())
+            .setUsesChronometer(protectedSinceEpochMs > 0L)
             .setContentIntent(buildConfigureIntent())
-            .addAction(0, getString(R.string.disconnect), disconnectPendingIntent)
+            .addAction(0, AppLocaleManager.getString(localizedContext, R.string.disconnect), disconnectPendingIntent)
             .build()
     }
 
-    private fun ensureNotificationChannel() {
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (manager.getNotificationChannel(NOTIFICATION_CHANNEL_ID) != null) {
+    private fun maybeRefreshForeground(profile: ServerProfile) {
+        val nowElapsed = SystemClock.elapsedRealtime()
+        if (nowElapsed - lastNotificationRefreshElapsedMs < NOTIFICATION_REFRESH_INTERVAL_MS) {
             return
         }
+        val state = YumeVpnRuntime.state.value
+        val status = when {
+            state.phase == VpnPhase.Connected && state.trafficRoutedThroughYume -> strings().protectedNotification
+            state.phase == VpnPhase.Verifying -> strings().verifyingRouteHeadline
+            state.phase == VpnPhase.Connecting -> state.headline
+            else -> return
+        }
+        updateForeground(profile, status)
+    }
+
+    private fun formatTrafficBytes(bytes: Long): String {
+        if (bytes <= 0L) {
+            return "0 B"
+        }
+        val units = arrayOf("B", "KB", "MB", "GB", "TB")
+        var value = bytes.toDouble()
+        var unitIndex = 0
+        while (value >= 1024.0 && unitIndex < units.lastIndex) {
+            value /= 1024.0
+            unitIndex++
+        }
+        val formatted = if (value >= 100 || unitIndex == 0) {
+            value.toLong().toString()
+        } else if (value >= 10) {
+            String.format(Locale.ROOT, "%.1f", value)
+        } else {
+            String.format(Locale.ROOT, "%.2f", value)
+        }.trimEnd('0').trimEnd('.')
+        return "$formatted ${units[unitIndex]}"
+    }
+
+    private fun ensureNotificationChannel() {
+        val localizedContext = AppLocaleManager.current(this)
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channel = NotificationChannel(
             NOTIFICATION_CHANNEL_ID,
-            getString(R.string.notification_channel_name),
+            AppLocaleManager.getString(localizedContext, R.string.notification_channel_name),
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = getString(R.string.notification_channel_description)
+            description = AppLocaleManager.getString(localizedContext, R.string.notification_channel_description)
         }
         manager.createNotificationChannel(channel)
     }
@@ -2155,6 +2277,7 @@ class YumeVpnService : VpnService() {
         private const val KEEPALIVE_PING_INTERVAL_MS = 15_000L
         private const val PRE_ROUTING_PING_TIMEOUT_MS = 3_000
         private const val TUN2SOCKS_STARTUP_DELAY_MS = 800L
+        private const val NOTIFICATION_REFRESH_INTERVAL_MS = 2_500L
         private val RELAY_PROBE_TARGETS = listOf(
             Triple("ifconfig.me", "/ip", 80),
             Triple("api.ipify.org", "/", 80),

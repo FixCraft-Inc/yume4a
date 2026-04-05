@@ -49,7 +49,7 @@ android {
         buildConfigField("String", "YUME_PROTOCOL_VERSION", "\"$yumeProtocolVersion\"")
         buildConfigField("String", "BASEFWX_ENGINE_VERSION", "\"$basefwxEngineVersion\"")
         buildConfigField("String", "YUME_PROTECTION_POLICY", "\"Auto (highest available)\"")
-        buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_ALPHA", "false")
+        buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "true")
         buildConfigField(
             "String",
             "YUME_ROUTING_MODE",
@@ -65,10 +65,10 @@ android {
 
     buildTypes {
         debug {
-            buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_ALPHA", "true")
+            buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "true")
         }
         release {
-            buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_ALPHA", "false")
+            buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "true")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -117,6 +117,8 @@ dependencies {
     implementation(libs.google.material)
     implementation(libs.bouncycastle.prov)
     implementation(libs.bouncycastle.pkix)
+    implementation(libs.conscrypt.android)
+    implementation(libs.google.mlkit.translate)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

@@ -1,5 +1,7 @@
 package com.fixcraft.yume.vpn
 
+import java.util.Locale
+
 internal object YumeDnsRouting {
     fun buildRouteKey(
         resolverHost: String,
@@ -79,7 +81,7 @@ internal object YumeDnsRouting {
 
                 offset + length > payload.size -> return null
                 else -> {
-                    labels += String(payload, offset, length, Charsets.UTF_8).lowercase()
+                    labels += String(payload, offset, length, Charsets.UTF_8).lowercase(Locale.ROOT)
                     offset += length
                 }
             }
@@ -97,7 +99,7 @@ internal object YumeDnsRouting {
             .removePrefix("[")
             .removeSuffix("]")
             .substringBefore('%')
-            .lowercase()
+            .lowercase(Locale.ROOT)
     }
 
     private fun readU16(

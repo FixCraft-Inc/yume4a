@@ -31,6 +31,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.util.ArrayDeque
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 class YumeSocks5Proxy(
@@ -42,6 +43,7 @@ class YumeSocks5Proxy(
     private val forceTcpFallbackUdp443Provider: () -> Boolean = { true },
     private val protectedDestinationsProvider: () -> ProtectedDestinations = { ProtectedDestinations() },
     private val protectedAddressResolver: (String) -> Set<String> = { emptySet() },
+    private val warmupTcpDestinationAllowedProvider: (String, Int) -> Boolean = { _, _ -> false },
     private val mappedHostResolver: (String) -> String? = { null },
     private val log: (VpnLogLevel, String) -> Unit,
 ) {
@@ -201,7 +203,7 @@ class YumeSocks5Proxy(
                         )
                         return
                     }
-                    if (startupWarmupMode && !isWarmupTcpAllowed(effectiveRequest.port)) {
+                    if (startupWarmupMode && !isWarmupTcpAllowed(effectiveRequest.host, effectiveRequest.port)) {
                         sendSocksReply(output, REPLY_CONNECTION_NOT_ALLOWED)
                         val destination = "${effectiveRequest.host}:${effectiveRequest.port}"
                         val shouldLog = synchronized(policyLock) {
@@ -1310,7 +1312,7 @@ class YumeSocks5Proxy(
     }
 
     private fun mapOpenFailureToReply(throwable: Throwable): Int {
-        val message = throwable.message?.lowercase().orEmpty()
+        val message = throwable.message?.lowercase(Locale.ROOT).orEmpty()
         return when {
             message.contains("resolve") || message.contains("host") -> REPLY_HOST_UNREACHABLE
             message.contains("network") -> REPLY_NETWORK_UNREACHABLE
@@ -1353,7 +1355,7 @@ class YumeSocks5Proxy(
             .removePrefix("[")
             .removeSuffix("]")
             .substringBefore('%')
-            .lowercase()
+            .lowercase(Locale.ROOT)
     }
 
     private fun resolveMappedHost(host: String): String {
@@ -1384,7 +1386,7 @@ class YumeSocks5Proxy(
     }
 
     private fun isExpectedSocketShutdown(throwable: Throwable): Boolean {
-        val message = throwable.message?.lowercase().orEmpty()
+        val message = throwable.message?.lowercase(Locale.ROOT).orEmpty()
         return throwable is CancellationException ||
             throwable is EOFException ||
             message.contains("socket closed") ||
@@ -1394,12 +1396,20 @@ class YumeSocks5Proxy(
             message.contains("closed")
     }
 
-    private fun isWarmupTcpAllowed(port: Int): Boolean {
-        return port in STARTUP_WARMUP_TCP_PORTS
+    private fun isWarmupTcpAllowed(host: String, port: Int): Boolean {
+        if (port !in STARTUP_WARMUP_TCP_PORTS) {
+            return false
+        }
+        val normalizedHost = normalizeHost(host)
+        if (normalizedHost.isEmpty()) {
+            return false
+        }
+        return normalizedHost in STARTUP_WARMUP_DNS_NAMES ||
+            warmupTcpDestinationAllowedProvider(normalizedHost, port)
     }
 
     private fun isWarmupDnsAllowed(name: String): Boolean {
-        return name.lowercase() in STARTUP_WARMUP_DNS_NAMES
+        return name.lowercase(Locale.ROOT) in STARTUP_WARMUP_DNS_NAMES
     }
 
     private fun filterDnsResponseForIpv4Only(payload: ByteArray): ByteArray {
