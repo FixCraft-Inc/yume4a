@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -54,19 +55,24 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.fixcraft.yume.MainUiState
+import com.fixcraft.yume.BusyUiState
 import com.fixcraft.yume.R
 import com.fixcraft.yume.data.AppLanguage
 import com.fixcraft.yume.data.ConnectionTechnique
+import com.fixcraft.yume.data.LogLanguage
 import com.fixcraft.yume.data.PerformanceProfile
 import com.fixcraft.yume.data.ThemeColorMode
 import com.fixcraft.yume.i18n.ProvideAppStrings
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.diagnostics.DiagnosticsScreen
+import com.fixcraft.yume.ui.home.AuthKeyImportDialog
 import com.fixcraft.yume.ui.home.HomeDashboardScreen
+import com.fixcraft.yume.ui.home.PendingAuthKeyImport
 import com.fixcraft.yume.ui.security.SecurityScreen
 import com.fixcraft.yume.ui.servers.ServersScreen
 import com.fixcraft.yume.ui.settings.CreditsScreen
 import com.fixcraft.yume.ui.settings.SettingsScreen
+import com.fixcraft.yume.ui.tools.ToolsScreen
 
 private data class TopLevelDestination(
     val route: String,
@@ -78,6 +84,7 @@ private object AppRoute {
     const val Home = "home"
     const val Servers = "servers"
     const val Security = "security"
+    const val Tools = "tools"
     const val Settings = "settings"
     const val Diagnostics = "diagnostics"
     const val Credits = "credits"
@@ -96,41 +103,55 @@ fun YumeApp(
     onDisconnect: () -> Unit,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: (String?, String, String, String, String, String, String, Boolean, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, String, String, Boolean, String, String, String) -> String?,
     onImportCaFile: () -> Unit,
     onImportAuthKeyFile: () -> Unit,
-    onSaveCaText: (String, String) -> String?,
-    onSaveAuthKeyText: (String, String) -> String?,
+    onSaveCaText: suspend (String, String) -> String?,
+    onSaveAuthKeyText: suspend (String, String, Boolean, String) -> String?,
+    pendingAuthKeyImport: PendingAuthKeyImport?,
+    onImportAuthKeyPayload: suspend (String, ByteArray, Boolean, String) -> String?,
+    onDismissAuthKeyImport: () -> Unit,
     onDeleteMaterial: (String) -> Unit,
     onSelectTechnique: (ConnectionTechnique) -> Unit,
     onSelectPerformanceProfile: (PerformanceProfile) -> Unit,
     onSelectThemeColorMode: (ThemeColorMode) -> Unit,
     onSetAmoledDarkTheme: (Boolean) -> Unit,
     isDarkTheme: Boolean,
+    onEnableAppDataPassword: suspend (String, String) -> String?,
+    onChangeAppDataPassword: suspend (String, String, String) -> String?,
+    onDisableAppDataPassword: suspend (String) -> String?,
     onSelectLanguage: (AppLanguage) -> Unit,
+    onSelectLogLanguage: (LogLanguage) -> Unit,
+    onSetAdvancedMode: (Boolean) -> Unit,
     onDeleteDownloadedLanguage: (AppLanguage.AutoTranslated) -> Unit,
     languagePreparationState: LanguagePreparationUiState?,
+    busyState: BusyUiState?,
     diagnosticsReport: String,
     onClearNotice: () -> Unit,
 ) {
     val context = LocalContext.current
     ProvideAppStrings(context = context, language = uiState.appSettings.language) {
         val strings = appStrings()
-        val topLevelDestinations = listOf(
-            TopLevelDestination(AppRoute.Home, strings.homeTab, R.drawable.ic_home_nav),
-            TopLevelDestination(AppRoute.Servers, strings.serversTab, R.drawable.ic_server_nav),
-            TopLevelDestination(AppRoute.Security, strings.securityTab, R.drawable.ic_security_nav),
-            TopLevelDestination(AppRoute.Settings, strings.settingsTab, R.drawable.ic_settings_nav),
-        )
         val navController = rememberNavController()
         val snackbarHostState = remember { SnackbarHostState() }
         val backStackEntry by navController.currentBackStackEntryAsState()
         val currentDestination = backStackEntry?.destination
         val currentRoute = currentDestination?.route ?: AppRoute.Home
+        val showToolsTab = uiState.appSettings.advancedMode || currentRoute == AppRoute.Tools
+        val topLevelDestinations = buildList {
+            add(TopLevelDestination(AppRoute.Home, strings.homeTab, R.drawable.ic_home_nav))
+            add(TopLevelDestination(AppRoute.Servers, strings.serversTab, R.drawable.ic_server_nav))
+            add(TopLevelDestination(AppRoute.Security, strings.securityTab, R.drawable.ic_security_nav))
+            if (showToolsTab) {
+                add(TopLevelDestination(AppRoute.Tools, strings.toolsTab, R.drawable.ic_tools_nav))
+            }
+            add(TopLevelDestination(AppRoute.Settings, strings.settingsTab, R.drawable.ic_settings_nav))
+        }
         val title = when (currentRoute) {
             AppRoute.Home -> "Yume"
             AppRoute.Servers -> strings.serversTitle
             AppRoute.Security -> strings.securityTab
+            AppRoute.Tools -> strings.toolsTitle
             AppRoute.Settings -> strings.settingsTab
             AppRoute.Diagnostics -> strings.diagnosticsTitle
             AppRoute.Credits -> strings.creditsTitle
@@ -225,7 +246,12 @@ fun YumeApp(
                         onSelectThemeColorMode = onSelectThemeColorMode,
                         onSetAmoledDarkTheme = onSetAmoledDarkTheme,
                         isDarkTheme = isDarkTheme,
+                        onEnableAppDataPassword = onEnableAppDataPassword,
+                        onChangeAppDataPassword = onChangeAppDataPassword,
+                        onDisableAppDataPassword = onDisableAppDataPassword,
                         onSelectLanguage = onSelectLanguage,
+                        onSelectLogLanguage = onSelectLogLanguage,
+                        onSetAdvancedMode = onSetAdvancedMode,
                         onDeleteDownloadedLanguage = onDeleteDownloadedLanguage,
                         onOpenCredits = {
                             navController.navigate(AppRoute.Credits)
@@ -234,6 +260,9 @@ fun YumeApp(
                             navController.navigate(AppRoute.Diagnostics)
                         },
                     )
+                }
+                composable(AppRoute.Tools) {
+                    ToolsScreen()
                 }
                 composable(AppRoute.Credits) {
                     CreditsScreen()
@@ -246,8 +275,18 @@ fun YumeApp(
                 }
             }
         }
+        pendingAuthKeyImport?.let { pendingImport ->
+            AuthKeyImportDialog(
+                pending = pendingImport,
+                onDismiss = onDismissAuthKeyImport,
+                onImport = onImportAuthKeyPayload,
+            )
+        }
         languagePreparationState?.let { state ->
             LanguagePreparationDialog(state)
+        }
+        busyState?.let { state ->
+            BusyDialog(state)
         }
     }
 }
@@ -280,6 +319,44 @@ private fun LanguagePreparationDialog(
                         progress = { state.progress },
                         modifier = Modifier.fillMaxWidth(),
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BusyDialog(
+    state: BusyUiState,
+) {
+    Dialog(onDismissRequest = {}) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator()
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = state.title,
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        state.detail?.takeIf { it.isNotBlank() }?.let { detail ->
+                            Text(
+                                text = detail,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
         }

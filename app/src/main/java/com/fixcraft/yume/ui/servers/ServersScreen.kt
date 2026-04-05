@@ -32,7 +32,7 @@ fun ServersScreen(
     uiState: MainUiState,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: (String?, String, String, String, String, String, String, Boolean, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, String, String, Boolean, String, String, String) -> String?,
 ) {
     val strings = appStrings()
     var editorDraft by remember { mutableStateOf<ProfileDraft?>(null) }
@@ -100,7 +100,7 @@ fun ServersScreen(
             authKeyMaterials = uiState.authKeyMaterials,
             onDismiss = { editorDraft = null },
             onSave = { updated ->
-                val error = onSaveProfile(
+                onSaveProfile(
                     updated.id,
                     updated.name,
                     updated.host,
@@ -113,10 +113,6 @@ fun ServersScreen(
                     updated.authKeyMaterialId,
                     updated.notes,
                 )
-                if (error == null) {
-                    editorDraft = null
-                }
-                error
             },
         )
     }

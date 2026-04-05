@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.SystemClock
 import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.data.ServerProfile
+import com.fixcraft.yume.data.VaultJsonMapStore
 import org.conscrypt.Conscrypt
 import org.bouncycastle.asn1.ASN1OctetString
 import org.bouncycastle.asn1.edec.EdECObjectIdentifiers
@@ -977,6 +978,7 @@ object YumeBootstrapClient {
     private const val ANON_MESSAGE_PREFIX = "YUME-ANON-V1:"
     private const val PQ_BOOTSTRAP_PREFIX = "YUME-PQ-V1:"
     private const val INNER_PREFS_NAME = "yume_bootstrap_inner_profiles"
+    private const val INNER_VAULT_NAME = "bootstrap_inner_profiles"
     private const val FIXCRAFT_ANONYM_PUBLIC_KEY_PEM =
         "-----BEGIN PUBLIC KEY-----\n" +
             "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n" +
@@ -1311,14 +1313,20 @@ object YumeBootstrapClient {
         synchronized(cachedInnerPreferencesLock) {
             cachedInnerProfiles.remove(key)
         }
-        appContext.getSharedPreferences(INNER_PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .remove(key)
-            .apply()
+        runCatching {
+            VaultJsonMapStore(appContext, INNER_VAULT_NAME).remove(key)
+        }.getOrElse {
+            appContext.getSharedPreferences(INNER_PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .remove(key)
+                .apply()
+        }
     }
 
     private fun loadPersistedInnerPreference(appContext: Context, key: String): CachedInnerProfile? {
-        val raw = appContext.getSharedPreferences(INNER_PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = runCatching {
+            VaultJsonMapStore(appContext, INNER_VAULT_NAME).getString(key)
+        }.getOrNull() ?: appContext.getSharedPreferences(INNER_PREFS_NAME, Context.MODE_PRIVATE)
             .getString(key, null)
             ?: return null
         return runCatching {
@@ -1360,10 +1368,18 @@ object YumeBootstrapClient {
             .put("pq_public_key_b64", Base64.getEncoder().encodeToString(record.preference.pqPublicKey))
             .put("peer_fingerprint_sha256", record.peerFingerprintSha256)
             .put("pq_public_key_sha256", record.pqPublicKeySha256)
-        appContext.getSharedPreferences(INNER_PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(key, json.toString())
-            .apply()
+        runCatching {
+            VaultJsonMapStore(appContext, INNER_VAULT_NAME).putString(key, json.toString())
+            appContext.getSharedPreferences(INNER_PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .remove(key)
+                .apply()
+        }.getOrElse {
+            appContext.getSharedPreferences(INNER_PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(key, json.toString())
+                .apply()
+        }
     }
 
     private data class CachedInnerProfile(

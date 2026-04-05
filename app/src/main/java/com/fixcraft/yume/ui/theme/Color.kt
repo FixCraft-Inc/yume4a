@@ -2,8 +2,7 @@ package com.fixcraft.yume.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val YumeLogoPink = Color(0xFFE300F3)
-val YumeLogoViolet = Color(0xFFBC00F3)
+
 val YumePlum = Color(0xFF70536B)
 val YumePlumDeep = Color(0xFF563E53)
 val YumeIris = Color(0xFF5F607B)

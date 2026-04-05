@@ -30,7 +30,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -42,6 +41,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,6 +49,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,10 +64,13 @@ import com.fixcraft.yume.AndroidSystemSettings
 import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.MainUiState
 import com.fixcraft.yume.R
+import com.fixcraft.yume.data.SecureMaterialType
 import com.fixcraft.yume.data.SecureMaterialStore
 import com.fixcraft.yume.data.SecureMaterialSummary
 import com.fixcraft.yume.data.ServerProfile
 import com.fixcraft.yume.i18n.appStrings
+import com.fixcraft.yume.i18n.logStrings
+import com.fixcraft.yume.i18n.VpnLogTranslator
 import com.fixcraft.yume.ui.theme.YumeErrorContainer
 import com.fixcraft.yume.ui.theme.YumeErrorContent
 import com.fixcraft.yume.ui.theme.YumeProtectedContainer
@@ -80,6 +84,7 @@ import com.fixcraft.yume.vpn.VpnPhase
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.launch
 
 internal data class ProfileDraft(
     val id: String? = null,
@@ -105,6 +110,13 @@ internal data class MaterialTextDraft(
     val title: String,
     val name: String,
     val content: String = "",
+    val encrypted: Boolean = false,
+    val password: String = "",
+)
+
+data class PendingAuthKeyImport(
+    val displayName: String,
+    val bytes: ByteArray,
 )
 
 @Composable
@@ -114,15 +126,19 @@ fun HomeScreen(
     onDisconnect: () -> Unit,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: (String?, String, String, String, String, String, String, Boolean, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, String, String, Boolean, String, String, String) -> String?,
     onImportCaFile: () -> Unit,
     onImportAuthKeyFile: () -> Unit,
-    onSaveCaText: (String, String) -> String?,
-    onSaveAuthKeyText: (String, String) -> String?,
+    onSaveCaText: suspend (String, String) -> String?,
+    onSaveAuthKeyText: suspend (String, String, Boolean, String) -> String?,
     onDeleteMaterial: (String) -> Unit,
     onClearNotice: () -> Unit,
 ) {
     val strings = appStrings()
+    val context = LocalContext.current
+    val logUiStrings = remember(uiState.appSettings.language, uiState.appSettings.logLanguage) {
+        logStrings(context, uiState.appSettings)
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     var editorDraft by remember { mutableStateOf<ProfileDraft?>(null) }
     var materialDraft by remember { mutableStateOf<MaterialTextDraft?>(null) }
@@ -213,6 +229,7 @@ fun HomeScreen(
                                 selectedAuthKey = uiState.selectedAuthKeyMaterial,
                                 availableAuthKeyCount = uiState.authKeyMaterials.size,
                                 uiState = uiState,
+                                logStrings = logUiStrings,
                                 onConnect = onConnect,
                                 onDisconnect = onDisconnect,
                                 onShowStatus = { showStatusDialog = true },
@@ -280,7 +297,7 @@ fun HomeScreen(
             authKeyMaterials = uiState.authKeyMaterials,
             onDismiss = { editorDraft = null },
             onSave = { updated ->
-                val error = onSaveProfile(
+                onSaveProfile(
                     updated.id,
                     updated.name,
                     updated.host,
@@ -293,10 +310,6 @@ fun HomeScreen(
                     updated.authKeyMaterialId,
                     updated.notes,
                 )
-                if (error == null) {
-                    editorDraft = null
-                }
-                error
             },
         )
     }
@@ -306,14 +319,15 @@ fun HomeScreen(
             draft = draft,
             onDismiss = { materialDraft = null },
             onSave = { updated ->
-                val error = when (updated.kind) {
+                when (updated.kind) {
                     MaterialTextKind.AnonymCa -> onSaveCaText(updated.name, updated.content)
-                    MaterialTextKind.AuthKey -> onSaveAuthKeyText(updated.name, updated.content)
+                    MaterialTextKind.AuthKey -> onSaveAuthKeyText(
+                        updated.name,
+                        updated.content,
+                        updated.encrypted,
+                        updated.password,
+                    )
                 }
-                if (error == null) {
-                    materialDraft = null
-                }
-                error
             },
         )
     }
@@ -321,6 +335,7 @@ fun HomeScreen(
     if (showStatusDialog) {
         StatusDialog(
             uiState = uiState,
+            logStrings = logUiStrings,
             onDismiss = { showStatusDialog = false },
         )
     }
@@ -405,6 +420,7 @@ private fun SelectedServerCard(
     selectedAuthKey: SecureMaterialSummary?,
     availableAuthKeyCount: Int,
     uiState: MainUiState,
+    logStrings: com.fixcraft.yume.i18n.AppStrings,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onShowStatus: () -> Unit,
@@ -547,7 +563,7 @@ private fun SelectedServerCard(
 
             uiState.vpnState.eventLog.lastOrNull()?.let { entry ->
                 Text(
-                    text = "${strings.latestLogLabel}: ${entry.message}",
+                    text = "${strings.latestLogLabel}: ${VpnLogTranslator.translate(entry.message, logStrings)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = when (entry.level) {
                         VpnLogLevel.Info -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -1003,6 +1019,25 @@ private fun SelectionBadge() {
 }
 
 @Composable
+private fun EncryptedKeyBadge() {
+    Surface(
+        modifier = Modifier.size(30.dp),
+        shape = CircleShape,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f)),
+        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.78f),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                painter = painterResource(R.drawable.ic_lock_action),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
+@Composable
 internal fun StatusMessage(
     headline: String,
     detail: String,
@@ -1128,6 +1163,7 @@ private fun BuildStampFooter() {
 @Composable
 private fun StatusDialog(
     uiState: MainUiState,
+    logStrings: com.fixcraft.yume.i18n.AppStrings,
     onDismiss: () -> Unit,
 ) {
     val strings = appStrings()
@@ -1235,7 +1271,7 @@ private fun StatusDialog(
                     )
                 } else {
                     uiState.vpnState.eventLog.asReversed().forEach { entry ->
-                        StatusLogLine(entry)
+                        StatusLogLine(entry, logStrings)
                     }
                 }
             }
@@ -1269,9 +1305,12 @@ internal fun StatusFactRow(
 }
 
 @Composable
-internal fun StatusLogLine(entry: VpnLogEntry) {
+internal fun StatusLogLine(
+    entry: VpnLogEntry,
+    logStrings: com.fixcraft.yume.i18n.AppStrings,
+) {
     Text(
-        text = "[${formatLogTimestamp(entry.timestampEpochMs)}] ${entry.level.name} ${entry.message}",
+        text = "[${formatLogTimestamp(entry.timestampEpochMs)}] ${entry.level.name} ${VpnLogTranslator.translate(entry.message, logStrings)}",
         style = MaterialTheme.typography.bodySmall,
         fontFamily = FontFamily.Monospace,
         color = when (entry.level) {
@@ -1288,15 +1327,21 @@ internal fun ProfileEditorDialog(
     caMaterials: List<SecureMaterialSummary>,
     authKeyMaterials: List<SecureMaterialSummary>,
     onDismiss: () -> Unit,
-    onSave: (ProfileDraft) -> String?,
+    onSave: suspend (ProfileDraft) -> String?,
 ) {
     val strings = appStrings()
     var localDraft by remember(draft) { mutableStateOf(draft) }
     var error by remember(draft) { mutableStateOf<String?>(null) }
+    var submitting by remember(draft) { mutableStateOf(false) }
     val scrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            if (!submitting) {
+                onDismiss()
+            }
+        },
         title = {
             Text(if (draft.id == null) strings.addServerTitle else strings.editServerTitle)
         },
@@ -1369,16 +1414,10 @@ internal fun ProfileEditorDialog(
                             .clickable {
                                 localDraft = localDraft.copy(requireAnonymProof = !localDraft.requireAnonymProof)
                             }
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.Top,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Checkbox(
-                            checked = localDraft.requireAnonymProof,
-                            onCheckedChange = { checked ->
-                                localDraft = localDraft.copy(requireAnonymProof = checked)
-                            },
-                        )
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(
                                 text = strings.requireAnonymProofTitle,
@@ -1395,6 +1434,12 @@ internal fun ProfileEditorDialog(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                        Switch(
+                            checked = localDraft.requireAnonymProof,
+                            onCheckedChange = { checked ->
+                                localDraft = localDraft.copy(requireAnonymProof = checked)
+                            },
+                        )
                     }
                 }
 
@@ -1441,12 +1486,28 @@ internal fun ProfileEditorDialog(
             }
         },
         confirmButton = {
-            Button(onClick = { error = onSave(localDraft) }) {
+            Button(
+                enabled = !submitting,
+                onClick = {
+                    if (submitting) return@Button
+                    scope.launch {
+                        submitting = true
+                        error = onSave(localDraft)
+                        if (error == null) {
+                            onDismiss()
+                        }
+                        submitting = false
+                    }
+                },
+            ) {
                 Text(if (draft.id == null) strings.save else strings.update)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(
+                enabled = !submitting,
+                onClick = onDismiss,
+            ) {
                 Text(strings.cancel)
             }
         },
@@ -1493,6 +1554,7 @@ private fun MaterialChoiceSection(
                 SelectableMaterialChoice(
                     label = material.displayName,
                     subtitle = material.subtitle,
+                    encrypted = material.type == SecureMaterialType.AuthKey,
                     selected = material.id == selectedMaterialId,
                     onClick = { onSelect(material.id) },
                 )
@@ -1505,6 +1567,7 @@ private fun MaterialChoiceSection(
 private fun SelectableMaterialChoice(
     label: String,
     subtitle: String,
+    encrypted: Boolean = false,
     selected: Boolean,
     onClick: () -> Unit,
 ) {
@@ -1544,25 +1607,42 @@ private fun SelectableMaterialChoice(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (selected) {
-                SelectionBadge()
+            if (encrypted || selected) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (encrypted) {
+                        EncryptedKeyBadge()
+                    }
+                    if (selected) {
+                        SelectionBadge()
+                    }
+                }
             }
         }
     }
 }
+
 @Composable
 internal fun MaterialTextDialog(
     draft: MaterialTextDraft,
     onDismiss: () -> Unit,
-    onSave: (MaterialTextDraft) -> String?,
+    onSave: suspend (MaterialTextDraft) -> String?,
 ) {
     val strings = appStrings()
     var localDraft by remember(draft) { mutableStateOf(draft) }
     var error by remember(draft) { mutableStateOf<String?>(null) }
+    var submitting by remember(draft) { mutableStateOf(false) }
     val scrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            if (!submitting) {
+                onDismiss()
+            }
+        },
         title = { Text(draft.title) },
         text = {
             Column(
@@ -1586,9 +1666,70 @@ internal fun MaterialTextDialog(
                     label = { Text(strings.pemTextLabel) },
                     minLines = 8,
                     supportingText = {
-                        Text(strings.pemTextHelper)
+                        Text(
+                            if (draft.kind == MaterialTextKind.AuthKey) {
+                                strings.authKeyTextHelper
+                            } else {
+                                strings.pemTextHelper
+                            },
+                        )
                     },
                 )
+                if (draft.kind == MaterialTextKind.AuthKey) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (!localDraft.encrypted) {
+                            FilledTonalButton(
+                                onClick = {
+                                    localDraft = localDraft.copy(encrypted = false, password = "")
+                                    error = null
+                                },
+                            ) {
+                                Text(strings.regularKeyOption)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = {
+                                    localDraft = localDraft.copy(encrypted = false, password = "")
+                                    error = null
+                                },
+                            ) {
+                                Text(strings.regularKeyOption)
+                            }
+                        }
+                        if (localDraft.encrypted) {
+                            FilledTonalButton(
+                                onClick = {
+                                    localDraft = localDraft.copy(encrypted = true)
+                                    error = null
+                                },
+                            ) {
+                                Text(strings.encryptedKeyOption)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = {
+                                    localDraft = localDraft.copy(encrypted = true)
+                                    error = null
+                                },
+                            ) {
+                                Text(strings.encryptedKeyOption)
+                            }
+                        }
+                    }
+                    if (localDraft.encrypted) {
+                        OutlinedTextField(
+                            value = localDraft.password,
+                            onValueChange = {
+                                localDraft = localDraft.copy(password = it)
+                                error = null
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text(strings.passwordLabel) },
+                            singleLine = true,
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        )
+                    }
+                }
                 if (!error.isNullOrBlank()) {
                     Text(
                         text = error.orEmpty(),
@@ -1599,12 +1740,162 @@ internal fun MaterialTextDialog(
             }
         },
         confirmButton = {
-            Button(onClick = { error = onSave(localDraft) }) {
+            Button(
+                enabled = !submitting,
+                onClick = {
+                    if (submitting) return@Button
+                    scope.launch {
+                        submitting = true
+                        error = onSave(localDraft)
+                        if (error == null) {
+                            onDismiss()
+                        }
+                        submitting = false
+                    }
+                },
+            ) {
                 Text(strings.save)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(
+                enabled = !submitting,
+                onClick = onDismiss,
+            ) {
+                Text(strings.cancel)
+            }
+        },
+    )
+}
+
+@Composable
+internal fun AuthKeyImportDialog(
+    pending: PendingAuthKeyImport,
+    onDismiss: () -> Unit,
+    onImport: suspend (String, ByteArray, Boolean, String) -> String?,
+) {
+    val strings = appStrings()
+    var displayName by remember(pending) { mutableStateOf(pending.displayName) }
+    var encrypted by remember(pending) { mutableStateOf(false) }
+    var password by remember(pending) { mutableStateOf("") }
+    var error by remember(pending) { mutableStateOf<String?>(null) }
+    var submitting by remember(pending) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    AlertDialog(
+        onDismissRequest = {
+            if (!submitting) {
+                onDismiss()
+            }
+        },
+        title = { Text(strings.importAuthKeyTitle) },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedTextField(
+                    value = displayName,
+                    onValueChange = {
+                        displayName = it
+                        error = null
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(strings.savedNameLabel) },
+                    singleLine = true,
+                )
+                Text(
+                    text = strings.authKeyImportModeHelper,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!encrypted) {
+                        FilledTonalButton(
+                            onClick = {
+                                encrypted = false
+                                password = ""
+                                error = null
+                            },
+                        ) {
+                            Text(strings.regularKeyOption)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = {
+                                encrypted = false
+                                password = ""
+                                error = null
+                            },
+                        ) {
+                            Text(strings.regularKeyOption)
+                        }
+                    }
+                    if (encrypted) {
+                        FilledTonalButton(
+                            onClick = {
+                                encrypted = true
+                                error = null
+                            },
+                        ) {
+                            Text(strings.encryptedKeyOption)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = {
+                                encrypted = true
+                                error = null
+                            },
+                        ) {
+                            Text(strings.encryptedKeyOption)
+                        }
+                    }
+                }
+                if (encrypted) {
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = {
+                            password = it
+                            error = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(strings.passwordLabel) },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    )
+                }
+                if (!error.isNullOrBlank()) {
+                    Text(
+                        text = error.orEmpty(),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !submitting,
+                onClick = {
+                    if (submitting) return@Button
+                    scope.launch {
+                        submitting = true
+                        error = onImport(displayName, pending.bytes, encrypted, password)
+                        if (error == null) {
+                            onDismiss()
+                        }
+                        submitting = false
+                    }
+                },
+            ) {
+                Text(strings.importFile)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                enabled = !submitting,
+                onClick = onDismiss,
+            ) {
                 Text(strings.cancel)
             }
         },

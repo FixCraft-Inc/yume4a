@@ -30,8 +30,8 @@ fun SecurityScreen(
     uiState: MainUiState,
     onImportCaFile: () -> Unit,
     onImportAuthKeyFile: () -> Unit,
-    onSaveCaText: (String, String) -> String?,
-    onSaveAuthKeyText: (String, String) -> String?,
+    onSaveCaText: suspend (String, String) -> String?,
+    onSaveAuthKeyText: suspend (String, String, Boolean, String) -> String?,
     onDeleteMaterial: (String) -> Unit,
 ) {
     val strings = appStrings()
@@ -108,14 +108,15 @@ fun SecurityScreen(
             draft = draft,
             onDismiss = { materialDraft = null },
             onSave = { updated ->
-                val error = when (updated.kind) {
+                when (updated.kind) {
                     MaterialTextKind.AnonymCa -> onSaveCaText(updated.name, updated.content)
-                    MaterialTextKind.AuthKey -> onSaveAuthKeyText(updated.name, updated.content)
+                    MaterialTextKind.AuthKey -> onSaveAuthKeyText(
+                        updated.name,
+                        updated.content,
+                        updated.encrypted,
+                        updated.password,
+                    )
                 }
-                if (error == null) {
-                    materialDraft = null
-                }
-                error
             },
         )
     }

@@ -10,6 +10,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import com.fixcraft.yume.data.AppLanguage
 import com.fixcraft.yume.data.ConnectionTechnique
+import com.fixcraft.yume.data.LogLanguage
 import com.fixcraft.yume.data.PerformanceProfile
 import com.fixcraft.yume.data.ResolvedAppLanguage
 import com.fixcraft.yume.data.SecureMaterialType
@@ -44,17 +45,21 @@ class AppStrings private constructor(
     val homeTab = t("Home", "Главная", "ホーム")
     val serversTab = t("Servers", "Серверы", "サーバー")
     val securityTab = t("Security", "Безопасность", "セキュリティ")
+    val toolsTab = t("Tools", "Инструменты", "ツール")
     val settingsTab = t("Settings", "Настройки", "設定")
     val diagnosticsTitle = t("Diagnostics", "Диагностика", "診断")
 
     val languageGroupTitle = t("Language", "Язык", "言語")
+    val logLanguageDialogTitle = t("Log language", "Язык журнала", "ログの言語")
     val maintainedLanguagesTitle = t("Maintained", "Поддерживаемые", "メンテナンス済み")
     val autoTranslatedLanguagesTitle = t("Auto-translated", "Автоперевод", "自動翻訳")
     val close = t("Close", "Закрыть", "閉じる")
     val appLanguageLabel = t("App language", "Язык", "アプリの言語")
+    val logLanguageLabel = t("Log (Beta)", "Лог (бета)", "ログ（ベータ）")
     val unavailableInBuild = t("Unavailable in this build.", "Недоступно в этой сборке.", "このビルドでは利用できません。")
     val originalLabel = t("Original", "Оригинал", "オリジナル")
     val followsSystemLabel = t("Follows your phone", "Как на телефоне", "端末に合わせる")
+    val followAppLabel = t("Follow app", "Как в приложении", "アプリに合わせる")
     val onDeviceTranslationLabel = t("On-device translation", "Перевод на устройстве", "端末上翻訳")
     val autoShortLabel = t("Auto", "Авто", "自動")
     val nativeLabel = t("Native", "Нативно", "ネイティブ")
@@ -63,16 +68,110 @@ class AppStrings private constructor(
     val preparingLanguageTitle = t("Preparing language", "Подготовка языка", "言語を準備中")
     val downloadingLanguageTitle = t("Downloading language data", "Загрузка языковых данных", "言語データをダウンロード中")
     val translatingLanguageTitle = t("Translating the app", "Перевод приложения", "アプリを翻訳中")
+    val workingTitle = t("Working", "Выполняется", "処理中")
 
     val connectionGroupTitle = t("Connection", "Подключение", "接続")
     val profileGroupTitle = t("Profile", "Профиль", "プロファイル")
     val themeGroupTitle = t("Theme", "Тема", "テーマ")
+    val advancedGroupTitle = t("Advanced", "Дополнительно", "詳細")
+    val appDataGroupTitle = t("App data", "Данные приложения", "アプリデータ")
+    val advancedModeTitle = t("Advanced mode", "Продвинутый режим", "高度なモード")
+    val advancedModeDescription = t(
+        "Show developer and power-user tools in the app.",
+        "Показывать инструменты для разработчиков и опытных пользователей.",
+        "開発者や上級ユーザー向けツールを表示します。",
+    )
+    val advancedModeOn = t("Advanced mode on", "Продвинутый режим включен", "高度なモードを有効にしました")
+    val advancedModeOff = t("Advanced mode off", "Продвинутый режим выключен", "高度なモードを無効にしました")
     val amoledTitle = t("AMOLED black", "Глубокий черный", "AMOLEDブラック")
     val amoledDescription = t("Use true black in dark mode.", "Использовать чисто черный цвет в темной теме.", "ダークモードで純粋な黒を使います。")
+    val appDataSubtitle = t(
+        "Use Android protection by default, or add a password before the app opens.",
+        "По умолчанию используется защита Android, либо можно добавить пароль перед открытием приложения.",
+        "標準では Android の保護を使い、必要ならアプリ起動前にパスワードを追加できます。",
+    )
+    val appDataProtectionLabel = t("Protection", "Защита", "保護")
+    val androidProtected = t("Android secure", "Защищено Android", "Android 保護")
+    val passwordProtected = t("Password required", "Требуется пароль", "パスワード必須")
+    val setPasswordButton = t("Set password", "Установить пароль", "パスワードを設定")
+    val changePasswordButton = t("Change password", "Сменить пароль", "パスワードを変更")
+    val removePasswordButton = t("Remove password", "Убрать пароль", "パスワードを解除")
+    val unlockAppDataTitle = t("Unlock app data", "Разблокировать данные приложения", "アプリデータを解除")
+    val unlockAppDataDetail = t(
+        "Enter the password to open Yume and load encrypted data.",
+        "Введите пароль, чтобы открыть Yume и загрузить зашифрованные данные.",
+        "Yume を開いて暗号化データを読み込むにはパスワードを入力してください。",
+    )
+    val passwordLabel = t("Password", "Пароль", "パスワード")
+    val currentPasswordLabel = t("Current password", "Текущий пароль", "現在のパスワード")
+    val newPasswordLabel = t("New password", "Новый пароль", "新しいパスワード")
+    val confirmPasswordLabel = t("Confirm password", "Подтвердите пароль", "パスワードを確認")
+    val unlockButton = t("Unlock", "Разблокировать", "解除")
+    val enableAppDataPasswordDetail = t(
+        "Yume will ask for this password before the app opens. Stored data stays encrypted at rest.",
+        "Yume будет запрашивать этот пароль до открытия приложения. Данные останутся зашифрованными при хранении.",
+        "Yume は起動前にこのパスワードを要求します。保存データは暗号化されたまま保持されます。",
+    )
+    val changeAppDataPasswordDetail = t(
+        "Enter the current password, then set a new one for encrypted app data.",
+        "Введите текущий пароль, затем задайте новый пароль для зашифрованных данных приложения.",
+        "現在のパスワードを入力し、暗号化されたアプリデータ用の新しいパスワードを設定してください。",
+    )
+    val disableAppDataPasswordDetail = t(
+        "Enter the current password to return app data protection to Android-only mode.",
+        "Введите текущий пароль, чтобы вернуть защиту данных приложения только на уровень Android.",
+        "現在のパスワードを入力すると、アプリデータ保護を Android のみのモードに戻します。",
+    )
+    val passwordRequired = t("Password required", "Нужен пароль", "パスワードが必要です")
+    val currentPasswordRequired = t("Current password required", "Нужен текущий пароль", "現在のパスワードが必要です")
+    val newPasswordRequired = t("New password required", "Нужен новый пароль", "新しいパスワードが必要です")
+    val passwordTooShort = t("Use at least 6 characters", "Используйте не менее 6 символов", "6文字以上を使ってください")
+    val passwordsDoNotMatch = t("Passwords do not match", "Пароли не совпадают", "パスワードが一致しません")
+    val appDataPasswordEnabled = t("App data password enabled", "Пароль для данных приложения включен", "アプリデータのパスワードを有効にしました")
+    val appDataPasswordChanged = t("App data password changed", "Пароль для данных приложения изменен", "アプリデータのパスワードを変更しました")
+    val appDataPasswordDisabled = t("App data password removed", "Пароль для данных приложения удален", "アプリデータのパスワードを解除しました")
+    val failedToEnableAppDataPassword = t(
+        "Couldn't enable the app data password.",
+        "Не удалось включить пароль для данных приложения.",
+        "アプリデータのパスワードを有効にできませんでした。",
+    )
+    val failedToChangeAppDataPassword = t(
+        "Couldn't change the app data password.",
+        "Не удалось сменить пароль для данных приложения.",
+        "アプリデータのパスワードを変更できませんでした。",
+    )
+    val failedToDisableAppDataPassword = t(
+        "Couldn't remove the app data password.",
+        "Не удалось убрать пароль для данных приложения.",
+        "アプリデータのパスワードを解除できませんでした。",
+    )
 
     val deviceGroupTitle = t("Device", "Устройство", "デバイス")
     val aboutGroupTitle = t("About", "О приложении", "情報")
     val creditsTitle = t("Credits", "Благодарности", "クレジット")
+    val toolsTitle = t("Tools", "Инструменты", "ツール")
+    val textToolsTitle = t("Text tools", "Текстовые инструменты", "テキストツール")
+    val textToolsDetail = t(
+        "Encrypt or decrypt text with BaseFWX-compatible modes.",
+        "Шифруйте и расшифровывайте текст в режимах, совместимых с BaseFWX.",
+        "BaseFWX 互換モードでテキストを暗号化または復号します。",
+    )
+    val toolInputLabel = t("Input", "Ввод", "入力")
+    val toolOutputLabel = t("Output", "Вывод", "出力")
+    val toolInputRequired = t("Input required", "Нужен ввод", "入力が必要です")
+    val toolOperationFailed = t("Operation failed", "Операция не удалась", "処理に失敗しました")
+    val toolPasswordHint = t(
+        "Password is required for all BaseFWX text modes here.",
+        "Здесь пароль нужен для всех текстовых режимов BaseFWX.",
+        "ここではすべての BaseFWX テキストモードでパスワードが必要です。",
+    )
+    val encryptTextButton = t("Encrypt", "Зашифровать", "暗号化")
+    val decryptTextButton = t("Decrypt", "Расшифровать", "復号")
+    val clearTextButton = t("Clear", "Очистить", "クリア")
+    val toolsModeFwxAes = t("fwxAES light", "fwxAES light", "fwxAES light")
+    val toolsModeFwxAesHeavy = t("fwxAES heavy", "fwxAES heavy", "fwxAES heavy")
+    val toolsModeB512 = "b512"
+    val toolsModePb512 = "pb512"
     val systemGroupTitle = t("System", "Система", "システム")
     val authorLabel = t("Author", "Автор", "作成者")
     val companyLabel = t("Company", "Компания", "会社")
@@ -134,6 +233,7 @@ class AppStrings private constructor(
     val pasteAnonymCaTitle = t("Paste Anonym CA", "Вставить анонимный CA", "匿名CAを貼り付け")
     val importedCaName = t("Imported CA", "Импортированный CA", "インポートしたCA")
     val pasteAuthKeyTitle = t("Paste auth key", "Вставить ключ авторизации", "認証キーを貼り付け")
+    val importAuthKeyTitle = t("Import auth key", "Импортировать ключ авторизации", "認証キーをインポート")
     val importedAuthKeyName = t("Imported auth key", "Импортированный ключ авторизации", "インポートした認証キー")
     val embeddedAnonymCaName = t("Embedded Anonym CA", "Встроенный анонимный CA", "組み込み匿名CA")
     val importedLabel = t("Imported", "Импортировано", "インポート済み")
@@ -228,9 +328,9 @@ class AppStrings private constructor(
 
     val trustAuthHeader = t("Trust & auth", "Доверие и авторизация", "信頼と認証")
     val trustAuthDescription = t(
-        "Imported PEM certificates and keys are encrypted at rest inside the app and stored outside cloud backup.",
-        "Импортированные PEM-сертификаты и ключи шифруются при хранении внутри приложения и не попадают в облачное резервное копирование.",
-        "インポートしたPEM証明書とキーはアプリ内で暗号化保存され、クラウドバックアップ対象外です。",
+        "Imported PEM certificates and keys are encrypted at rest inside the app and stored outside cloud backup. Auth keys also keep a BaseFWX layer at rest.",
+        "Импортированные PEM-сертификаты и ключи шифруются при хранении внутри приложения и не попадают в облачное резервное копирование. Ключи авторизации также защищены слоем BaseFWX.",
+        "インポートしたPEM証明書とキーはアプリ内で暗号化保存され、クラウドバックアップ対象外です。認証キーには保存時に BaseFWX レイヤーも適用されます。",
     )
     val anonymCaCertificatesTitle = t("Anonym CA certificates", "Сертификаты анонимного CA", "匿名CA証明書")
     val anonymCaCertificatesSubtitle = t(
@@ -245,6 +345,13 @@ class AppStrings private constructor(
         "Авторизация Yume использует PEM-приватный ключ. Импортируйте его из файла или вставьте PEM-текст, затем назначьте серверу.",
         "Yume認証ではPEM秘密鍵を使います。ファイルからインポートするかPEMテキストを貼り付けて、サーバーに割り当ててください。",
     )
+    val authKeyImportModeHelper = t(
+        "This is the input format. Plain PEM is accepted as-is. If the key was encrypted with BaseFWX, switch to Encrypted and enter its password.",
+        "Это формат ввода. Обычный PEM принимается как есть. Если ключ зашифрован через BaseFWX, выберите «Зашифрован» и введите пароль.",
+        "これは入力形式です。通常の PEM はそのまま使えます。BaseFWX で暗号化されたキーなら「暗号化」を選び、パスワードを入力してください。",
+    )
+    val regularKeyOption = t("Regular", "Обычный", "通常")
+    val encryptedKeyOption = t("Encrypted", "Зашифрован", "暗号化")
     val noAuthKeysImported = t("No auth keys imported yet.", "Ключи авторизации еще не импортированы.", "まだ認証キーはインポートされていません。")
     val importFile = t("Import file", "Импортировать файл", "ファイルをインポート")
     val pasteText = t("Paste text", "Вставить текст", "テキストを貼り付け")
@@ -313,6 +420,11 @@ class AppStrings private constructor(
     val savedNameLabel = t("Saved name", "Сохраненное имя", "保存名")
     val pemTextLabel = t("PEM text", "PEM-текст", "PEMテキスト")
     val pemTextHelper = t("Paste the full PEM including BEGIN/END lines.", "Вставьте полный PEM, включая строки BEGIN/END.", "BEGIN/END 行を含む完全な PEM を貼り付けてください。")
+    val authKeyTextHelper = t(
+        "Paste the PEM private key, or switch to Encrypted and enter the BaseFWX password.",
+        "Вставьте PEM-приватный ключ, либо переключитесь на «Зашифрован» и введите пароль BaseFWX.",
+        "PEM 秘密鍵を貼り付けるか、「暗号化」を選んで BaseFWX のパスワードを入力してください。",
+    )
 
     val diagnosticsReportHeader = t("Yume Android Diagnostics", "Диагностика Yume Android", "Yume Android 診断")
     val appLabel = t("App", "Приложение", "アプリ")
@@ -349,6 +461,30 @@ class AppStrings private constructor(
     val supportedAbisLabel = t("Supported ABIs", "Поддерживаемые ABI", "対応 ABI")
     val buildFingerprintLabel = t("Build fingerprint", "Отпечаток сборки", "ビルドフィンガープリント")
     val runtimeTitle = t("Runtime", "Параметры", "ランタイム")
+    val runtimeStatusLabel = t("Status", "Состояние", "状態")
+    val runtimeAppliedBridgeTuningTitle = t("Applied bridge tuning", "Примененная bridge-настройка", "適用されたブリッジ調整")
+    val runtimeTcpRelaysLabel = t("TCP relays", "TCP-релеи", "TCP リレー")
+    val runtimeRelayAcquireTimeoutLabel = t("Relay acquire timeout", "Таймаут получения релея", "リレー取得タイムアウト")
+    val runtimeRelayAcquireSliceLabel = t("Relay acquire slice", "Шаг ожидания релея", "リレー取得スライス")
+    val runtimeIdleTcpEvictionLabel = t("Idle TCP eviction", "Удаление простаивающих TCP", "アイドル TCP 退避")
+    val runtimeTcpEvictionGraceLabel = t("TCP eviction grace", "Льготный период TCP eviction", "TCP 退避猶予")
+    val runtimeTcpEvictionBatchLabel = t("TCP eviction batch", "Пакет TCP eviction", "TCP 退避バッチ")
+    val runtimeBridgeChunkLabel = t("Bridge chunk", "Размер bridge chunk", "ブリッジチャンク")
+    val runtimeTcpStreamBufferLabel = t("TCP stream buffer", "Буфер TCP-потока", "TCP ストリームバッファ")
+    val runtimeUdpStreamBufferLabel = t("UDP stream buffer", "Буфер UDP-потока", "UDP ストリームバッファ")
+    val runtimeOutboundFrameQueueLabel = t("Outbound frame queue", "Очередь исходящих фреймов", "送信フレームキュー")
+    val runtimeTun2SocksConnectTimeoutLabel = t("tun2socks connect timeout", "Таймаут подключения tun2socks", "tun2socks 接続タイムアウト")
+    val runtimeTun2SocksTcpReadWriteTimeoutLabel = t("tun2socks TCP read/write timeout", "Таймаут чтения/записи TCP tun2socks", "tun2socks TCP 読み書きタイムアウト")
+    val runtimeTun2SocksUdpReadWriteTimeoutLabel = t("tun2socks UDP read/write timeout", "Таймаут чтения/записи UDP tun2socks", "tun2socks UDP 読み書きタイムアウト")
+    val runtimeMaxDnsUdpAssociationsLabel = t("Max DNS UDP associations", "Макс. DNS UDP-ассоциаций", "最大 DNS UDP 関連")
+    val runtimeMaxUdpAssociationsLabel = t("Max UDP associations", "Макс. UDP-ассоциаций", "最大 UDP 関連")
+    val runtimeDnsRelayConcurrencyLabel = t("DNS relay concurrency", "Параллелизм DNS-релея", "DNS リレー並列数")
+    val runtimePreRoutingStabilityDelayLabel = t("Pre-routing stability delay", "Задержка стабилизации до маршрутизации", "ルーティング前安定化遅延")
+    val runtimePostRoutingTrafficRampLabel = t("Post-routing traffic ramp", "Плавный запуск трафика после маршрутизации", "ルーティング後トラフィック立ち上げ")
+    val runtimeUdp443PolicyLabel = t("UDP 443 policy", "Политика UDP 443", "UDP 443 ポリシー")
+    val runtimeForcedTcpFallback = t("forced TCP fallback", "принудительный переход на TCP", "TCP フォールバック強制")
+    val runtimeBridgeBackedBetaStatus = t("bridge-backed beta path with technique-specific tuning", "beta-маршрут через bridge с настройкой под технику", "方式別チューニング付きのブリッジベータ経路")
+    val runtimePacketNativeStatus = t("packet-native data plane", "packet-native data plane", "パケットネイティブデータプレーン")
     val eventLogTitle = t("Event log", "Журнал событий", "イベントログ")
     val noSessionEventsRecorded = t("No session events recorded.", "События сессии еще не записаны.", "セッションイベントはまだ記録されていません。")
     val none = t("None", "Нет", "なし")
@@ -505,6 +641,29 @@ class AppStrings private constructor(
         }
     }
 
+    fun logLanguageName(logLanguage: LogLanguage): String = when (logLanguage) {
+        LogLanguage.FollowApp -> followAppLabel
+        LogLanguage.English -> "English"
+        LogLanguage.Russian -> "Русский"
+        LogLanguage.Japanese -> "日本語"
+    }
+
+    fun logLanguageDescription(logLanguage: LogLanguage): String? = when (logLanguage) {
+        LogLanguage.FollowApp -> null
+        LogLanguage.English -> originalLabel
+        LogLanguage.Russian -> nativeLabel
+        LogLanguage.Japanese -> nativeLabel
+    }
+
+    fun logLanguageSummary(logLanguage: LogLanguage): String {
+        val description = logLanguageDescription(logLanguage)
+        return if (description.isNullOrBlank()) {
+            logLanguageName(logLanguage)
+        } else {
+            "${logLanguageName(logLanguage)} ($description)"
+        }
+    }
+
     fun preparingLanguage(languageName: String): String {
         return t(
             "Getting $languageName ready.",
@@ -587,6 +746,279 @@ class AppStrings private constructor(
         val normalizedType = typeLabel.lowercase(Locale.ROOT)
         return t("Failed to import $normalizedType", "Не удалось импортировать $normalizedType", "$normalizedType をインポートできませんでした")
     }
+
+    fun saving(typeLabel: String): String {
+        return t(
+            "Saving $typeLabel.",
+            "Сохранение: $typeLabel.",
+            "$typeLabel を保存しています。",
+        )
+    }
+
+    fun importing(typeLabel: String): String {
+        return t(
+            "Importing $typeLabel.",
+            "Импорт: $typeLabel.",
+            "$typeLabel をインポートしています。",
+        )
+    }
+
+    fun readingSelectedFile(typeLabel: String): String {
+        return t(
+            "Reading selected $typeLabel file.",
+            "Чтение выбранного файла: $typeLabel.",
+            "選択した${typeLabel}ファイルを読み込んでいます。",
+        )
+    }
+
+    fun savingServer(profileName: String): String {
+        return t(
+            "Saving $profileName.",
+            "Сохранение: $profileName.",
+            "$profileName を保存しています。",
+        )
+    }
+
+    val updatingAppDataProtection = t(
+        "Updating app data protection.",
+        "Обновление защиты данных приложения.",
+        "アプリデータ保護を更新しています。",
+    )
+
+    fun processingText(actionLabel: String, modeLabel: String): String {
+        return t(
+            "$actionLabel with $modeLabel.",
+            "$actionLabel: $modeLabel.",
+            "${modeLabel} で${actionLabel}しています。",
+        )
+    }
+
+    fun logAndroidNeedsVpnPermission(): String = t(
+        "Android needs VPN permission before Yume can create the interface.",
+        "Android требует разрешение VPN, прежде чем Yume сможет создать интерфейс.",
+        "Yume がインターフェースを作成する前に、Android の VPN 権限が必要です。",
+    )
+
+    fun logAndroidVpnPermissionGranted(): String = t(
+        "Android VPN permission granted.",
+        "Разрешение Android VPN получено.",
+        "Android の VPN 権限が許可されました。",
+    )
+
+    fun logAndroidVpnPermissionDenied(): String = t(
+        "Android VPN permission was denied.",
+        "В разрешении Android VPN отказано.",
+        "Android の VPN 権限が拒否されました。",
+    )
+
+    fun logRequestingNotificationPermission(): String = t(
+        "Requesting Android notification permission for VPN status updates.",
+        "Запрашивается разрешение Android на уведомления для статуса VPN.",
+        "VPN 状態更新のために Android の通知権限を要求しています。",
+    )
+
+    fun logOpeningVpnPermissionDialog(): String = t(
+        "Opening the Android VPN permission dialog.",
+        "Открывается диалог разрешения Android VPN.",
+        "Android の VPN 権限ダイアログを開いています。",
+    )
+
+    fun logAndroidVpnPermissionAlreadyGranted(): String = t(
+        "Android VPN permission is already granted.",
+        "Разрешение Android VPN уже получено.",
+        "Android の VPN 権限はすでに許可されています。",
+    )
+
+    fun logSelectedServer(name: String, endpointLabel: String): String = t(
+        "Selected server: $name ($endpointLabel).",
+        "Выбранный сервер: $name ($endpointLabel).",
+        "選択したサーバー: $name ($endpointLabel)。",
+    )
+
+    fun logSelectedAnonymCaUnavailable(): String = t(
+        "The selected anonym CA is unavailable.",
+        "Выбранный анонимный CA недоступен.",
+        "選択した匿名CAは利用できません。",
+    )
+
+    fun logSelectedAuthKeyRequired(): String = t(
+        "This server does not have an auth key assigned.",
+        "Для этого сервера не назначен ключ авторизации.",
+        "このサーバーには認証キーが割り当てられていません。",
+    )
+
+    fun logSelectedAuthKeyUnavailable(): String = t(
+        "The selected auth key is unavailable.",
+        "Выбранный ключ авторизации недоступен.",
+        "選択した認証キーは利用できません。",
+    )
+
+    fun logCredentialsReady(): String = t(
+        "Local CA and auth key are ready. Starting the Android VPN service.",
+        "Локальный CA и ключ авторизации готовы. Запускается Android VPN service.",
+        "ローカル CA と認証キーの準備ができました。Android VPN サービスを開始します。",
+    )
+
+    fun logTechnique(summary: String): String = t(
+        "Technique: $summary.",
+        "Техника: $summary.",
+        "方式: $summary。",
+    )
+
+    fun localizedHeadline(headline: String): String = when (headline) {
+        "Disconnected" -> disconnectedHeadline
+        "Connection failed" -> connectionFailedHeadline
+        "Verifying route" -> verifyingRouteHeadline
+        "Protected" -> protectedHeadline
+        "Connecting" -> connectingHeadline
+        "Disconnecting" -> disconnectingHeadline
+        "Waiting for network" -> waitingForNetworkHeadline
+        "Upstream lost" -> upstreamLostHeadline
+        "Permission required" -> permissionRequiredHeadline
+        else -> headline
+    }
+
+    fun localizedDetail(detail: String): String = when (detail) {
+        "" -> ""
+        "Route is up. Verifying traffic." -> verifyingRouteDetail
+        "Traffic is flowing through Yume." -> protectedDetail
+        "Wi-Fi or cellular is unavailable, so Yume cannot rebuild the protected control path yet." -> waitingForNetworkDetail
+        "Wi-Fi or cellular disappeared. Yume is waiting to rebuild the authenticated control path." -> upstreamLostDetail
+        "Android needs permission to start the VPN." -> permissionRequiredDetail
+        else -> detail
+    }
+
+    fun logStartingAndroidSession(name: String, endpointLabel: String): String = t(
+        "Starting Yume Android session for $name ($endpointLabel).",
+        "Запуск Android-сессии Yume для $name ($endpointLabel).",
+        "$name ($endpointLabel) の Yume Android セッションを開始しています。",
+    )
+
+    fun logRequestedProtectionPolicy(value: String): String = t(
+        "Requested protection policy: $value.",
+        "Запрошенная политика защиты: $value.",
+        "要求された保護ポリシー: $value。",
+    )
+
+    fun logLoadedAnonymCa(displayName: String): String = t(
+        "Loaded anonym CA: $displayName.",
+        "Загружен анонимный CA: $displayName.",
+        "匿名CAを読み込みました: $displayName。",
+    )
+
+    fun logLoadedAuthKey(displayName: String): String = t(
+        "Loaded auth key: $displayName.",
+        "Загружен ключ авторизации: $displayName.",
+        "認証キーを読み込みました: $displayName。",
+    )
+
+    fun logOpeningAuthenticatedControlPath(networkLabel: String): String = t(
+        "Opening authenticated Yume control path on $networkLabel.",
+        "Открывается аутентифицированный управляющий путь Yume через $networkLabel.",
+        "$networkLabel で認証済みの Yume 制御経路を開いています。",
+    )
+
+    fun logProtectedControlSocket(): String = t(
+        "Protected the control socket from the VPN path.",
+        "Управляющий сокет выведен из VPN-маршрута.",
+        "制御ソケットを VPN 経路から保護しました。",
+    )
+
+    fun logSelectedIpv4ControlEndpoint(endpoint: String, host: String): String = t(
+        "Selected IPv4 control endpoint $endpoint for $host.",
+        "Выбран IPv4 управляющий endpoint $endpoint для $host.",
+        "$host 用に IPv4 制御エンドポイント $endpoint を選択しました。",
+    )
+
+    fun logTlsHandshakeCompleted(detail: String): String = t(
+        "TLS handshake completed: $detail.",
+        "TLS-рукопожатие завершено: $detail.",
+        "TLS ハンドシェイクが完了しました: $detail。",
+    )
+
+    fun logReceivedAuthChallenge(): String = t(
+        "Received Yume AUTH challenge.",
+        "Получен AUTH challenge от Yume.",
+        "Yume AUTH チャレンジを受信しました。",
+    )
+
+    fun logAuthenticatedToServer(): String = t(
+        "Authenticated to the Yume server.",
+        "Аутентификация на сервере Yume выполнена.",
+        "Yume サーバーへの認証が完了しました。",
+    )
+
+    fun logRunningRelayCanary(target: String): String = t(
+        "Running a Yume relay canary via $target.",
+        "Запуск relay canary Yume через $target.",
+        "$target 経由で Yume リレーのカナリア確認を実行しています。",
+    )
+
+    fun logVerifiedAppRelayTraffic(exitIp: String): String = t(
+        "Verified app relay traffic via Yume. Exit IP: $exitIp.",
+        "Трафик приложения через Yume подтвержден. Выходной IP: $exitIp.",
+        "Yume 経由のアプリ中継トラフィックを確認しました。出口 IP: $exitIp。",
+    )
+
+    fun logRunningRoutedProbe(): String = t(
+        "Running an in-app routed Android traffic probe through Yume.",
+        "Запускается внутриприкладной Android probe маршрутизации через Yume.",
+        "Yume 経由でアプリ内の Android ルーティング確認を実行しています。",
+    )
+
+    fun logVerifiedSystemTraffic(exitIp: String): String = t(
+        "Verified system traffic via Yume. Exit IP: $exitIp.",
+        "Системный трафик через Yume подтвержден. Выходной IP: $exitIp.",
+        "Yume 経由のシステムトラフィックを確認しました。出口 IP: $exitIp。",
+    )
+
+    fun logTlsHandshakeFailed(detail: String): String = t(
+        "TLS handshake failed: $detail",
+        "TLS-рукопожатие не удалось: $detail",
+        "TLS ハンドシェイクに失敗しました: $detail",
+    )
+
+    fun logTlsProviderHandshakeFailed(): String = t(
+        "TLS handshake failed on this Android TLS provider",
+        "TLS-рукопожатие не удалось на этом Android TLS provider",
+        "この Android TLS プロバイダでは TLS ハンドシェイクに失敗しました",
+    )
+
+    fun logHandshakeFailed(): String = t(
+        "Handshake failed",
+        "Рукопожатие не удалось",
+        "ハンドシェイクに失敗しました",
+    )
+
+    fun logVpnPrepareFailed(detail: String): String = t(
+        "VpnService.prepare() failed: $detail",
+        "VpnService.prepare() завершился ошибкой: $detail",
+        "VpnService.prepare() に失敗しました: $detail",
+    )
+
+    fun logUnhandledVpnCoroutineFailure(detail: String): String = t(
+        "Unhandled VPN coroutine failure: $detail",
+        "Необработанная ошибка VPN coroutine: $detail",
+        "VPN コルーチンで未処理の障害が発生しました: $detail",
+    )
+
+    fun logNoUpstreamNetwork(): String = t(
+        "No upstream network is available. Waiting for Wi-Fi or cellular.",
+        "Нет доступной внешней сети. Ожидание Wi-Fi или мобильной сети.",
+        "利用可能な上流ネットワークがありません。Wi-Fi またはモバイル回線を待機しています。",
+    )
+
+    fun logUpstreamNetworkLost(): String = t(
+        "Upstream network lost. Waiting for Wi-Fi or cellular.",
+        "Внешняя сеть потеряна. Ожидание Wi-Fi или мобильной сети.",
+        "上流ネットワークが失われました。Wi-Fi またはモバイル回線を待機しています。",
+    )
+
+    fun logFailedToVerifySystemRouting(detail: String): String = t(
+        "Failed to verify systemwide Yume routing: $detail",
+        "Не удалось подтвердить системную маршрутизацию Yume: $detail",
+        "システム全体の Yume ルーティング確認に失敗しました: $detail",
+    )
 
     fun removed(displayName: String): String = t("$displayName removed", "$displayName удален", "$displayName を削除しました")
 

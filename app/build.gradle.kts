@@ -15,7 +15,7 @@ val sharedYumeRoot = rootProject.file("../../yume")
 val yumeProtocolVersion = readQuotedConstant(
     sharedYumeRoot.resolve("src/core/version.hpp"),
     "kVersion",
-    "1.0A",
+    "1.0",
 )
 val basefwxEngineVersion = readQuotedConstant(
     sharedYumeRoot.resolve("basefwx/cpp/include/basefwx/constants.hpp"),
@@ -26,8 +26,11 @@ val basefwxEngineVersion = readQuotedConstant(
 val basefwxJavaOutputDir = layout.buildDirectory.dir("generated/basefwx-java")
 val syncBasefwxJava by tasks.registering(Sync::class) {
     from(rootProject.file("../../yume/basefwx/java/src/main/java")) {
+        include("com/fixcraft/basefwx/Base64Codec.java")
+        include("com/fixcraft/basefwx/Codec.java")
         include("com/fixcraft/basefwx/Crypto.java")
         include("com/fixcraft/basefwx/Constants.java")
+        include("com/fixcraft/basefwx/Format.java")
     }
     into(basefwxJavaOutputDir)
 }

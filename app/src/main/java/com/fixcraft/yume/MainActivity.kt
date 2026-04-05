@@ -25,8 +25,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fixcraft.yume.data.AppLanguage
+import com.fixcraft.yume.data.AppVaultManager
 import com.fixcraft.yume.data.SecureMaterialType
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AppLocaleManager
@@ -36,6 +38,7 @@ import com.fixcraft.yume.i18n.LanguagePreparationStage
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.LanguagePreparationUiState
 import com.fixcraft.yume.ui.YumeApp
+import com.fixcraft.yume.ui.home.PendingAuthKeyImport
 import com.fixcraft.yume.ui.theme.YumeVPNTheme
 import com.fixcraft.yume.vpn.VpnConnectionState
 import com.fixcraft.yume.vpn.VpnLogLevel
@@ -47,6 +50,8 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
+    private var pendingAuthKeyImport by mutableStateOf<PendingAuthKeyImport?>(null)
+    private var transientBusyState by mutableStateOf<BusyUiState?>(null)
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(AppLocaleManager.wrap(newBase))
@@ -107,6 +112,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!AppVaultManager.ensureReady(this)) {
+            startActivity(Intent(this, UnlockActivity::class.java))
+            finish()
+            return
+        }
         enableEdgeToEdge()
         setContent {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -152,15 +162,27 @@ class MainActivity : ComponentActivity() {
                     onSaveCaText = { name, pemText ->
                         viewModel.savePastedMaterial(SecureMaterialType.AnonymCa, name, pemText)
                     },
-                    onSaveAuthKeyText = { name, pemText ->
-                        viewModel.savePastedMaterial(SecureMaterialType.AuthKey, name, pemText)
+                    onSaveAuthKeyText = { name, pemText, encrypted, password ->
+                        viewModel.savePastedAuthKey(name, pemText, encrypted, password)
                     },
+                    pendingAuthKeyImport = pendingAuthKeyImport,
+                    onImportAuthKeyPayload = { name, bytes, encrypted, password ->
+                        viewModel.importAuthKeyFromBytes(name, bytes, encrypted, password).also { error ->
+                            if (error == null) {
+                                pendingAuthKeyImport = null
+                            }
+                        }
+                    },
+                    onDismissAuthKeyImport = { pendingAuthKeyImport = null },
                     onDeleteMaterial = viewModel::deleteMaterial,
                     onSelectTechnique = viewModel::updateConnectionTechnique,
                     onSelectPerformanceProfile = viewModel::updatePerformanceProfile,
                     onSelectThemeColorMode = viewModel::updateThemeColorMode,
                     onSetAmoledDarkTheme = viewModel::updateAmoledDarkTheme,
                     isDarkTheme = darkTheme,
+                    onEnableAppDataPassword = viewModel::enableAppDataPassword,
+                    onChangeAppDataPassword = viewModel::changeAppDataPassword,
+                    onDisableAppDataPassword = viewModel::disableAppDataPassword,
                     onSelectLanguage = { language ->
                         if (uiState.appSettings.language == language || languagePreparationState != null) {
                             Unit
@@ -188,8 +210,11 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
+                    onSelectLogLanguage = viewModel::updateLogLanguage,
+                    onSetAdvancedMode = viewModel::updateAdvancedMode,
                     onDeleteDownloadedLanguage = viewModel::deleteDownloadedLanguage,
                     languagePreparationState = languagePreparationState,
+                    busyState = uiState.busyState ?: transientBusyState,
                     diagnosticsReport = viewModel.buildDiagnosticsReport(),
                     onClearNotice = viewModel::clearNotice,
                 )
@@ -345,19 +370,33 @@ class MainActivity : ComponentActivity() {
         if (uri == null) {
             return
         }
-        val displayName = queryDisplayName(uri).orEmpty().ifBlank {
-            val strings = appStrings(this, viewModel.uiState.value.appSettings.language)
-            if (type == SecureMaterialType.AnonymCa) strings.importedCaFallbackName else strings.importedAuthKeyFallbackName
+        val strings = appStrings(this, viewModel.uiState.value.appSettings.language)
+        transientBusyState = BusyUiState(
+            title = strings.importFile,
+            detail = strings.readingSelectedFile(strings.materialTypeLabel(type)),
+        )
+        lifecycleScope.launch {
+            val imported = withContext(Dispatchers.IO) {
+                val displayName = queryDisplayName(uri).orEmpty().ifBlank {
+                    if (type == SecureMaterialType.AnonymCa) strings.importedCaFallbackName else strings.importedAuthKeyFallbackName
+                }
+                val bytes = runCatching {
+                    contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                }.getOrNull()
+                displayName to bytes
+            }
+            transientBusyState = null
+            val (displayName, bytes) = imported
+            if (bytes == null) {
+                viewModel.reportUiNotice(strings.failedToReadSelected(strings.materialTypeLabel(type)))
+                return@launch
+            }
+            if (type == SecureMaterialType.AuthKey) {
+                pendingAuthKeyImport = PendingAuthKeyImport(displayName = displayName, bytes = bytes)
+            } else {
+                viewModel.importMaterialFromBytes(type, displayName, bytes)
+            }
         }
-        val bytes = runCatching {
-            contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        }.getOrNull()
-        if (bytes == null) {
-            val strings = appStrings(this, viewModel.uiState.value.appSettings.language)
-            viewModel.reportUiNotice(strings.failedToReadSelected(strings.materialTypeLabel(type)))
-            return
-        }
-        viewModel.importMaterialFromBytes(type, displayName, bytes)
     }
 
     private fun queryDisplayName(uri: Uri): String? {

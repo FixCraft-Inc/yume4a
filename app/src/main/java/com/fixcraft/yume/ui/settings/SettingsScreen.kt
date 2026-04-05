@@ -3,16 +3,15 @@ package com.fixcraft.yume.ui.settings
 import android.Manifest
 import android.content.Intent
 import android.os.Build
-import android.os.PowerManager
 import android.provider.Settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -25,18 +24,22 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -47,12 +50,14 @@ import com.fixcraft.yume.MainUiState
 import com.fixcraft.yume.R
 import com.fixcraft.yume.data.AppLanguage
 import com.fixcraft.yume.data.ConnectionTechnique
+import com.fixcraft.yume.data.LogLanguage
 import com.fixcraft.yume.data.PerformanceProfile
 import com.fixcraft.yume.data.ThemeColorMode
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AppLanguageGroup
 import com.fixcraft.yume.i18n.AppLocaleManager
 import com.fixcraft.yume.i18n.appStrings
+import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(
@@ -62,7 +67,12 @@ fun SettingsScreen(
     onSelectThemeColorMode: (ThemeColorMode) -> Unit,
     onSetAmoledDarkTheme: (Boolean) -> Unit,
     isDarkTheme: Boolean,
+    onEnableAppDataPassword: suspend (String, String) -> String?,
+    onChangeAppDataPassword: suspend (String, String, String) -> String?,
+    onDisableAppDataPassword: suspend (String) -> String?,
     onSelectLanguage: (AppLanguage) -> Unit,
+    onSelectLogLanguage: (LogLanguage) -> Unit,
+    onSetAdvancedMode: (Boolean) -> Unit,
     onDeleteDownloadedLanguage: (AppLanguage.AutoTranslated) -> Unit,
     onOpenCredits: () -> Unit,
     onOpenDiagnostics: () -> Unit,
@@ -70,6 +80,8 @@ fun SettingsScreen(
     val strings = appStrings()
     val context = LocalContext.current
     var showLanguageDialog by remember { mutableStateOf(false) }
+    var showLogLanguageDialog by remember { mutableStateOf(false) }
+    var passwordDialogMode by remember { mutableStateOf<AppDataPasswordDialogMode?>(null) }
     val batteryOptimized = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         !AndroidSystemSettings.isIgnoringBatteryOptimizations(context)
     } else {
@@ -89,8 +101,14 @@ fun SettingsScreen(
             strings.languageSummary(uiState.appSettings.language)
         }
     }
+    val logLanguageSummary = remember(uiState.appSettings.logLanguage, strings) {
+        strings.logLanguageSummary(uiState.appSettings.logLanguage)
+    }
     val notificationsAllowed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
     } else {
         true
     }
@@ -137,6 +155,7 @@ fun SettingsScreen(
                                             }
                                         }
                                     }
+
                                     else -> strings.languageDescription(option.language)
                                 },
                                 selected = uiState.appSettings.language == option.language,
@@ -179,6 +198,58 @@ fun SettingsScreen(
         )
     }
 
+    if (showLogLanguageDialog) {
+        val logLanguageOptions = remember {
+            listOf(
+                LogLanguage.FollowApp,
+                LogLanguage.English,
+                LogLanguage.Russian,
+                LogLanguage.Japanese,
+            )
+        }
+        AlertDialog(
+            onDismissRequest = { showLogLanguageDialog = false },
+            title = { Text(strings.logLanguageDialogTitle) },
+            text = {
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 360.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(
+                        items = logLanguageOptions,
+                        key = { language -> language.wireValue },
+                    ) { language ->
+                        SettingChoiceCard(
+                            title = strings.logLanguageName(language),
+                            description = strings.logLanguageDescription(language),
+                            selected = uiState.appSettings.logLanguage == language,
+                            enabled = true,
+                            onClick = {
+                                onSelectLogLanguage(language)
+                                showLogLanguageDialog = false
+                            },
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showLogLanguageDialog = false }) {
+                    Text(strings.close)
+                }
+            },
+        )
+    }
+
+    passwordDialogMode?.let { mode ->
+        AppDataPasswordDialog(
+            mode = mode,
+            onDismiss = { passwordDialogMode = null },
+            onEnable = onEnableAppDataPassword,
+            onChange = onChangeAppDataPassword,
+            onDisable = onDisableAppDataPassword,
+        )
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
@@ -196,7 +267,11 @@ fun SettingsScreen(
                     }
                     SettingChoiceCard(
                         title = strings.connectionTechniqueName(technique),
-                        description = if (!enabled) strings.unavailableInBuild else strings.connectionTechniqueDescription(technique),
+                        description = if (!enabled) {
+                            strings.unavailableInBuild
+                        } else {
+                            strings.connectionTechniqueDescription(technique)
+                        },
                         selected = uiState.appSettings.connectionTechnique == technique,
                         enabled = enabled,
                         onClick = { onSelectTechnique(technique) },
@@ -250,6 +325,39 @@ fun SettingsScreen(
 
         item {
             SettingGroupCard(
+                title = strings.appDataGroupTitle,
+                subtitle = strings.appDataSubtitle,
+            ) {
+                SettingFact(
+                    strings.appDataProtectionLabel,
+                    if (uiState.appDataPasswordEnabled) strings.passwordProtected else strings.androidProtected,
+                )
+                if (uiState.appDataPasswordEnabled) {
+                    FilledTonalButton(
+                        onClick = { passwordDialogMode = AppDataPasswordDialogMode.Change },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(strings.changePasswordButton)
+                    }
+                    OutlinedButton(
+                        onClick = { passwordDialogMode = AppDataPasswordDialogMode.Disable },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(strings.removePasswordButton)
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = { passwordDialogMode = AppDataPasswordDialogMode.Enable },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(strings.setPasswordButton)
+                    }
+                }
+            }
+        }
+
+        item {
+            SettingGroupCard(
                 title = strings.languageGroupTitle,
                 subtitle = null,
             ) {
@@ -258,6 +366,28 @@ fun SettingsScreen(
                     value = languageSummary,
                     iconRes = R.drawable.ic_translate_action,
                     onClick = { showLanguageDialog = true },
+                )
+                if (uiState.appSettings.advancedMode) {
+                    SettingActionRow(
+                        label = strings.logLanguageLabel,
+                        value = logLanguageSummary,
+                        iconRes = R.drawable.ic_translate_action,
+                        onClick = { showLogLanguageDialog = true },
+                    )
+                }
+            }
+        }
+
+        item {
+            SettingGroupCard(
+                title = strings.advancedGroupTitle,
+                subtitle = null,
+            ) {
+                SettingToggleRow(
+                    title = strings.advancedModeTitle,
+                    description = strings.advancedModeDescription,
+                    checked = uiState.appSettings.advancedMode,
+                    onCheckedChange = onSetAdvancedMode,
                 )
             }
         }
@@ -306,9 +436,7 @@ fun SettingsScreen(
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     OutlinedButton(
-                        onClick = {
-                            AndroidSystemSettings.openBatteryOptimizationControls(context)
-                        },
+                        onClick = { AndroidSystemSettings.openBatteryOptimizationControls(context) },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(if (batteryOptimized) strings.allowBackground else strings.batterySettingsButton)
@@ -317,9 +445,11 @@ fun SettingsScreen(
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     OutlinedButton(
                         onClick = {
-                            context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                            })
+                            context.startActivity(
+                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                }
+                            )
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -329,6 +459,133 @@ fun SettingsScreen(
             }
         }
     }
+}
+
+private enum class AppDataPasswordDialogMode {
+    Enable,
+    Change,
+    Disable,
+}
+
+@Composable
+private fun AppDataPasswordDialog(
+    mode: AppDataPasswordDialogMode,
+    onDismiss: () -> Unit,
+    onEnable: suspend (String, String) -> String?,
+    onChange: suspend (String, String, String) -> String?,
+    onDisable: suspend (String) -> String?,
+) {
+    val strings = appStrings()
+    var currentPassword by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var submitting by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    AlertDialog(
+        onDismissRequest = {
+            if (!submitting) {
+                onDismiss()
+            }
+        },
+        title = {
+            Text(
+                when (mode) {
+                    AppDataPasswordDialogMode.Enable -> strings.setPasswordButton
+                    AppDataPasswordDialogMode.Change -> strings.changePasswordButton
+                    AppDataPasswordDialogMode.Disable -> strings.removePasswordButton
+                },
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = when (mode) {
+                        AppDataPasswordDialogMode.Enable -> strings.enableAppDataPasswordDetail
+                        AppDataPasswordDialogMode.Change -> strings.changeAppDataPasswordDetail
+                        AppDataPasswordDialogMode.Disable -> strings.disableAppDataPasswordDetail
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (mode != AppDataPasswordDialogMode.Enable) {
+                    OutlinedTextField(
+                        value = currentPassword,
+                        onValueChange = {
+                            currentPassword = it
+                            error = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(strings.currentPasswordLabel) },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                }
+                if (mode != AppDataPasswordDialogMode.Disable) {
+                    OutlinedTextField(
+                        value = newPassword,
+                        onValueChange = {
+                            newPassword = it
+                            error = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(strings.newPasswordLabel) },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                    OutlinedTextField(
+                        value = confirmPassword,
+                        onValueChange = {
+                            confirmPassword = it
+                            error = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(strings.confirmPasswordLabel) },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                }
+                if (!error.isNullOrBlank()) {
+                    Text(
+                        text = error.orEmpty(),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !submitting,
+                onClick = {
+                    if (submitting) return@TextButton
+                    scope.launch {
+                        submitting = true
+                        error = when (mode) {
+                            AppDataPasswordDialogMode.Enable -> onEnable(newPassword, confirmPassword)
+                            AppDataPasswordDialogMode.Change -> onChange(currentPassword, newPassword, confirmPassword)
+                            AppDataPasswordDialogMode.Disable -> onDisable(currentPassword)
+                        }
+                        if (error == null) {
+                            onDismiss()
+                        }
+                        submitting = false
+                    }
+                },
+            ) {
+                Text(strings.save)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                enabled = !submitting,
+                onClick = onDismiss,
+            ) {
+                Text(strings.cancel)
+            }
+        },
+    )
 }
 
 @Composable
@@ -408,6 +665,51 @@ private fun SettingChoiceCard(
                 }
             }
             trailingContent?.invoke()
+        }
+    }
+}
+
+@Composable
+private fun SettingToggleRow(
+    title: String,
+    description: String?,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) },
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                if (!description.isNullOrBlank()) {
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+            )
         }
     }
 }

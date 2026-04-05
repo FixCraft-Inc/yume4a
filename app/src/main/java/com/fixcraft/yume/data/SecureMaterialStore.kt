@@ -3,9 +3,10 @@ package com.fixcraft.yume.data
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import androidx.core.content.edit
 import com.fixcraft.yume.R
+import com.fixcraft.yume.crypto.BaseFwxCompat
 import com.fixcraft.yume.i18n.appStrings
+import com.fixcraft.yume.transport.YumeAuthKeyValidator
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -81,11 +82,16 @@ data class SecureMaterialSummary(
 
 class SecureMaterialStore private constructor(context: Context) {
     private val appContext = context.applicationContext
-    private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val legacyPrefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val metadataStore = VaultJsonMapStore(appContext, VAULT_NAME)
     private val secureDir = File(appContext.noBackupFilesDir, SECURE_DIR_NAME).apply { mkdirs() }
 
     private val _userMaterials = MutableStateFlow(loadUserMaterials())
     val userMaterials: StateFlow<List<SecureMaterialSummary>> = _userMaterials.asStateFlow()
+
+    init {
+        upgradeLegacyAuthKeyStorage(_userMaterials.value)
+    }
 
     fun caMaterials(materials: List<SecureMaterialSummary> = _userMaterials.value): List<SecureMaterialSummary> {
         return listOf(defaultAnonymCaSummary()) + materials.filter { it.type == SecureMaterialType.AnonymCa }
@@ -112,7 +118,7 @@ class SecureMaterialStore private constructor(context: Context) {
         }
         val summary = _userMaterials.value.firstOrNull { it.id == id }
             ?: throw IllegalArgumentException("Material not found")
-        val bytes = decryptFromFile(fileFor(summary.id))
+        val bytes = unwrapStoredBytes(summary, decryptFromFile(fileFor(summary.id)))
         return normalizePem(bytes.toString(Charsets.UTF_8))
     }
 
@@ -135,7 +141,7 @@ class SecureMaterialStore private constructor(context: Context) {
             sourceLabel = normalizedSource,
             fingerprint = shortFingerprint(normalizedPem),
         )
-        encryptToFile(fileFor(summary.id), normalizedPem.toByteArray(Charsets.UTF_8))
+        encryptToFile(fileFor(summary.id), wrapStoredBytes(type, normalizedPem.toByteArray(Charsets.UTF_8)))
         val updated = listOf(summary) + _userMaterials.value
         persistUserMaterials(updated)
         return summary
@@ -201,11 +207,7 @@ class SecureMaterialStore private constructor(context: Context) {
     }
 
     private fun validateAuthKeyPem(pem: String) {
-        val beginPattern = Regex("-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
-        val endPattern = Regex("-----END [A-Z0-9 ]*PRIVATE KEY-----")
-        if (!beginPattern.containsMatchIn(pem) || !endPattern.containsMatchIn(pem)) {
-            throw IllegalArgumentException("PEM private key expected")
-        }
+        YumeAuthKeyValidator.validatePrivateKeyPem(pem)
     }
 
     private fun normalizePem(rawPemText: String): String {
@@ -214,7 +216,8 @@ class SecureMaterialStore private constructor(context: Context) {
     }
 
     private fun loadUserMaterials(): List<SecureMaterialSummary> {
-        val raw = prefs.getString(KEY_USER_MATERIALS_JSON, null).orEmpty()
+        migrateLegacyPrefsIfNeeded()
+        val raw = metadataStore.getString(KEY_USER_MATERIALS_JSON).orEmpty()
         if (raw.isBlank()) {
             return emptyList()
         }
@@ -247,10 +250,17 @@ class SecureMaterialStore private constructor(context: Context) {
         val payload = JSONArray().apply {
             materials.forEach { put(it.toJson()) }
         }
-        prefs.edit {
-            putString(KEY_USER_MATERIALS_JSON, payload.toString())
-        }
+        metadataStore.putString(KEY_USER_MATERIALS_JSON, payload.toString())
         _userMaterials.value = materials
+    }
+
+    private fun migrateLegacyPrefsIfNeeded() {
+        if (!metadataStore.isEmpty()) {
+            return
+        }
+        val raw = legacyPrefs.getString(KEY_USER_MATERIALS_JSON, null) ?: return
+        metadataStore.putString(KEY_USER_MATERIALS_JSON, raw)
+        legacyPrefs.edit().clear().apply()
     }
 
     private fun encryptToFile(file: File, plaintext: ByteArray) {
@@ -314,6 +324,49 @@ class SecureMaterialStore private constructor(context: Context) {
 
     private fun fileFor(id: String): File = File(secureDir, "$id.bin")
 
+    private fun wrapStoredBytes(type: SecureMaterialType, plaintext: ByteArray): ByteArray {
+        if (type != SecureMaterialType.AuthKey) {
+            return plaintext
+        }
+        val password = AppVaultManager.derivePassword(appContext, AUTH_KEY_STORAGE_PURPOSE)
+        return BaseFwxCompat.fwxAesEncryptRaw(plaintext, password)
+    }
+
+    private fun unwrapStoredBytes(summary: SecureMaterialSummary, ciphertextPlaintext: ByteArray): ByteArray {
+        if (summary.type != SecureMaterialType.AuthKey) {
+            return ciphertextPlaintext
+        }
+        if (!BaseFwxCompat.looksLikeRawFwxAes(ciphertextPlaintext)) {
+            migrateLegacyAuthKeyPayload(summary, ciphertextPlaintext)
+            return ciphertextPlaintext
+        }
+        val password = AppVaultManager.derivePassword(appContext, AUTH_KEY_STORAGE_PURPOSE)
+        return BaseFwxCompat.fwxAesDecryptRaw(ciphertextPlaintext, password)
+    }
+
+    private fun migrateLegacyAuthKeyPayload(summary: SecureMaterialSummary, plaintext: ByteArray) {
+        runCatching {
+            encryptToFile(fileFor(summary.id), wrapStoredBytes(SecureMaterialType.AuthKey, plaintext))
+        }
+    }
+
+    private fun upgradeLegacyAuthKeyStorage(materials: List<SecureMaterialSummary>) {
+        materials.asSequence()
+            .filter { it.type == SecureMaterialType.AuthKey }
+            .forEach { summary ->
+                runCatching {
+                    val file = fileFor(summary.id)
+                    if (!file.isFile) {
+                        return@runCatching
+                    }
+                    val stored = decryptFromFile(file)
+                    if (!BaseFwxCompat.looksLikeRawFwxAes(stored)) {
+                        encryptToFile(file, wrapStoredBytes(SecureMaterialType.AuthKey, stored))
+                    }
+                }
+            }
+    }
+
     private fun shortFingerprint(pemText: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(pemText.toByteArray(Charsets.UTF_8))
         return digest.take(6).joinToString("") { byte ->
@@ -327,11 +380,13 @@ class SecureMaterialStore private constructor(context: Context) {
         private const val PREFS_NAME = "yume_secure_materials"
         private const val KEY_USER_MATERIALS_JSON = "user_materials_json"
         private const val SECURE_DIR_NAME = "secure-materials"
+        private const val VAULT_NAME = "secure_materials"
         private const val FILE_VERSION = 1
         private const val KEY_ALIAS = "yume_secure_materials_key"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val GCM_TAG_LENGTH_BITS = 128
+        private const val AUTH_KEY_STORAGE_PURPOSE = "secure-material-auth-key"
 
         @Volatile
         private var instance: SecureMaterialStore? = null
