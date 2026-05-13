@@ -1110,25 +1110,55 @@ class AppStrings private constructor(
         "Стороннее ПО, на котором построен Yume, и его лицензии.",
         "Yume が依存しているサードパーティ ライブラリとライセンス。",
     )
+    val componentScopeAndroidOnly = t(
+        "Used only in the Android implementation of Yume.",
+        "Используется только в Android-реализации Yume.",
+        "Yume の Android 実装でのみ使用されています。",
+    )
+    val componentScopeAllImpls = t(
+        "Used in every implementation of Yume.",
+        "Используется во всех реализациях Yume.",
+        "Yume のすべての実装で使用されています。",
+    )
+
     val componentHevTunnelTitle = "hev-socks5-tunnel · hev-task-system · lwIP"
     val componentHevTunnelUsage = t(
-        "Used only in the legacy tun2socks mode. Heavily edited for YUME; we no longer pull upstream changes.",
-        "Используется только в режиме tun2socks. Существенно изменено для YUME; обновления извне больше не подтягиваются.",
-        "tun2socks モードでのみ使用しています。YUME 向けに大幅に改変済みで、今後アップストリームの変更は取り込みません。",
+        "TUN-to-SOCKS user-space stack for the legacy tun2socks engine. Heavily edited for YUME; upstream is no longer tracked.",
+        "Пользовательский TUN→SOCKS-стек для устаревшего движка tun2socks. Сильно изменён для YUME; апстрим больше не отслеживается.",
+        "レガシー tun2socks エンジン向けのユーザーランド TUN→SOCKS スタックです。YUME 向けに大幅に改変しており、アップストリームの追随はしていません。",
     )
     val componentHevTunnelLicense = "MIT · MIT · BSD-3-Clause"
     val componentBasefwxTitle = "BaseFWX"
     val componentBasefwxUsage = t(
-        "Inner post-quantum crypto engine bundled with the runtime.",
-        "Внутренний пост-квантовый крипто-движок, встроенный в рантайм.",
-        "ランタイムに同梱されたポスト量子暗号エンジン。",
+        "The core Yume crypto engine — outer auth, inner post-quantum tunnel, key formats.",
+        "Базовый крипто-движок Yume — внешняя аутентификация, внутренний пост-квантовый туннель, форматы ключей.",
+        "Yume の中核暗号エンジン — 外側認証、内側のポスト量子トンネル、鍵フォーマットを担います。",
     )
     val componentBasefwxLicense = "GPL-3.0"
+    val componentLiboqsTitle = "liboqs (Open Quantum Safe)"
+    val componentLiboqsUsage = t(
+        "Post-quantum primitives (ML-KEM, ML-DSA) consumed through BaseFWX.",
+        "Пост-квантовые примитивы (ML-KEM, ML-DSA), используемые через BaseFWX.",
+        "BaseFWX 経由で利用するポスト量子プリミティブ (ML-KEM、ML-DSA) を提供します。",
+    )
+    val componentLiboqsLicense = "MIT"
     val yumeSocksTunnelCreditRole = t(
         "See Open-source components for the libraries Yume is built on.",
         "См. раздел «Открытые компоненты» для библиотек, на которых построен Yume.",
         "Yume が依拠するライブラリは「オープンソース構成要素」を参照してください。",
     )
+    val liveTrafficTitle = t("Live traffic", "Активный трафик", "リアルタイム通信量")
+    val trafficCollectingSamples = t(
+        "Collecting samples…",
+        "Сбор данных…",
+        "サンプルを収集中…",
+    )
+    val trafficConnectToStart = t(
+        "Connect to start measuring traffic",
+        "Подключитесь, чтобы начать измерение трафика",
+        "接続すると通信量の計測が始まります",
+    )
+
     val developerCreditQuote = "\"Credit is only fair when everyone has their place, and AI deserves to be recognized too.\""
 
     val founderQuote = t(

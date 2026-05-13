@@ -22,6 +22,7 @@ import com.fixcraft.yume.i18n.appStrings
 
 private data class ComponentEntry(
     val title: String,
+    val scope: String,
     val description: String,
     val license: String,
 )
@@ -29,16 +30,26 @@ private data class ComponentEntry(
 @Composable
 fun OpenSourceComponentsScreen() {
     val strings = appStrings()
+    // Order: pieces that are part of every Yume implementation first,
+    // then anything that only ships in this Android client.
     val components = listOf(
         ComponentEntry(
-            title = strings.componentHevTunnelTitle,
-            description = strings.componentHevTunnelUsage,
-            license = strings.componentHevTunnelLicense,
-        ),
-        ComponentEntry(
             title = strings.componentBasefwxTitle,
+            scope = strings.componentScopeAllImpls,
             description = strings.componentBasefwxUsage,
             license = strings.componentBasefwxLicense,
+        ),
+        ComponentEntry(
+            title = strings.componentLiboqsTitle,
+            scope = strings.componentScopeAllImpls,
+            description = strings.componentLiboqsUsage,
+            license = strings.componentLiboqsLicense,
+        ),
+        ComponentEntry(
+            title = strings.componentHevTunnelTitle,
+            scope = strings.componentScopeAndroidOnly,
+            description = strings.componentHevTunnelUsage,
+            license = strings.componentHevTunnelLicense,
         ),
     )
     LazyColumn(
@@ -75,6 +86,11 @@ private fun ComponentCard(entry: ComponentEntry) {
                 text = entry.title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = entry.scope,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
             )
             Text(
                 text = entry.description,

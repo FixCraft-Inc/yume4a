@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.vpn.TrafficSample
 import com.fixcraft.yume.vpn.VpnPhase
 import com.fixcraft.yume.vpn.YumeVpnRuntime
@@ -55,6 +56,7 @@ fun TrafficChartCard(
 ) {
     val history by YumeVpnRuntime.traffic.collectAsStateWithLifecycle()
     val isConnected = vpnPhase == VpnPhase.Connected
+    val strings = appStrings()
 
     var window by rememberSaveable { mutableStateOf(TrafficWindow.Minute) }
     val visibleSamples = remember(history.samples, window) {
@@ -79,7 +81,7 @@ fun TrafficChartCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
-                    text = "Live traffic",
+                    text = strings.liveTrafficTitle,
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.SemiBold,
@@ -108,9 +110,9 @@ fun TrafficChartCard(
                 } else {
                     Text(
                         text = if (isConnected) {
-                            "Collecting samples…"
+                            strings.trafficCollectingSamples
                         } else {
-                            "Connect to start measuring traffic"
+                            strings.trafficConnectToStart
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
