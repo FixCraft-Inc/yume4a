@@ -92,6 +92,8 @@ object YumeVpnRuntime {
 
     private const val TAG = "YumeVpn"
     private const val MAX_LOG_ENTRIES = 120
-    // 60 samples @ 1 s = 1 minute window. Cheap to hold in memory.
-    private const val MAX_TRAFFIC_SAMPLES = 60
+    // 900 samples @ 1 s = 15 minutes window — matches the longest range
+    // the home-screen chart can render. ~22 KB at full fill, fine in
+    // memory for a foreground VPN service.
+    private const val MAX_TRAFFIC_SAMPLES = 900
 }

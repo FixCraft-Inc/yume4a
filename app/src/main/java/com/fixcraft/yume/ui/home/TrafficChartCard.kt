@@ -1,8 +1,5 @@
 package com.fixcraft.yume.ui.home
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -19,10 +16,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -33,21 +36,20 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.fixcraft.yume.vpn.TrafficHistory
 import com.fixcraft.yume.vpn.TrafficSample
 import com.fixcraft.yume.vpn.VpnPhase
 import com.fixcraft.yume.vpn.YumeVpnRuntime
 import java.util.Locale
 import kotlin.math.max
 
-/**
- * Live throughput card. Listens to YumeVpnRuntime.traffic via a lifecycle-
- * scoped collector so we only redraw while the user is looking; the
- * VpnService keeps the ring buffer fresh in the background regardless.
- */
+private enum class TrafficWindow(val label: String, val seconds: Int) {
+    Short("15s", 15),
+    Minute("60s", 60),
+    FiveMin("5m", 300),
+    FifteenMin("15m", 900),
+}
+
 @Composable
 fun TrafficChartCard(
     vpnPhase: VpnPhase,
@@ -55,6 +57,13 @@ fun TrafficChartCard(
 ) {
     val history by YumeVpnRuntime.traffic.collectAsStateWithLifecycle()
     val isConnected = vpnPhase == VpnPhase.Connected
+
+    var window by rememberSaveable { mutableStateOf(TrafficWindow.Minute) }
+    val visibleSamples = remember(history.samples, window) {
+        val keep = window.seconds
+        if (history.samples.size <= keep) history.samples
+        else history.samples.takeLast(keep)
+    }
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -65,21 +74,36 @@ fun TrafficChartCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
-            TrafficChartHeader(
-                history = history,
-                isConnected = isConnected,
-            )
-            Spacer(Modifier.height(14.dp))
+            // Header: title on the left, time selector on the right, single row.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Live traffic",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                WindowSelector(
+                    selected = window,
+                    onSelect = { window = it },
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+
+            // Plot — fills the recovered vertical space.
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(150.dp)
+                    .height(180.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .background(MaterialTheme.colorScheme.surfaceContainerLowest),
             ) {
-                if (history.samples.size >= 2) {
+                if (visibleSamples.size >= 2) {
                     TrafficSparkline(
-                        samples = history.samples,
+                        samples = visibleSamples,
                         upload = MaterialTheme.colorScheme.primary,
                         download = MaterialTheme.colorScheme.tertiary,
                     )
@@ -96,116 +120,98 @@ fun TrafficChartCard(
                     )
                 }
             }
+
             Spacer(Modifier.height(12.dp))
-            Legend()
+
+            // Bottom row: rate + cumulative on one line per direction.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                RateStat(
+                    arrow = "↑",
+                    rate = history.latestTxRateBps,
+                    total = history.totalTxBytes,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                RateStat(
+                    arrow = "↓",
+                    rate = history.latestRxRateBps,
+                    total = history.totalRxBytes,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun TrafficChartHeader(
-    history: TrafficHistory,
-    isConnected: Boolean,
+private fun WindowSelector(
+    selected: TrafficWindow,
+    onSelect: (TrafficWindow) -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Column {
-            Text(
-                text = "Live traffic",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = if (isConnected) {
-                    "Updated every second while protected"
-                } else {
-                    "Idle"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Column(horizontalAlignment = Alignment.End) {
-            RateLine(
-                label = "↑",
-                rate = history.latestTxRateBps,
-                total = history.totalTxBytes,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.height(2.dp))
-            RateLine(
-                label = "↓",
-                rate = history.latestRxRateBps,
-                total = history.totalRxBytes,
-                color = MaterialTheme.colorScheme.tertiary,
-            )
+    val options = remember { TrafficWindow.values().toList() }
+    SingleChoiceSegmentedButtonRow {
+        options.forEachIndexed { index, opt ->
+            SegmentedButton(
+                selected = opt == selected,
+                onClick = { onSelect(opt) },
+                shape = SegmentedButtonDefaults.itemShape(index, options.size),
+                colors = SegmentedButtonDefaults.colors(
+                    activeContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                    activeContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    inactiveContainerColor = MaterialTheme.colorScheme.surface,
+                    inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+            ) {
+                Text(opt.label, style = MaterialTheme.typography.labelMedium)
+            }
         }
     }
 }
 
 @Composable
-private fun RateLine(
-    label: String,
+private fun RateStat(
+    arrow: String,
     rate: Double,
     total: Long,
     color: Color,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(color),
+        )
+        Spacer(Modifier.size(8.dp))
         Text(
-            text = label,
+            text = arrow,
             color = color,
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold,
         )
-        Spacer(Modifier.size(6.dp))
+        Spacer(Modifier.size(4.dp))
         Text(
-            text = "${formatRate(rate)}  ·  ${formatBytes(total)}",
+            text = formatRate(rate),
             color = MaterialTheme.colorScheme.onSurface,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
         )
-    }
-}
-
-@Composable
-private fun Legend() {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        LegendDot(color = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.size(6.dp))
         Text(
-            "Upload",
-            style = MaterialTheme.typography.labelMedium,
+            text = "· ${formatBytes(total)}",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.size(18.dp))
-        LegendDot(color = MaterialTheme.colorScheme.tertiary)
-        Spacer(Modifier.size(6.dp))
-        Text(
-            "Download",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall,
         )
     }
-}
-
-@Composable
-private fun LegendDot(color: Color) {
-    Box(
-        modifier = Modifier
-            .size(10.dp)
-            .clip(CircleShape)
-            .background(color),
-    )
 }
 
 /**
- * Hand-rolled sparkline. Cubic-smoothed line for each series, soft
- * gradient fill below. ImPlot/AnyChart-equivalent visuals with no
- * dependencies.
+ * Cubic-smoothed sparkline. Two stacked series: upload (primary) on
+ * top, download (tertiary) below. Soft gradient fill under each line.
+ * Zero external chart deps.
  */
 @Composable
 private fun TrafficSparkline(
@@ -215,10 +221,14 @@ private fun TrafficSparkline(
 ) {
     val maxRate = remember(samples) {
         val peak = samples.maxOf { max(it.rxRateBps, it.txRateBps) }
-        // Avoid a tiny y-range with a small floor; round up to a nice value.
         max(peak, 1024.0)
     }
-    Canvas(modifier = Modifier.fillMaxWidth().height(150.dp).padding(horizontal = 8.dp, vertical = 8.dp)) {
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(180.dp)
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+    ) {
         val w = size.width
         val h = size.height
         val n = samples.size
@@ -232,16 +242,14 @@ private fun TrafficSparkline(
 
         fun seriesPath(rateOf: (TrafficSample) -> Double, fill: Boolean): Path {
             val path = Path()
-            val first = samples[0]
-            path.moveTo(0f, pointY(rateOf(first)))
+            path.moveTo(0f, pointY(rateOf(samples[0])))
             for (i in 1 until n) {
                 val xPrev = (i - 1) * xStep
                 val xCur = i * xStep
                 val yPrev = pointY(rateOf(samples[i - 1]))
                 val yCur = pointY(rateOf(samples[i]))
-                val cx1 = xPrev + (xCur - xPrev) / 2f
-                val cx2 = xPrev + (xCur - xPrev) / 2f
-                path.cubicTo(cx1, yPrev, cx2, yCur, xCur, yCur)
+                val midX = xPrev + (xCur - xPrev) / 2f
+                path.cubicTo(midX, yPrev, midX, yCur, xCur, yCur)
             }
             if (fill) {
                 path.lineTo(w, h)
@@ -251,14 +259,10 @@ private fun TrafficSparkline(
             return path
         }
 
-        // Upload — fill + line on top.
         drawPath(
             path = seriesPath({ it.txRateBps }, fill = true),
             brush = Brush.verticalGradient(
-                colors = listOf(
-                    upload.copy(alpha = 0.32f),
-                    upload.copy(alpha = 0.02f),
-                ),
+                colors = listOf(upload.copy(alpha = 0.32f), upload.copy(alpha = 0.02f)),
             ),
         )
         drawPath(
@@ -267,14 +271,10 @@ private fun TrafficSparkline(
             style = Stroke(width = 4f, cap = StrokeCap.Round),
         )
 
-        // Download — fill + line on top.
         drawPath(
             path = seriesPath({ it.rxRateBps }, fill = true),
             brush = Brush.verticalGradient(
-                colors = listOf(
-                    download.copy(alpha = 0.32f),
-                    download.copy(alpha = 0.02f),
-                ),
+                colors = listOf(download.copy(alpha = 0.32f), download.copy(alpha = 0.02f)),
             ),
         )
         drawPath(
@@ -301,13 +301,10 @@ private fun formatBytes(bytes: Long): String {
     var value = bytes.toDouble()
     var i = 0
     while (value >= 1024.0 && i < units.lastIndex) { value /= 1024.0; i++ }
-    return if (i == 0) {
-        "${bytes} B"
-    } else if (value >= 100.0) {
-        String.format(Locale.ROOT, "%.0f %s", value, units[i])
-    } else if (value >= 10.0) {
-        String.format(Locale.ROOT, "%.1f %s", value, units[i])
-    } else {
-        String.format(Locale.ROOT, "%.2f %s", value, units[i])
+    return when {
+        i == 0 -> "${bytes} B"
+        value >= 100.0 -> String.format(Locale.ROOT, "%.0f %s", value, units[i])
+        value >= 10.0 -> String.format(Locale.ROOT, "%.1f %s", value, units[i])
+        else -> String.format(Locale.ROOT, "%.2f %s", value, units[i])
     }
 }
