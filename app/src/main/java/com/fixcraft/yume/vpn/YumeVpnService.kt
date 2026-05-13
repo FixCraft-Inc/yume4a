@@ -48,6 +48,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -84,6 +85,10 @@ class YumeVpnService : VpnService() {
 
     private var connectJob: Job? = null
     private var disconnectJob: Job? = null
+    // Pushes a TrafficSample into YumeVpnRuntime every second while the
+    // VPN is up, so the home-screen chart has fresh data without
+    // depending on the UI being foregrounded.
+    private var trafficTickerJob: Job? = null
     private var tunInterface: ParcelFileDescriptor? = null
     private var bootstrapSession: YumeBootstrapSession? = null
     private var socksProxy: YumeSocks5Proxy? = null
@@ -245,6 +250,7 @@ class YumeVpnService : VpnService() {
         connectJob = null
         disconnectJob?.cancel()
         disconnectJob = null
+        stopTrafficTicker()
         disconnectResources()
         activeProfile = null
         if (networkCallbackRegistered) {
@@ -253,6 +259,26 @@ class YumeVpnService : VpnService() {
         }
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    private fun startTrafficTicker() {
+        trafficTickerJob?.cancel()
+        YumeVpnRuntime.resetTrafficHistory()
+        trafficTickerJob = serviceScope.launch {
+            while (isActive) {
+                val stats = readActiveTechniqueStats()
+                if (stats != null) {
+                    YumeVpnRuntime.pushTrafficSample(stats.rxBytes, stats.txBytes)
+                }
+                delay(1_000)
+            }
+        }
+    }
+
+    private fun stopTrafficTicker() {
+        trafficTickerJob?.cancel()
+        trafficTickerJob = null
+        YumeVpnRuntime.resetTrafficHistory()
     }
 
     private suspend fun connect(profileId: String, authKeyPassword: String?) {
@@ -634,7 +660,8 @@ class YumeVpnService : VpnService() {
         if (connectJob != null) {
             connectJob?.cancel()
         }
-        
+        stopTrafficTicker()
+
         val session = bootstrapSession
         disconnectJob = serviceScope.launch {
             try {
@@ -1712,6 +1739,7 @@ class YumeVpnService : VpnService() {
                 append(" Control-path relay canary: $appRelayIp.")
             }
         }
+        startTrafficTicker()
         YumeVpnRuntime.update { current ->
             current.copy(
                 phase = VpnPhase.Connected,

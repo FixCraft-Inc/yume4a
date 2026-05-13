@@ -243,6 +243,14 @@ fun HomeScreen(
                             )
                         }
                     }
+
+                    // Live throughput chart sits right under the selected
+                    // server card so the user can glance at the protected
+                    // traffic without scrolling. Only shown when there is
+                    // at least one server profile to be talking about.
+                    item {
+                        TrafficChartCard(vpnPhase = uiState.vpnState.phase)
+                    }
                 }
 
                 item {
