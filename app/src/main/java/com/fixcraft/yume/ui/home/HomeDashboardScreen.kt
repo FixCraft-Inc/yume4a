@@ -250,6 +250,15 @@ fun HomeDashboardScreen(
                     }
                 }
             }
+            // Live throughput chart, only shown when there is at least
+            // one server profile to be talking about. The chart itself
+            // handles disconnected / collecting / live states internally,
+            // so we don't need to gate further here.
+            if (uiState.profiles.isNotEmpty()) {
+                item {
+                    TrafficChartCard(vpnPhase = vpnState.phase)
+                }
+            }
         }
     }
 }
