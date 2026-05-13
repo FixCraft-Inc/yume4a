@@ -44,6 +44,7 @@ class YumeSocks5Proxy(
     private val protectedDestinationsProvider: () -> ProtectedDestinations = { ProtectedDestinations() },
     private val protectedAddressResolver: (String) -> Set<String> = { emptySet() },
     private val warmupTcpDestinationAllowedProvider: (String, Int) -> Boolean = { _, _ -> false },
+    private val onWarmupTcpConnectObserved: (String, Int, Boolean) -> Unit = { _, _, _ -> },
     private val mappedHostResolver: (String) -> String? = { null },
     private val log: (VpnLogLevel, String) -> Unit,
 ) {
@@ -85,10 +86,24 @@ class YumeSocks5Proxy(
         listenAddress?.let { return it }
         val boundSocket = bindLoopback(preferredPort)
         serverSocket = boundSocket
+        val bound = boundSocket.localSocketAddress as InetSocketAddress
+        log(
+            VpnLogLevel.Info,
+            "Local Yume SOCKS5 proxy listening on ${bound.address.hostAddress}:${bound.port}.",
+        )
         acceptJob = scope.launch(Dispatchers.IO) {
-            acceptLoop(boundSocket)
+            try {
+                acceptLoop(boundSocket)
+            } catch (throwable: Throwable) {
+                if (!boundSocket.isClosed) {
+                    log(
+                        VpnLogLevel.Error,
+                        "Local Yume SOCKS5 proxy accept loop terminated: ${throwable.message ?: throwable.javaClass.simpleName}.",
+                    )
+                }
+            }
         }
-        return boundSocket.localSocketAddress as InetSocketAddress
+        return bound
     }
 
     fun stop() {
@@ -127,6 +142,11 @@ class YumeSocks5Proxy(
             }
             client.keepAlive = true
             client.tcpNoDelay = true
+            val peer = client.remoteSocketAddress as? InetSocketAddress
+            log(
+                VpnLogLevel.Info,
+                "SOCKS5 proxy accepted ${peer?.address?.hostAddress ?: "?"}:${peer?.port ?: 0}.",
+            )
             registerCloseable(client)
             val job = scope.launch(Dispatchers.IO) {
                 try {
@@ -203,7 +223,11 @@ class YumeSocks5Proxy(
                         )
                         return
                     }
-                    if (startupWarmupMode && !isWarmupTcpAllowed(effectiveRequest.host, effectiveRequest.port)) {
+                    val warmupAllowed = isWarmupTcpAllowed(effectiveRequest.host, effectiveRequest.port)
+                    if (startupWarmupMode) {
+                        onWarmupTcpConnectObserved(effectiveRequest.host, effectiveRequest.port, warmupAllowed)
+                    }
+                    if (startupWarmupMode && !warmupAllowed) {
                         sendSocksReply(output, REPLY_CONNECTION_NOT_ALLOWED)
                         val destination = "${effectiveRequest.host}:${effectiveRequest.port}"
                         val shouldLog = synchronized(policyLock) {
@@ -238,20 +262,34 @@ class YumeSocks5Proxy(
                         return
                     }
 
+                    sendSocksReply(output, REPLY_SUCCESS)
+                    client.soTimeout = 0
+                    log(
+                        VpnLogLevel.Info,
+                        "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} accepted locally; opening Yume stream.",
+                    )
+
                     stream = try {
-                        session.openTcpStream(effectiveRequest.host, effectiveRequest.port)
+                        session.openTcpStream(
+                            effectiveRequest.host,
+                            effectiveRequest.port,
+                            timeoutMs = yumeStreamOpenTimeoutMs(),
+                        )
                     } catch (throwable: Exception) {
-                        sendSocksReply(output, mapOpenFailureToReply(throwable))
+                        val chain = generateSequence(throwable as Throwable?) { it.cause }
+                            .mapNotNull { it.message?.trim()?.takeIf(String::isNotEmpty) }
+                            .toList()
+                            .distinct()
+                            .joinToString(" <- ")
+                            .ifEmpty { throwable.javaClass.simpleName }
                         log(
                             VpnLogLevel.Warn,
-                            "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} failed: ${throwable.message ?: "open failed"}.",
+                            "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} failed after local accept: $chain.",
                         )
                         return
                     }
 
                     registerActiveTcpRelay(client, stream, effectiveRequest)
-                    sendSocksReply(output, REPLY_SUCCESS)
-                    client.soTimeout = 0
                     log(VpnLogLevel.Info, "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} via Yume stream ${stream.streamId}.")
                     bridgeClient(client, input, output, stream, effectiveRequest)
                 }
@@ -451,7 +489,11 @@ class YumeSocks5Proxy(
                 for (host in hosts) {
                     var stream: YumeTcpStream? = null
                     try {
-                        stream = session.openTcpStream(host, DNS_PORT)
+                        stream = session.openTcpStream(
+                            host,
+                            DNS_PORT,
+                            timeoutMs = yumeDnsTcpOpenTimeoutMs(),
+                        )
                         val tcpRequest = ByteArray(2 + payload.size)
                         tcpRequest[0] = ((payload.size ushr 8) and 0xFF).toByte()
                         tcpRequest[1] = (payload.size and 0xFF).toByte()
@@ -566,9 +608,12 @@ class YumeSocks5Proxy(
             }
 
             try {
-                val stream = session.openUdpStream(host, port)
-                lateinit var association: UdpAssociation
-                association = UdpAssociation(
+                val stream = session.openUdpStream(
+                    host,
+                    port,
+                    timeoutMs = yumeStreamOpenTimeoutMs(),
+                )
+                val association = UdpAssociation(
                     key = key,
                     host = host,
                     port = port,
@@ -576,54 +621,60 @@ class YumeSocks5Proxy(
                     clientAddress = clientAddress,
                     clientPort = clientPort,
                     stream = stream,
-                    pumpJob = scope.launch(Dispatchers.IO) {
-                        try {
-                            while (true) {
-                                val payload = stream.readDatagram() ?: break
-                                association.touch()
-                                val relayPayload = if (ipv4OnlyMode && port == DNS_PORT) {
-                                    filterDnsResponseForIpv4Only(payload)
-                                } else {
-                                    payload
-                                }
-                                if (port == DNS_PORT) {
-                                    relayDnsResponse(
-                                        relay = relay,
-                                        resolverHost = host,
-                                        payload = relayPayload,
-                                        udpSocket = udpSocket,
-                                    )
-                                    continue
-                                }
-                                if (clientPort <= 0) {
-                                    continue
-                                }
-                                val response = buildUdpResponse(host, port, relayPayload)
-                                udpSocket.send(DatagramPacket(response, response.size, clientAddress, clientPort))
-                            }
-                        } catch (_: CancellationException) {
-                        } catch (throwable: IOException) {
-                            if (!isExpectedSocketShutdown(throwable)) {
-                                log(
-                                    VpnLogLevel.Warn,
-                                    "SOCKS5 UDP ${host}:${port} receive loop failed: ${throwable.message ?: "socket error"}.",
-                                )
-                            }
-                        } catch (throwable: Exception) {
-                            log(
-                                VpnLogLevel.Warn,
-                                "SOCKS5 UDP ${host}:${port} stream failed: ${throwable.message ?: throwable.javaClass.simpleName}.",
-                            )
-                        } finally {
-                            synchronized(relay.associationsLock) {
-                                if (relay.associations[key] === association) {
-                                    relay.associations.remove(key)
-                                }
-                            }
-                        }
-                    },
                     idleTimeoutMs = associationIdleTimeoutMs(port),
                 )
+                association.pumpJob = scope.launch(Dispatchers.IO) {
+                    try {
+                        while (true) {
+                            val payload = stream.readDatagram() ?: break
+                            association.touch()
+                            val relayPayload = if (ipv4OnlyMode && port == DNS_PORT) {
+                                filterDnsResponseForIpv4Only(payload)
+                            } else {
+                                payload
+                            }
+                            if (port == DNS_PORT) {
+                                relayDnsResponse(
+                                    relay = relay,
+                                    resolverHost = host,
+                                    payload = relayPayload,
+                                    udpSocket = udpSocket,
+                                )
+                                continue
+                            }
+                            if (clientPort <= 0) {
+                                continue
+                            }
+                            if (association.firstDownloadLogged.compareAndSet(false, true)) {
+                                log(
+                                    VpnLogLevel.Info,
+                                    "SOCKS5 UDP ${host}:${port} first download ${relayPayload.size} bytes on Yume stream ${stream.streamId}.",
+                                )
+                            }
+                            val response = buildUdpResponse(host, port, relayPayload)
+                            udpSocket.send(DatagramPacket(response, response.size, clientAddress, clientPort))
+                        }
+                    } catch (_: CancellationException) {
+                    } catch (throwable: IOException) {
+                        if (!isExpectedSocketShutdown(throwable)) {
+                            log(
+                                VpnLogLevel.Warn,
+                                "SOCKS5 UDP ${host}:${port} receive loop failed: ${throwable.message ?: "socket error"}.",
+                            )
+                        }
+                    } catch (throwable: Exception) {
+                        log(
+                            VpnLogLevel.Warn,
+                            "SOCKS5 UDP ${host}:${port} stream failed: ${throwable.message ?: throwable.javaClass.simpleName}.",
+                        )
+                    } finally {
+                        synchronized(relay.associationsLock) {
+                            if (relay.associations[key] === association) {
+                                relay.associations.remove(key)
+                            }
+                        }
+                    }
+                }
                 synchronized(relay.associationsLock) {
                     relay.associations[key] = association
                     relay.pendingAssociationOpens.remove(key)
@@ -651,6 +702,8 @@ class YumeSocks5Proxy(
         val completion = CompletableDeferred<Unit>()
         val localCompleted = AtomicBoolean(false)
         val remoteCompleted = AtomicBoolean(false)
+        val firstUploadLogged = AtomicBoolean(false)
+        val firstDownloadLogged = AtomicBoolean(false)
         val clientToYume = launch(Dispatchers.IO) {
             try {
                 val buffer = ByteArray(runtimeConfig.bridgeChunkBytes)
@@ -660,6 +713,12 @@ class YumeSocks5Proxy(
                         break
                     }
                     if (read > 0) {
+                        if (firstUploadLogged.compareAndSet(false, true)) {
+                            log(
+                                VpnLogLevel.Info,
+                                "SOCKS5 CONNECT ${request.host}:${request.port} first upload ${read} bytes on Yume stream ${stream.streamId}.",
+                            )
+                        }
                         stream.write(buffer, 0, read)
                         touchActiveTcpRelay(stream.streamId)
                     }
@@ -686,6 +745,12 @@ class YumeSocks5Proxy(
             try {
                 while (true) {
                     val chunk = stream.readChunk() ?: break
+                    if (firstDownloadLogged.compareAndSet(false, true)) {
+                        log(
+                            VpnLogLevel.Info,
+                            "SOCKS5 CONNECT ${request.host}:${request.port} first download ${chunk.size} bytes on Yume stream ${stream.streamId}.",
+                        )
+                    }
                     output.write(chunk)
                     touchActiveTcpRelay(stream.streamId)
                 }
@@ -931,6 +996,12 @@ class YumeSocks5Proxy(
                 clientPort = clientPort,
             )
             association.touch()
+            if (association.firstUploadLogged.compareAndSet(false, true)) {
+                log(
+                    VpnLogLevel.Info,
+                    "SOCKS5 UDP ${effectiveDatagram.host}:${effectiveDatagram.port} first upload ${effectiveDatagram.payload.size} bytes on Yume stream ${association.stream.streamId}.",
+                )
+            }
             association.stream.sendDatagram(effectiveDatagram.payload)
             association.touch()
         } catch (_: CancellationException) {
@@ -1030,7 +1101,7 @@ class YumeSocks5Proxy(
                 runCatching { association.stream.close(reason) }
             }
         }
-        association.pumpJob.cancel()
+        association.pumpJob?.cancel()
     }
 
     private fun noteDnsTransportFailure(session: YumeBootstrapSession?, resolver: String, detail: String) {
@@ -1363,9 +1434,12 @@ class YumeSocks5Proxy(
         if (normalized.isEmpty()) {
             return host
         }
-        return mappedHostResolver(normalized)
-            ?.takeIf { it.isNotBlank() }
-            ?: host
+        val mapped = mappedHostResolver(normalized)?.takeIf { it.isNotBlank() }
+        if (mapped != null) {
+            log(VpnLogLevel.Info, "SOCKS5 mapped DNS resolved $normalized -> $mapped.")
+            return mapped
+        }
+        return host
     }
 
     private fun isIpv6LiteralHost(host: String): Boolean {
@@ -1394,6 +1468,14 @@ class YumeSocks5Proxy(
             message.contains("connection reset") ||
             message.contains("cancelled") ||
             message.contains("closed")
+    }
+
+    private fun yumeStreamOpenTimeoutMs(): Int {
+        return runtimeConfig.tun2SocksConnectTimeoutMs.coerceAtLeast(1)
+    }
+
+    private fun yumeDnsTcpOpenTimeoutMs(): Int {
+        return minOf(DNS_OVER_TCP_TIMEOUT_MS, yumeStreamOpenTimeoutMs())
     }
 
     private fun isWarmupTcpAllowed(host: String, port: Int): Boolean {
@@ -1685,10 +1767,14 @@ class YumeSocks5Proxy(
         val clientAddress: InetAddress,
         val clientPort: Int,
         val stream: YumeUdpStream,
-        val pumpJob: Job,
         val idleTimeoutMs: Long,
         @Volatile var lastActivityAtMs: Long = System.currentTimeMillis(),
     ) {
+        @Volatile
+        var pumpJob: Job? = null
+        val firstUploadLogged = AtomicBoolean(false)
+        val firstDownloadLogged = AtomicBoolean(false)
+
         fun touch() {
             lastActivityAtMs = System.currentTimeMillis()
         }
@@ -1738,7 +1824,7 @@ class YumeSocks5Proxy(
                 deferred.completeExceptionally(IOException("SOCKS5 shared UDP relay stopped"))
             }
             associationsToClose.forEach { association ->
-                association.pumpJob.cancel()
+                association.pumpJob?.cancel()
             }
             socket.close()
         }
@@ -1794,7 +1880,7 @@ class YumeSocks5Proxy(
         private const val REPLY_CONNECTION_REFUSED = 0x05
         private const val REPLY_COMMAND_NOT_SUPPORTED = 0x07
         private const val REPLY_ADDRESS_TYPE_NOT_SUPPORTED = 0x08
-        private val STARTUP_WARMUP_TCP_PORTS = setOf(80)
+        private val STARTUP_WARMUP_TCP_PORTS = setOf(80, 443)  // Port 80 for clear HTTP probes, port 443 for system services (Google SafeBrowsing, etc.) - both needed for Android to function during warm-up
         private val STARTUP_WARMUP_DNS_NAMES = setOf("ifconfig.me", "api.ipify.org", "icanhazip.com")
     }
 }

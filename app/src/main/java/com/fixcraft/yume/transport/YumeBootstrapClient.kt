@@ -1,22 +1,22 @@
 package com.fixcraft.yume.transport
 
 import android.content.Context
+import android.os.Build
 import android.os.SystemClock
 import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.data.ServerProfile
 import com.fixcraft.yume.data.VaultJsonMapStore
 import org.conscrypt.Conscrypt
-import org.bouncycastle.asn1.ASN1OctetString
 import org.bouncycastle.asn1.edec.EdECObjectIdentifiers
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo
 import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
+import org.bouncycastle.crypto.util.PrivateKeyFactory
 import org.bouncycastle.crypto.util.SubjectPublicKeyInfoFactory
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.bouncycastle.openssl.PEMKeyPair
 import org.bouncycastle.openssl.PEMParser
 import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter
-import org.bouncycastle.openssl.jcajce.JcaPEMWriter
 import org.json.JSONObject
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -24,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -34,9 +35,10 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.IOException
+import java.io.InputStream
 import java.io.StringReader
-import java.io.StringWriter
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
 import java.security.MessageDigest
@@ -46,6 +48,7 @@ import java.security.PublicKey
 import java.security.SecureRandom
 import java.security.Signature
 import java.security.cert.CertificateFactory
+import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.security.spec.MGF1ParameterSpec
 import java.security.spec.PSSParameterSpec
@@ -57,10 +60,11 @@ import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLHandshakeException
-import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLProtocolException
 import javax.net.ssl.SSLSocket
+import javax.net.ssl.TrustManager
 import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
 import kotlin.math.abs
 
 data class YumeTransportTuning(
@@ -351,6 +355,28 @@ class YumeBootstrapSession internal constructor(
         )
     }
 
+    suspend fun openTcpStreamOptimistic(
+        host: String,
+        port: Int,
+        timeoutMs: Int = DEFAULT_STREAM_TIMEOUT_MS,
+    ): YumeTcpStream {
+        return openStream(
+            host = host,
+            port = port,
+            proto = "tcp",
+            timeoutMs = timeoutMs,
+            waitForOpen = false,
+            createStream = { streamId -> YumeTcpStream(this, streamId, transportTuning.tcpStreamMaxBufferedBytes) },
+            buildFailure = { throwable ->
+                if (throwable is YumeBootstrapException) {
+                    throwable
+                } else {
+                    YumeBootstrapException("Failed to open a Yume TCP stream to $host:$port", throwable)
+                }
+            },
+        )
+    }
+
     suspend fun openUdpStream(
         host: String,
         port: Int,
@@ -410,6 +436,7 @@ class YumeBootstrapSession internal constructor(
         port: Int,
         proto: String,
         timeoutMs: Int,
+        waitForOpen: Boolean = true,
         createStream: (Int) -> T,
         buildFailure: (Throwable) -> YumeBootstrapException,
     ): T {
@@ -432,13 +459,27 @@ class YumeBootstrapSession internal constructor(
             .toString()
             .toByteArray(StandardCharsets.UTF_8)
         try {
-            sendFrame(
-                YumeFrame(
-                    type = YumeFrameType.OPEN,
-                    streamId = stream.streamId,
-                    payload = openPayload,
-                ),
+            val openFrame = YumeFrame(
+                type = YumeFrameType.OPEN,
+                streamId = stream.streamId,
+                payload = openPayload,
             )
+            if (!waitForOpen) {
+                sendEncodedFrame(
+                    YumeFrameCodec.encodeFrame(encodeOutgoingFrame(openFrame)),
+                    waitForWrite = false,
+                )
+                scheduleOpenTimeout(
+                    stream = stream,
+                    waiter = waiter,
+                    proto = proto,
+                    host = host,
+                    port = port,
+                    timeoutMs = timeoutMs,
+                )
+                return stream
+            }
+            sendFrame(openFrame)
             withTimeout(timeoutMs.toLong()) {
                 waiter.await()
             }
@@ -467,6 +508,44 @@ class YumeBootstrapSession internal constructor(
             }
             stream.fail(failure)
             throw buildFailure(failure)
+        }
+    }
+
+    private fun scheduleOpenTimeout(
+        stream: YumeInboundStream,
+        waiter: CompletableDeferred<Unit>,
+        proto: String,
+        host: String,
+        port: Int,
+        timeoutMs: Int,
+    ) {
+        sessionScope.launch {
+            delay(timeoutMs.toLong().coerceAtLeast(1L))
+            val shouldFail = synchronized(stateLock) {
+                if (pendingOpen[stream.streamId] === waiter) {
+                    pendingOpen.remove(stream.streamId)
+                    streams.remove(stream.streamId)
+                    true
+                } else {
+                    false
+                }
+            }
+            if (!shouldFail) {
+                return@launch
+            }
+            val failure = YumeBootstrapException(
+                "Timed out waiting for the Yume server to open $proto stream to $host:$port after ${timeoutMs}ms",
+            )
+            stream.fail(failure)
+            runCatching {
+                sendFrame(
+                    YumeFrame(
+                        type = YumeFrameType.CLOSE,
+                        streamId = stream.streamId,
+                        payload = "client open timeout".toByteArray(StandardCharsets.UTF_8),
+                    ),
+                )
+            }
         }
     }
 
@@ -542,6 +621,18 @@ class YumeBootstrapSession internal constructor(
         length: Int = data.size,
     ) {
         sendEncodedFrame(encodeOutgoingDataFrame(streamId, data, offset, length))
+    }
+
+    internal suspend fun sendDataQueued(
+        streamId: Int,
+        data: ByteArray,
+        offset: Int = 0,
+        length: Int = data.size,
+    ) {
+        sendEncodedFrame(
+            encodeOutgoingDataFrame(streamId, data, offset, length),
+            waitForWrite = false,
+        )
     }
 
     internal suspend fun closeStream(streamId: Int, reason: String) {
@@ -667,56 +758,87 @@ class YumeBootstrapSession internal constructor(
     }
 
     private suspend fun runWriteLoop() {
+        var activeBatch: List<PendingWrite> = emptyList()
         try {
             for (pending in outboundFrames) {
                 ensureOpen()
+                activeBatch = collectWriteBatch(pending)
+                val encodedBatch = encodeWriteBatch(activeBatch)
                 writeMutex.withLock {
                     ensureOpen()
-                    output.write(pending.encodedFrame)
+                    output.write(encodedBatch)
                 }
-                pending.completion.complete(Unit)
+                activeBatch.forEach { it.completion?.complete(Unit) }
+                activeBatch = emptyList()
             }
         } catch (throwable: Exception) {
+            val failure = if (throwable is YumeBootstrapException) {
+                throwable
+            } else {
+                YumeBootstrapException(
+                    throwable.message ?: "The authenticated Yume session ended unexpectedly",
+                    throwable,
+                )
+            }
+            activeBatch.forEach { it.completion?.completeExceptionally(failure) }
+            activeBatch = emptyList()
             if (closeState != CloseState.Open || isExpectedCloseDuringShutdown(throwable)) {
                 synchronized(stateLock) {
                     closeState = CloseState.Closed
                 }
                 return
             }
-            shutdown(
-                if (throwable is YumeBootstrapException) {
-                    throwable
-                } else {
-                    YumeBootstrapException(
-                        throwable.message ?: "The authenticated Yume session ended unexpectedly",
-                        throwable,
-                    )
-                },
-            )
+            shutdown(failure)
         } finally {
             val failure = synchronized(stateLock) {
                 closingCause ?: YumeBootstrapException("The authenticated Yume session was closed")
             }
             while (true) {
                 val pending = outboundFrames.tryReceive().getOrNull() ?: break
-                pending.completion.completeExceptionally(failure)
+                pending.completion?.completeExceptionally(failure)
             }
         }
+    }
+
+    private fun collectWriteBatch(first: PendingWrite): List<PendingWrite> {
+        val batch = ArrayList<PendingWrite>(4)
+        batch += first
+        var totalBytes = first.encodedFrame.size
+        while (batch.size < MAX_OUTBOUND_COALESCE_FRAMES && totalBytes < MAX_OUTBOUND_COALESCE_BYTES) {
+            val next = outboundFrames.tryReceive().getOrNull() ?: break
+            batch += next
+            totalBytes += next.encodedFrame.size
+        }
+        return batch
+    }
+
+    private fun encodeWriteBatch(batch: List<PendingWrite>): ByteArray {
+        if (batch.size == 1) {
+            return batch[0].encodedFrame
+        }
+        val totalBytes = batch.sumOf { it.encodedFrame.size }
+        val merged = ByteArray(totalBytes)
+        var offset = 0
+        batch.forEach { pending ->
+            pending.encodedFrame.copyInto(merged, destinationOffset = offset)
+            offset += pending.encodedFrame.size
+        }
+        return merged
     }
 
     private suspend fun sendFrame(frame: YumeFrame) {
         sendEncodedFrame(YumeFrameCodec.encodeFrame(encodeOutgoingFrame(frame)))
     }
 
-    private suspend fun sendEncodedFrame(encodedFrame: ByteArray) {
+    private suspend fun sendEncodedFrame(encodedFrame: ByteArray, waitForWrite: Boolean = true) {
         ensureOpen()
         val pending = PendingWrite(
             encodedFrame = encodedFrame,
-            completion = CompletableDeferred(),
+            completion = if (waitForWrite) CompletableDeferred() else null,
         )
         try {
             outboundFrames.send(pending)
-            pending.completion.await()
+            pending.completion?.await()
         } catch (throwable: Exception) {
             if (throwable is YumeBootstrapException) {
                 throw throwable
@@ -852,6 +974,8 @@ class YumeBootstrapSession internal constructor(
         private const val DEFAULT_STREAM_TIMEOUT_MS = 25_000
         private const val DEFAULT_CONTROL_TIMEOUT_MS = 5_000
         private const val MAX_PROBE_RESPONSE_BYTES = 32 * 1024
+        private const val MAX_OUTBOUND_COALESCE_FRAMES = 16
+        private const val MAX_OUTBOUND_COALESCE_BYTES = 64 * 1024
         private const val INNER_ENCRYPTED_FLAG = 0x8000
 
         private fun parseHttpBody(response: String): String {
@@ -941,7 +1065,7 @@ class YumeBootstrapSession internal constructor(
 
     private data class PendingWrite(
         val encodedFrame: ByteArray,
-        val completion: CompletableDeferred<Unit>,
+        val completion: CompletableDeferred<Unit>?,
     )
 
     private fun allocateStreamIdLocked(): Int {
@@ -974,6 +1098,7 @@ object YumeBootstrapClient {
     private const val SERVER_INFO_TIMEOUT_MS_INNER = 20_000
     private const val SERVER_INFO_TIMEOUT_MS_INNER_HEAVY = 45_000
     private const val MAX_CONNECT_ATTEMPTS = 6
+    private val EMPTY_BYTES = ByteArray(0)
     private const val ANON_PROOF_WINDOW_SECONDS = 600L
     private const val ANON_MESSAGE_PREFIX = "YUME-ANON-V1:"
     private const val PQ_BOOTSTRAP_PREFIX = "YUME-PQ-V1:"
@@ -985,7 +1110,7 @@ object YumeBootstrapClient {
             "-----END PUBLIC KEY-----\n"
 
     private val provider: Provider by lazy { BouncyCastleProvider() }
-    private val tlsProvider: Provider? by lazy {
+    private val conscryptProvider: Provider? by lazy {
         runCatching { Conscrypt.newProvider() }.getOrNull()
     }
     private val pemConverter: JcaPEMKeyConverter by lazy {
@@ -1021,10 +1146,14 @@ object YumeBootstrapClient {
             var sslSocket: SSLSocket? = null
             try {
                 rawSocket = rawSocketFactory()
+                runCatching {
+                    rawSocket.tcpNoDelay = true
+                    rawSocket.keepAlive = true
+                }
                 if (attempt > 1) {
                     log?.invoke("Retry attempt $attempt/$MAX_CONNECT_ATTEMPTS with a fresh protected socket.")
                 }
-                val tlsContext = buildSystemTlsContext()
+                val tlsContext = buildTlsContext(anonymCaPem)
                 log?.invoke("Using TLS provider: ${tlsContext.providerLabel}.")
                 sslSocket = (tlsContext.context.socketFactory.createSocket(
                     rawSocket,
@@ -1033,16 +1162,17 @@ object YumeBootstrapClient {
                     true,
                 ) as SSLSocket).apply {
                     useClientMode = true
+                    runCatching {
+                        tcpNoDelay = true
+                        keepAlive = true
+                    }
                     val supportedProtocols = supportedProtocols.toSet()
                     if ("TLSv1.3" !in supportedProtocols) {
                         throw YumeBootstrapException(
-                            "This Android TLS stack does not support TLS 1.3, which Yume requires on :443",
+                            "This Android TLS stack does not support TLS 1.3, which Yume requires on the control path",
                         )
                     }
-                    sslParameters = SSLParameters().also { parameters ->
-                        parameters.endpointIdentificationAlgorithm = "HTTPS"
-                        parameters.serverNames = listOf(SNIHostName(profile.serverName))
-                    }
+                    applyClientTlsParameters(this, profile.serverName, profile.obfuscation)
                     soTimeout = AUTH_TIMEOUT_MS
                     try {
                         startHandshake()
@@ -1062,6 +1192,10 @@ object YumeBootstrapClient {
                     }
                 }
                 log?.invoke("TLS handshake completed: ${sslSocket.session.protocol} ${sslSocket.session.cipherSuite}.")
+                if (profile.obfuscation) {
+                    performH2CarrierHandshake(sslSocket, profile)
+                    log?.invoke("HTTP/2 carrier handshake established.")
+                }
 
                 val peerCertificate = sslSocket.session.peerCertificates.firstOrNull() as? X509Certificate
                     ?: throw YumeBootstrapException("The server did not provide a TLS certificate")
@@ -1220,6 +1354,10 @@ object YumeBootstrapClient {
                         baseKey = preparedInner.key,
                         hopEnabled = preparedInner.hopRequested && serverInfo.hopEnabled && serverInfo.hopIntervalMs > 0,
                         hopIntervalMs = serverInfo.hopIntervalMs,
+                        // Anchor against monotonic elapsedRealtime() so a
+                        // wall-clock NTP step on the phone (Android performs
+                        // step, not slew) doesn't immediately blow the hop
+                        // window mid-session.
                         hopOffsetMs = if (serverInfo.serverTimeMs > 0L) {
                             serverInfo.serverTimeMs - SystemClock.elapsedRealtime()
                         } else {
@@ -1253,6 +1391,12 @@ object YumeBootstrapClient {
                     throwable
                 } else {
                     YumeBootstrapException(throwable.message ?: "Failed to complete Yume session setup", throwable)
+                }
+                if (attempt < MAX_CONNECT_ATTEMPTS && shouldRetryBootstrapFailure(lastFailure)) {
+                    log?.invoke(
+                        "Yume session setup attempt $attempt/$MAX_CONNECT_ATTEMPTS failed: ${lastFailure.message ?: "transient network error"}. Retrying with a fresh protected socket."
+                    )
+                    continue@connectLoop
                 }
                 throw lastFailure
             }
@@ -1766,6 +1910,133 @@ object YumeBootstrapClient {
         output.write(value)
     }
 
+    private fun applyClientTlsParameters(
+        socket: SSLSocket,
+        serverName: String,
+        obfuscation: Boolean,
+    ) {
+        val parameters = socket.sslParameters
+        parameters.endpointIdentificationAlgorithm = "HTTPS"
+        parameters.serverNames = listOf(SNIHostName(serverName))
+        if (obfuscation && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            parameters.applicationProtocols = arrayOf("http/1.1")
+        }
+        socket.sslParameters = parameters
+        if (obfuscation) {
+            runCatching {
+                if (Conscrypt.isConscrypt(socket)) {
+                    Conscrypt.setApplicationProtocols(socket, arrayOf("http/1.1"))
+                }
+            }
+        }
+    }
+
+    /**
+     * Sends the HTTP/2 carrier client handshake (preface + SETTINGS +
+     * WINDOW_UPDATE + HEADERS) to the cleartext side of {@code sslSocket} and
+     * consumes the server's canned reply (SETTINGS, SETTINGS-ACK, HEADERS
+     * :status=200) before returning. Reads are sized exactly so no bytes past
+     * the HEADERS frame are consumed; the next reader on the socket gets the
+     * AUTH challenge cleanly.
+     *
+     * Replaces the legacy CONNECT-style preface; matches the desktop client's
+     * perform_h2_carrier_handshake() byte-for-byte.
+     */
+    private fun performH2CarrierHandshake(
+        sslSocket: SSLSocket,
+        profile: ServerProfile,
+    ) {
+        val authorityHost = profile.serverName.ifBlank { profile.host }.trim()
+        val authority = "$authorityHost:${profile.port}"
+        val signal = YumeObfsH2.deriveSignalKey(profile.obfsSecret)
+        val hour = System.currentTimeMillis() / 1000L / 3600L
+        val token = YumeObfsH2.derivePathToken(signal, authorityHost, hour)
+        val nonce = YumeObfsH2.randomNonceHex()
+        val path = YumeObfsH2.buildPath(token, nonce)
+        val userAgent = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36"
+
+        val handshake = YumeObfsH2.encodeClientHandshake(authorityHost, path, userAgent)
+        try {
+            sslSocket.outputStream.write(handshake)
+            sslSocket.outputStream.flush()
+        } catch (throwable: SocketTimeoutException) {
+            throw YumeBootstrapException(
+                "This endpoint is not a Yume obfs endpoint ($authority; h2 preface timed out)",
+                throwable,
+            )
+        } catch (throwable: IOException) {
+            throw YumeBootstrapException(
+                "This endpoint is not a Yume obfs endpoint ($authority; h2 preface failed: ${throwable.message ?: "write failed"})",
+                throwable,
+            )
+        }
+
+        // Read frame-by-frame, sizing each read to exactly the frame length so
+        // we never accidentally consume the AUTH challenge that the server
+        // sends right after the HEADERS frame.
+        val input = sslSocket.inputStream
+        val output = sslSocket.outputStream
+        var sawHeaders = false
+        while (!sawHeaders) {
+            val frameHeader = readExact(input, 9, authority, "h2 frame header")
+            val length = ((frameHeader[0].toInt() and 0xFF) shl 16) or
+                ((frameHeader[1].toInt() and 0xFF) shl 8) or
+                (frameHeader[2].toInt() and 0xFF)
+            val type = frameHeader[3].toInt() and 0xFF
+            val flags = frameHeader[4].toInt() and 0xFF
+            if (length > 16384 + 256) {
+                throw YumeBootstrapException(
+                    "This endpoint is not a Yume obfs endpoint ($authority; h2 frame too large: $length bytes)",
+                )
+            }
+            val body = if (length > 0) {
+                readExact(input, length, authority, "h2 frame body (type=$type)")
+            } else {
+                EMPTY_BYTES
+            }
+            when (type) {
+                0x01 -> sawHeaders = true   // HEADERS — done
+                0x07 -> throw YumeBootstrapException(
+                    "This endpoint is not a Yume obfs endpoint ($authority; server sent GOAWAY during obfs handshake)",
+                )
+                else -> Unit  // ignore SETTINGS, SETTINGS-ACK, PING, WINDOW_UPDATE, RST_STREAM, PRIORITY
+            }
+        }
+    }
+
+    private fun readExact(
+        input: InputStream,
+        n: Int,
+        authority: String,
+        label: String,
+    ): ByteArray {
+        val out = ByteArray(n)
+        var read = 0
+        while (read < n) {
+            val r = try {
+                input.read(out, read, n - read)
+            } catch (throwable: SocketTimeoutException) {
+                throw YumeBootstrapException(
+                    "This endpoint is not a Yume obfs endpoint ($authority; $label timed out)",
+                    throwable,
+                )
+            } catch (throwable: IOException) {
+                throw YumeBootstrapException(
+                    "This endpoint is not a Yume obfs endpoint ($authority; $label failed: ${throwable.message ?: "read failed"})",
+                    throwable,
+                )
+            }
+            if (r < 0) {
+                throw YumeBootstrapException(
+                    "This endpoint is not a Yume obfs endpoint ($authority; $label ended after $read of $n bytes)",
+                )
+            }
+            read += r
+        }
+        return out
+    }
+
     private fun loadAuthMaterial(pem: String): LoadedAuthMaterial {
         val pemObject = readPemObject(pem)
         val privateInfo: PrivateKeyInfo
@@ -1788,9 +2059,7 @@ object YumeBootstrapClient {
 
         val privateKey = pemConverter.getPrivateKey(privateInfo)
             ?: throw YumeBootstrapException("Failed to load the auth private key")
-        val publicKey = pemConverter.getPublicKey(publicInfo)
-            ?: throw YumeBootstrapException("Failed to derive the auth public key")
-        val publicKeyPem = writePublicKeyPem(publicKey)
+        val publicKeyPem = encodePemFromDer("PUBLIC KEY", publicInfo.encoded)
         return LoadedAuthMaterial(
             privateKey = privateKey,
             publicKeyPem = publicKeyPem,
@@ -1803,17 +2072,22 @@ object YumeBootstrapClient {
                 "Android currently needs an Ed25519 auth key in PKCS#8 PEM format when only the private key is provided."
             )
         }
-        val seed = ASN1OctetString.getInstance(privateInfo.parsePrivateKey()).octets
-        val publicKeyParameters = Ed25519PrivateKeyParameters(seed, 0).generatePublicKey()
-        return SubjectPublicKeyInfoFactory.createSubjectPublicKeyInfo(publicKeyParameters)
+        val priv = PrivateKeyFactory.createKey(privateInfo) as Ed25519PrivateKeyParameters
+        return SubjectPublicKeyInfoFactory.createSubjectPublicKeyInfo(priv.generatePublicKey())
     }
 
-    private fun writePublicKeyPem(publicKey: PublicKey): String {
-        val writer = StringWriter()
-        JcaPEMWriter(writer).use { pemWriter ->
-            pemWriter.writeObject(publicKey)
+    private fun encodePemFromDer(label: String, der: ByteArray): String {
+        val b64 = android.util.Base64.encodeToString(der, android.util.Base64.NO_WRAP)
+        val sb = StringBuilder()
+        sb.append("-----BEGIN ").append(label).append("-----\n")
+        var i = 0
+        while (i < b64.length) {
+            val end = minOf(i + 64, b64.length)
+            sb.append(b64, i, end).append('\n')
+            i = end
         }
-        return writer.toString()
+        sb.append("-----END ").append(label).append("-----\n")
+        return sb.toString()
     }
 
     private fun loadPublicKeyFromPem(pem: String): PublicKey {
@@ -1953,11 +2227,15 @@ object YumeBootstrapClient {
     )
 
     private fun loadCertificate(pem: String): X509Certificate {
-        val certificates = CertificateFactory.getInstance("X.509")
-            .generateCertificates(ByteArrayInputStream(pem.toByteArray(Charsets.UTF_8)))
-        val certificate = certificates.firstOrNull() as? X509Certificate
+        val certificate = loadCertificates(pem).firstOrNull()
             ?: throw YumeBootstrapException("Failed to load the X.509 certificate")
         return certificate
+    }
+
+    private fun loadCertificates(pem: String): List<X509Certificate> {
+        return CertificateFactory.getInstance("X.509")
+            .generateCertificates(ByteArrayInputStream(pem.toByteArray(Charsets.UTF_8)))
+            .filterIsInstance<X509Certificate>()
     }
 
     private fun decodeBase64(value: String, label: String): ByteArray {
@@ -1973,18 +2251,128 @@ object YumeBootstrapClient {
         return digest.joinToString(separator = "") { byte -> "%02x".format(Locale.US, byte) }
     }
 
-    private fun buildSystemTlsContext(): TlsContext {
-        val trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
-        trustManagerFactory.init(null as KeyStore?)
-        val provider = tlsProvider
+    private fun buildTlsContext(anonymCaPem: String): TlsContext {
+        val provider = selectTlsProvider()
         val context = if (provider != null) {
             SSLContext.getInstance("TLS", provider)
         } else {
             SSLContext.getInstance("TLS")
         }
-        context.init(null, trustManagerFactory.trustManagers, SecureRandom())
-        val providerLabel = provider?.name ?: context.provider?.name ?: "System"
+        context.init(null, buildTlsTrustManagers(anonymCaPem), SecureRandom())
+        val providerLabel = provider?.name ?: "Android"
         return TlsContext(context, providerLabel)
+    }
+
+    private fun buildTlsTrustManagers(anonymCaPem: String): Array<TrustManager> {
+        val systemTrust = defaultX509TrustManager()
+        val anonymTrust = pemX509TrustManager(anonymCaPem)
+        return arrayOf(CompositeX509TrustManager(listOf(systemTrust, anonymTrust)))
+    }
+
+    private fun defaultX509TrustManager(): X509TrustManager {
+        val trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+        trustManagerFactory.init(null as KeyStore?)
+        return trustManagerFactory.x509TrustManager()
+    }
+
+    private fun pemX509TrustManager(pem: String): X509TrustManager {
+        val certificates = try {
+            loadCertificates(pem)
+        } catch (throwable: Exception) {
+            throw YumeBootstrapException("Failed to load the selected Anonym CA as a TLS trust anchor", throwable)
+        }
+        if (certificates.isEmpty()) {
+            throw YumeBootstrapException("The selected Anonym CA does not contain an X.509 certificate")
+        }
+        val keyStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
+            load(null, null)
+            certificates.forEachIndexed { index, certificate ->
+                setCertificateEntry("yume-anonym-ca-$index", certificate)
+            }
+        }
+        val trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+        trustManagerFactory.init(keyStore)
+        return trustManagerFactory.x509TrustManager()
+    }
+
+    private fun TrustManagerFactory.x509TrustManager(): X509TrustManager {
+        return trustManagers
+            .filterIsInstance<X509TrustManager>()
+            .firstOrNull()
+            ?: throw YumeBootstrapException("Android did not provide an X.509 TLS trust manager")
+    }
+
+    private fun selectTlsProvider(): Provider? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            null
+        } else {
+            conscryptProvider
+        }
+    }
+
+    private fun shouldRetryBootstrapFailure(failure: YumeBootstrapException): Boolean {
+        val messages = throwableMessages(failure)
+        if (messages.contains("tls handshake failed") ||
+            messages.contains("obfs endpoint") ||
+            messages.contains("not a yume") ||
+            messages.contains("authentication rejected") ||
+            messages.contains("access denied") ||
+            messages.contains("server version") ||
+            (messages.contains("anonym") && messages.contains("invalid"))
+        ) {
+            return false
+        }
+        val chain = throwableChain(failure)
+        if (chain.any { it is SSLHandshakeException || it is SSLProtocolException }) {
+            return false
+        }
+        return chain.any { it is IOException || it is SocketTimeoutException }
+    }
+
+    private fun throwableMessages(throwable: Throwable): String {
+        return throwableChain(throwable)
+            .mapNotNull { it.message?.trim()?.takeIf(String::isNotEmpty) }
+            .joinToString(" ")
+            .lowercase(Locale.US)
+    }
+
+    private fun throwableChain(throwable: Throwable): List<Throwable> {
+        val chain = mutableListOf<Throwable>()
+        var current: Throwable? = throwable
+        while (current != null) {
+            chain += current
+            current = current.cause
+        }
+        return chain
+    }
+
+    private class CompositeX509TrustManager(
+        private val delegates: List<X509TrustManager>,
+    ) : X509TrustManager {
+        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+            checkTrusted { delegate -> delegate.checkClientTrusted(chain, authType) }
+        }
+
+        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+            checkTrusted { delegate -> delegate.checkServerTrusted(chain, authType) }
+        }
+
+        override fun getAcceptedIssuers(): Array<X509Certificate> {
+            return delegates.flatMap { it.acceptedIssuers.toList() }.toTypedArray()
+        }
+
+        private fun checkTrusted(block: (X509TrustManager) -> Unit) {
+            var lastFailure: CertificateException? = null
+            for (delegate in delegates) {
+                try {
+                    block(delegate)
+                    return
+                } catch (throwable: CertificateException) {
+                    lastFailure = throwable
+                }
+            }
+            throw lastFailure ?: CertificateException("No TLS trust manager accepted the certificate chain")
+        }
     }
 
     private data class LoadedAuthMaterial(

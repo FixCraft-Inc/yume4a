@@ -53,10 +53,13 @@ import com.fixcraft.yume.data.ConnectionTechnique
 import com.fixcraft.yume.data.LogLanguage
 import com.fixcraft.yume.data.PerformanceProfile
 import com.fixcraft.yume.data.ThemeColorMode
+import com.fixcraft.yume.data.supportsUserSelectablePerformanceProfiles
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AppLanguageGroup
 import com.fixcraft.yume.i18n.AppLocaleManager
 import com.fixcraft.yume.i18n.appStrings
+import com.fixcraft.yume.ui.appDialogProperties
+import com.fixcraft.yume.ui.appDialogWidth
 import kotlinx.coroutines.launch
 
 @Composable
@@ -87,23 +90,19 @@ fun SettingsScreen(
     } else {
         false
     }
-    val languageSummary = remember(uiState.appSettings.language, strings, context) {
-        if (uiState.appSettings.language == AppLanguage.SystemDefault) {
-            val effectiveSystemLanguage = AppLanguage.fromLocaleTag(
-                AppLocaleManager.resolveSystemLocale(context).toLanguageTag()
-            )
-            val effectiveLanguageName = when (effectiveSystemLanguage) {
-                is AppLanguage.AutoTranslated -> AppLanguageCatalog.displayName(effectiveSystemLanguage)
-                else -> strings.languageName(effectiveSystemLanguage)
-            }
-            "${strings.languageName(AppLanguage.SystemDefault)} ($effectiveLanguageName)"
-        } else {
-            strings.languageSummary(uiState.appSettings.language)
+    val languageSummary = if (uiState.appSettings.language == AppLanguage.SystemDefault) {
+        val effectiveSystemLanguage = AppLanguage.fromLocaleTag(
+            AppLocaleManager.resolveSystemLocale(context).toLanguageTag()
+        )
+        val effectiveLanguageName = when (effectiveSystemLanguage) {
+            is AppLanguage.AutoTranslated -> AppLanguageCatalog.displayName(effectiveSystemLanguage)
+            else -> strings.languageName(effectiveSystemLanguage)
         }
+        "${strings.languageName(AppLanguage.SystemDefault)} ($effectiveLanguageName)"
+    } else {
+        strings.languageSummary(uiState.appSettings.language)
     }
-    val logLanguageSummary = remember(uiState.appSettings.logLanguage, strings) {
-        strings.logLanguageSummary(uiState.appSettings.logLanguage)
-    }
+    val logLanguageSummary = strings.logLanguageSummary(uiState.appSettings.logLanguage)
     val notificationsAllowed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         ContextCompat.checkSelfPermission(
             context,
@@ -112,11 +111,14 @@ fun SettingsScreen(
     } else {
         true
     }
+    val selectedTechniqueSupportsProfiles =
+        uiState.appSettings.connectionTechnique.supportsUserSelectablePerformanceProfiles()
 
     if (showLanguageDialog) {
         val languageOptions = remember { AppLanguageCatalog.groupedOptions() }
         AlertDialog(
             onDismissRequest = { showLanguageDialog = false },
+            modifier = Modifier.appDialogWidth(),
             title = { Text(strings.languageGroupTitle) },
             text = {
                 LazyColumn(
@@ -195,6 +197,7 @@ fun SettingsScreen(
                     Text(strings.close)
                 }
             },
+            properties = appDialogProperties,
         )
     }
 
@@ -205,10 +208,12 @@ fun SettingsScreen(
                 LogLanguage.English,
                 LogLanguage.Russian,
                 LogLanguage.Japanese,
+                LogLanguage.Ukrainian,
             )
         }
         AlertDialog(
             onDismissRequest = { showLogLanguageDialog = false },
+            modifier = Modifier.appDialogWidth(),
             title = { Text(strings.logLanguageDialogTitle) },
             text = {
                 LazyColumn(
@@ -237,6 +242,7 @@ fun SettingsScreen(
                     Text(strings.close)
                 }
             },
+            properties = appDialogProperties,
         )
     }
 
@@ -283,15 +289,26 @@ fun SettingsScreen(
         item {
             SettingGroupCard(
                 title = strings.profileGroupTitle,
-                subtitle = null,
+                subtitle = if (selectedTechniqueSupportsProfiles) {
+                    null
+                } else {
+                    strings.nativeDirectFixedTuningDescription
+                },
             ) {
-                PerformanceProfile.entries.forEach { profile ->
-                    SettingChoiceCard(
-                        title = strings.performanceProfileName(profile),
-                        description = strings.performanceProfileDescription(profile),
-                        selected = uiState.appSettings.performanceProfile == profile,
-                        enabled = true,
-                        onClick = { onSelectPerformanceProfile(profile) },
+                if (selectedTechniqueSupportsProfiles) {
+                    PerformanceProfile.entries.forEach { profile ->
+                        SettingChoiceCard(
+                            title = strings.performanceProfileName(profile),
+                            description = strings.performanceProfileDescription(profile),
+                            selected = uiState.appSettings.performanceProfile == profile,
+                            enabled = true,
+                            onClick = { onSelectPerformanceProfile(profile) },
+                        )
+                    }
+                } else {
+                    SettingFact(
+                        strings.profileLabel,
+                        strings.nativeDirectFixedTuningName,
                     )
                 }
             }
@@ -489,6 +506,7 @@ private fun AppDataPasswordDialog(
                 onDismiss()
             }
         },
+        modifier = Modifier.appDialogWidth(),
         title = {
             Text(
                 when (mode) {
@@ -577,6 +595,7 @@ private fun AppDataPasswordDialog(
                 Text(strings.save)
             }
         },
+        properties = appDialogProperties,
         dismissButton = {
             TextButton(
                 enabled = !submitting,
@@ -611,6 +630,8 @@ private fun SettingGroupCard(
                     text = subtitle,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             content()
@@ -655,12 +676,16 @@ private fun SettingChoiceCard(
                         selected -> MaterialTheme.colorScheme.onPrimaryContainer
                         else -> MaterialTheme.colorScheme.onSurface
                     },
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 if (!description.isNullOrBlank()) {
                     Text(
                         text = description,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -697,12 +722,16 @@ private fun SettingToggleRow(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 if (!description.isNullOrBlank()) {
                     Text(
                         text = description,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -781,14 +810,14 @@ private fun SettingFact(
             modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
             text = value,
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.End,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
     }

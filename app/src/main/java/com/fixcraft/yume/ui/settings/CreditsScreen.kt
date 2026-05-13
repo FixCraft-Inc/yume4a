@@ -45,6 +45,11 @@ fun CreditsScreen() {
                         title = strings.bestEmployeeOfYearLabel,
                         role = strings.chatgptCreditRole,
                     )
+                    CreditEntry(
+                        name = "Yume socks tunnel",
+                        title = strings.openSourceComponentLabel,
+                        role = strings.yumeSocksTunnelCreditRole,
+                    )
                     Text(
                         text = "${strings.creditsWrittenByLabel}: ChatGPT",
                         style = MaterialTheme.typography.bodySmall,
@@ -81,7 +86,7 @@ fun CreditsScreen() {
                         modifier = Modifier.padding(top = 8.dp),
                     )
                     Text(
-                        text = strings.founderThanksQuote,
+                        text = strings.founderQuote,
                         style = MaterialTheme.typography.bodyLarge,
                         fontStyle = FontStyle.Italic,
                         textAlign = TextAlign.Start,

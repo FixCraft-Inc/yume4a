@@ -31,6 +31,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.fixcraft.yume.MainUiState
 import com.fixcraft.yume.R
+import com.fixcraft.yume.data.supportsUserSelectablePerformanceProfiles
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.vpn.VpnPhase
 
@@ -42,6 +43,11 @@ fun HomeDashboardScreen(
     onOpenServers: () -> Unit,
 ) {
     val strings = appStrings()
+    val profileSummary = if (uiState.appSettings.connectionTechnique.supportsUserSelectablePerformanceProfiles()) {
+        strings.performanceProfileName(uiState.appSettings.performanceProfile)
+    } else {
+        strings.nativeDirectFixedTuningName
+    }
     val profile = uiState.selectedProfile
     val vpnState = uiState.vpnState
     val hasAuthKey = uiState.selectedAuthKeyMaterial != null
@@ -193,7 +199,7 @@ fun HomeDashboardScreen(
                             Text(
                                 text = strings.routePath(
                                     strings.connectionTechniqueName(uiState.appSettings.connectionTechnique),
-                                    strings.performanceProfileName(uiState.appSettings.performanceProfile),
+                                    profileSummary,
                                 ),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,

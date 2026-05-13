@@ -20,6 +20,7 @@ private data class CountryNames(
     val english: String,
     val russian: String,
     val japanese: String,
+    val ukrainian: String,
 )
 
 private data class CountryDb(
@@ -53,12 +54,28 @@ object CountryLookup {
         }
         val iso = unpackIso(db.isoPacked[index])
         val names = db.names[iso]
-        val displayName = when (AppLocaleManager.resolveLanguage(context, language)) {
-            ResolvedAppLanguage.English -> names?.english
-            ResolvedAppLanguage.Russian -> names?.russian ?: names?.english
-            ResolvedAppLanguage.Japanese -> names?.japanese ?: names?.english
-            is ResolvedAppLanguage.AutoTranslated -> names?.english
-        } ?: iso
+        val resolvedLanguage = AppLocaleManager.resolveLanguage(context, language)
+        val targetLocale = when (resolvedLanguage) {
+            ResolvedAppLanguage.English -> Locale.ENGLISH
+            ResolvedAppLanguage.Russian -> Locale.forLanguageTag("ru")
+            ResolvedAppLanguage.Japanese -> Locale.JAPANESE
+            ResolvedAppLanguage.Ukrainian -> Locale.forLanguageTag("uk")
+            is ResolvedAppLanguage.AutoTranslated -> Locale.forLanguageTag(resolvedLanguage.localeTag)
+        }
+        val localizedCountryName = Locale.Builder()
+            .setRegion(iso)
+            .build()
+            .getDisplayCountry(targetLocale)
+            .trim()
+        val displayName = localizedCountryName.ifBlank {
+            when (resolvedLanguage) {
+                ResolvedAppLanguage.English -> names?.english
+                ResolvedAppLanguage.Russian -> names?.russian ?: names?.english
+                ResolvedAppLanguage.Japanese -> names?.japanese ?: names?.english
+                ResolvedAppLanguage.Ukrainian -> names?.ukrainian ?: names?.english
+                is ResolvedAppLanguage.AutoTranslated -> names?.english
+            } ?: iso
+        }
         return CountryMatch(
             isoCode = iso,
             displayName = displayName,
@@ -73,10 +90,12 @@ object CountryLookup {
                 if (line.isBlank()) return@forEach
                 val parts = line.split('\t')
                 if (parts.size < 4) return@forEach
+                val english = unescape(parts[1])
                 names[parts[0]] = CountryNames(
-                    english = unescape(parts[1]),
+                    english = english,
                     russian = unescape(parts[2]),
                     japanese = unescape(parts[3]),
+                    ukrainian = parts.getOrNull(4)?.let(::unescape) ?: english,
                 )
             }
         }

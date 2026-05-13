@@ -17,6 +17,7 @@ import com.fixcraft.yume.data.SecureMaterialStore
 import com.fixcraft.yume.data.SecureMaterialSummary
 import com.fixcraft.yume.data.SecureMaterialType
 import com.fixcraft.yume.data.ThemeColorMode
+import com.fixcraft.yume.data.supportsUserSelectablePerformanceProfiles
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AutoTranslationRuntime
 import com.fixcraft.yume.i18n.appStrings
@@ -30,7 +31,6 @@ import com.fixcraft.yume.vpn.Tun2SocksTechniqueEngine
 import com.fixcraft.yume.vpn.TunnelRuntimeConfig
 import com.fixcraft.yume.vpn.YumeVpnRuntime
 import com.fixcraft.yume.vpn.YumeVpnService
-import com.fixcraft.yume.transport.AuthKeyImportResolver
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -163,6 +163,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         host: String,
         port: String,
         sni: String,
+        obfuscation: Boolean,
+        obfsSecret: String,
         dnsServers: String,
         mtu: String,
         requireAnonymProof: Boolean,
@@ -182,6 +184,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val normalizedHost = host.trim()
             val normalizedPort = port.trim().ifEmpty { "443" }
             val normalizedSni = sni.trim()
+            val normalizedObfsSecret = obfsSecret.trim()
             val normalizedCaMaterialId = anonymCaMaterialId.ifBlank { SecureMaterialStore.DEFAULT_ANONYM_CA_ID }
             val normalizedAuthKeyMaterialId = authKeyMaterialId.trim()
             if (normalizedHost.isEmpty()) {
@@ -221,6 +224,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     host = normalizedHost,
                     port = parsedPort,
                     sni = normalizedSni,
+                    obfuscation = obfuscation,
+                    obfsSecret = normalizedObfsSecret,
                     dnsServers = parsedDnsServers,
                     mtu = parsedMtu,
                     requireAnonymProof = requireAnonymProof,
@@ -267,8 +272,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             title = strings.save,
             detail = strings.saving(strings.authKeyLabel),
         ) {
-            val pem = AuthKeyImportResolver.resolveText(rawText, encrypted, password)
-            val summary = secureStore.saveMaterialText(SecureMaterialType.AuthKey, displayName, pem, displayName)
+            val summary = secureStore.saveImportedAuthKeyText(
+                displayName = displayName,
+                rawText = rawText,
+                encrypted = encrypted,
+                password = password,
+                sourceLabel = displayName,
+            )
             _noticeMessage.value = strings.materialSaved(strings.materialTypeLabel(summary.type), summary.displayName)
             null
         }.getOrElse { throwable ->
@@ -295,12 +305,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             title = strings.importFile,
             detail = strings.importing(strings.authKeyLabel),
         ) {
-            val pem = AuthKeyImportResolver.resolveBytes(bytes, encrypted, password)
-            val summary = secureStore.saveMaterialText(SecureMaterialType.AuthKey, displayName, pem, displayName)
+            val summary = secureStore.saveImportedAuthKeyBytes(
+                displayName = displayName,
+                bytes = bytes,
+                encrypted = encrypted,
+                password = password,
+                sourceLabel = displayName,
+            )
             _noticeMessage.value = strings.materialImported(strings.materialTypeLabel(summary.type), summary.displayName)
             null
         }.getOrElse { throwable ->
             throwable.message ?: strings.failedToImport(strings.authKeyLabel)
+        }
+    }
+
+    suspend fun validateSelectedEncryptedAuthKey(password: String): String? {
+        val strings = strings()
+        val selectedProfile = uiState.value.selectedProfile ?: return null
+        if (password.isBlank()) {
+            return strings.passwordRequired
+        }
+        val authKeyId = selectedProfile.authKeyMaterialId.takeIf { it.isNotBlank() } ?: return strings.authKeyRequiredDetail
+        val authKeySummary = secureStore.getSummary(authKeyId) ?: return strings.authKeyUnavailableDetail
+        return runBusy(
+            title = strings.unlockAuthKeyTitle,
+            detail = strings.unlockingAuthKey(authKeySummary.displayName),
+        ) {
+            secureStore.readAuthKeyPem(authKeyId, password)
+            null
+        }.getOrElse { throwable ->
+            authKeyUnlockDetail(authKeySummary.displayName, throwable, strings)
         }
     }
 
@@ -516,7 +550,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    fun connectSelectedProfile() {
+    fun connectSelectedProfile(authKeyPassword: String? = null) {
         val strings = strings()
         val selectedProfile = uiState.value.selectedProfile ?: return
         YumeVpnRuntime.reset(
@@ -541,47 +575,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 title = strings.preparingHeadline,
                 detail = strings.loadingKeysFor(selectedProfile.endpointLabel),
             ) {
-                when {
-                    !secureStore.hasMaterial(SecureMaterialType.AnonymCa, selectedProfile.anonymCaMaterialId) -> {
-                        ConnectPreflightResult.Error(
-                            headline = strings.anonymCaMissingHeadline,
-                            detail = strings.anonymCaMissingDetail,
-                            logMessage = "The selected anonym CA is unavailable.",
-                        )
-                    }
-
-                    selectedProfile.authKeyMaterialId.isBlank() -> {
-                        ConnectPreflightResult.Error(
-                            headline = strings.authKeyRequiredHeadline,
-                            detail = strings.authKeyRequiredDetail,
-                            logMessage = "This server does not have an auth key assigned.",
-                        )
-                    }
-
-                    !secureStore.hasMaterial(SecureMaterialType.AuthKey, selectedProfile.authKeyMaterialId) -> {
-                        ConnectPreflightResult.Error(
-                            headline = strings.authKeyUnavailableHeadline,
-                            detail = strings.authKeyUnavailableDetail,
-                            logMessage = "The selected auth key is unavailable.",
-                        )
-                    }
-
-                    else -> {
-                        val loadError = runCatching {
-                            secureStore.readMaterialText(selectedProfile.anonymCaMaterialId)
-                            secureStore.readMaterialText(selectedProfile.authKeyMaterialId)
-                        }.exceptionOrNull()
-                        if (loadError != null) {
-                            ConnectPreflightResult.Error(
-                                headline = strings.credentialLoadFailedHeadline,
-                                detail = loadError.message ?: strings.credentialLoadFailedDetail,
-                                logMessage = loadError.message ?: "Yume could not load the CA or auth key for this server.",
-                            )
-                        } else {
-                            ConnectPreflightResult.Ready
-                        }
-                    }
-                }
+                connectPreflight(selectedProfile, strings, authKeyPassword)
             }.getOrElse { throwable ->
                 ConnectPreflightResult.Error(
                     headline = strings.credentialLoadFailedHeadline,
@@ -593,7 +587,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             when (preflight) {
                 ConnectPreflightResult.Ready -> {
                     YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Local CA and auth key are ready. Starting the Android VPN service.")
-                    YumeVpnService.startConnect(getApplication(), selectedProfile.id)
+                    YumeVpnService.startConnect(getApplication(), selectedProfile.id, authKeyPassword)
                 }
 
                 is ConnectPreflightResult.Error -> {
@@ -615,11 +609,70 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         YumeVpnService.startDisconnect(getApplication())
     }
 
+    private fun connectPreflight(
+        selectedProfile: ServerProfile,
+        strings: com.fixcraft.yume.i18n.AppStrings,
+        authKeyPassword: String?,
+    ): ConnectPreflightResult {
+        if (!secureStore.hasMaterial(SecureMaterialType.AnonymCa, selectedProfile.anonymCaMaterialId)) {
+            return ConnectPreflightResult.Error(
+                headline = strings.anonymCaMissingHeadline,
+                detail = strings.anonymCaMissingDetail,
+                logMessage = "The selected anonym CA is unavailable.",
+            )
+        }
+        if (selectedProfile.authKeyMaterialId.isBlank()) {
+            return ConnectPreflightResult.Error(
+                headline = strings.authKeyRequiredHeadline,
+                detail = strings.authKeyRequiredDetail,
+                logMessage = "This server does not have an auth key assigned.",
+            )
+        }
+        val authKeySummary = secureStore.getSummary(selectedProfile.authKeyMaterialId)
+            ?: return ConnectPreflightResult.Error(
+                headline = strings.authKeyUnavailableHeadline,
+                detail = strings.authKeyUnavailableDetail,
+                logMessage = "The selected auth key is unavailable.",
+            )
+        if (authKeySummary.importedEncrypted && authKeyPassword.isNullOrBlank()) {
+            return ConnectPreflightResult.Error(
+                headline = strings.unlockAuthKeyTitle,
+                detail = strings.unlockAuthKeyDetail(authKeySummary.displayName),
+                logMessage = "Password required for encrypted auth key ${authKeySummary.displayName}.",
+            )
+        }
+        val loadError = runCatching {
+            secureStore.readMaterialText(selectedProfile.anonymCaMaterialId)
+            secureStore.readAuthKeyPem(selectedProfile.authKeyMaterialId, authKeyPassword)
+        }.exceptionOrNull()
+        if (loadError != null) {
+            return ConnectPreflightResult.Error(
+                headline = strings.credentialLoadFailedHeadline,
+                detail = authKeyUnlockDetail(authKeySummary.displayName, loadError, strings),
+                logMessage = loadError.message ?: "Yume could not load the CA or auth key for this server.",
+            )
+        }
+        return ConnectPreflightResult.Ready
+    }
+
+    private fun authKeyUnlockDetail(
+        authKeyDisplayName: String,
+        throwable: Throwable,
+        strings: com.fixcraft.yume.i18n.AppStrings,
+    ): String {
+        return when (throwable.message) {
+            "Password required for encrypted auth key" -> strings.unlockAuthKeyDetail(authKeyDisplayName)
+            "Bad password or unsupported encrypted auth key" -> strings.authKeyUnlockFailed
+            else -> throwable.message ?: strings.credentialLoadFailedDetail
+        }
+    }
+
     fun buildDiagnosticsReport(): String {
         val strings = strings()
         val current = uiState.value
         val logStrings = logStrings(getApplication(), current.appSettings)
         val runtimeConfig = resolveRuntimeConfig(current.appSettings)
+        val profileSummary = effectiveProfileSummary(current.appSettings, strings)
         val androidVersion = Build.VERSION.RELEASE?.takeIf { it.isNotBlank() } ?: strings.unknown
         val securityPatch = Build.VERSION.SECURITY_PATCH?.takeIf { it.isNotBlank() } ?: strings.unknown
         val manufacturer = Build.MANUFACTURER?.takeIf { it.isNotBlank() } ?: strings.unknown
@@ -653,11 +706,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendLine("${strings.buildFingerprintLabel}: $buildFingerprint")
             appendLine()
             appendLine("${strings.techniqueLabel}: ${strings.connectionTechniqueName(current.appSettings.connectionTechnique)}")
-            appendLine("${strings.performanceProfileLabel}: ${strings.performanceProfileName(current.appSettings.performanceProfile)}")
+            appendLine("${strings.performanceProfileLabel}: $profileSummary")
             appendLine("${strings.themeColorsLabel}: ${strings.themeColorModeName(current.appSettings.themeColorMode)}")
             appendLine("${strings.amoledDarkThemeLabel}: ${if (current.appSettings.amoledDarkTheme) strings.on else strings.off}")
             appendLine("${strings.languageLabel}: ${strings.languageSummary(current.appSettings.language)}")
-            appendLine("${strings.logLanguageLabel}: ${strings.logLanguageSummary(current.appSettings.logLanguage)}")
+            if (current.appSettings.advancedMode) {
+                appendLine(
+                    "${strings.logLanguageLabel}: ${
+                        strings.logLanguageSummary(current.appSettings.effectiveLogLanguage())
+                    }"
+                )
+            }
             appendLine(
                 "${strings.phaseLabel}: ${
                     strings.phaseStatus(
@@ -672,6 +731,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendLine("${strings.selectedServerReportLabel}: ${current.selectedProfile?.name ?: strings.none}")
             appendLine("${strings.endpointLabel}: ${current.selectedProfile?.endpointLabel ?: strings.none}")
             appendLine("${strings.tlsNameLabel}: ${current.selectedProfile?.serverName ?: strings.none}")
+            appendLine("${strings.httpsMaskingLabel}: ${strings.boolValue(current.selectedProfile?.obfuscation == true)}")
             appendLine("${strings.anonymPolicyLabel}: ${if (current.selectedProfile?.requireAnonymProof != false) strings.anonymRequired else strings.anonymOptional}")
             appendLine("${strings.anonymCaLabel}: ${current.selectedCaMaterial?.displayName ?: strings.missing}")
             appendLine("${strings.authKeyLabel}: ${current.selectedAuthKeyMaterial?.displayName ?: strings.notAssigned}")
@@ -740,11 +800,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             is com.fixcraft.yume.vpn.Tun2SocksRuntimeConfig -> buildBridgeLines(runtimeConfig)
             is com.fixcraft.yume.vpn.NativeDirectRuntimeConfig -> buildList {
                 add("${strings.techniqueLabel}: ${strings.connectionTechniqueName(runtimeConfig.technique)}")
-                add("${strings.profileLabel}: ${strings.performanceProfileName(runtimeConfig.performanceProfile)}")
+                add("${strings.profileLabel}: ${strings.nativeDirectFixedTuningName}")
                 add(
                     "${strings.runtimeStatusLabel}: ${
-                        if (runtimeConfig.compatibilityBridgeEnabled) strings.runtimeBridgeBackedBetaStatus
-                        else strings.runtimePacketNativeStatus
+                        when (runtimeConfig.engineStatus) {
+                            com.fixcraft.yume.vpn.NativeDirectEngineStatus.CompatibilityBridgeFallback ->
+                                strings.runtimeCompatibilityBridgeFallbackStatus
+
+                            com.fixcraft.yume.vpn.NativeDirectEngineStatus.PacketNative ->
+                                strings.runtimePacketNativeStatus
+                        }
+                    }"
+                )
+                add("${strings.runtimeNativeQueueLabel}: ${runtimeConfig.nativeQueueCapacity}")
+                add("${strings.runtimeNativeTcpFlowWindowLabel}: ${formatKiB(runtimeConfig.tcpFlowWindowBytes)}")
+                add("${strings.runtimeNativeUdpFlowBufferLabel}: ${formatKiB(runtimeConfig.udpFlowBufferBytes)}")
+                add(
+                    "${strings.runtimeIpv6PolicyLabel}: ${
+                        if (runtimeConfig.ipv6FailClosed) strings.runtimeIpv6FailClosedStatus
+                        else strings.enabled
                     }"
                 )
                 add("")
@@ -753,5 +827,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         return lines.joinToString("\n")
+    }
+
+    private fun effectiveProfileSummary(
+        settings: AppSettings,
+        strings: com.fixcraft.yume.i18n.AppStrings,
+    ): String {
+        return if (settings.connectionTechnique.supportsUserSelectablePerformanceProfiles()) {
+            strings.performanceProfileName(settings.performanceProfile)
+        } else {
+            strings.nativeDirectFixedTuningName
+        }
     }
 }

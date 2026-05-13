@@ -22,6 +22,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.fixcraft.yume.MainUiState
+import com.fixcraft.yume.data.supportsUserSelectablePerformanceProfiles
 import com.fixcraft.yume.i18n.appStrings
 
 @Composable
@@ -32,6 +33,11 @@ fun DiagnosticsScreen(
     val strings = appStrings()
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
+    val profileSummary = if (uiState.appSettings.connectionTechnique.supportsUserSelectablePerformanceProfiles()) {
+        strings.performanceProfileName(uiState.appSettings.performanceProfile)
+    } else {
+        strings.nativeDirectFixedTuningName
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -63,7 +69,7 @@ fun DiagnosticsScreen(
                                 proxyReady = uiState.vpnState.localProxyAddress != null,
                             ),
                             strings.connectionTechniqueName(uiState.appSettings.connectionTechnique),
-                            strings.performanceProfileName(uiState.appSettings.performanceProfile),
+                            profileSummary,
                         ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -27,10 +27,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.fixcraft.yume.crypto.BaseFwxCompat
 import com.fixcraft.yume.i18n.appStrings
+import com.fixcraft.yume.ui.appDialogProperties
+import com.fixcraft.yume.ui.appDialogWidth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -54,9 +57,12 @@ fun ToolsScreen() {
     val scope = rememberCoroutineScope()
 
     busyDetail?.let { detail ->
-        Dialog(onDismissRequest = {}) {
+        Dialog(
+            onDismissRequest = {},
+            properties = appDialogProperties,
+        ) {
             Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.appDialogWidth(),
             ) {
                 Row(
                     modifier = Modifier.padding(20.dp),
@@ -269,14 +275,22 @@ private fun ToolModeButton(
             onClick = onClick,
             modifier = modifier,
         ) {
-            Text(label, maxLines = 1)
+            Text(
+                text = label,
+                maxLines = 2,
+                textAlign = TextAlign.Center,
+            )
         }
     } else {
         OutlinedButton(
             onClick = onClick,
             modifier = modifier,
         ) {
-            Text(label, maxLines = 1)
+            Text(
+                text = label,
+                maxLines = 2,
+                textAlign = TextAlign.Center,
+            )
         }
     }
 }

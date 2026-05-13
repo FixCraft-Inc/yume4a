@@ -56,6 +56,14 @@ private enum class TranslationFamily {
 
 object AutoTranslationRuntime {
     private const val PREFS_NAME = "yume_auto_translation_cache"
+    private val documentedLanguageTags = listOf(
+        "af", "ar", "be", "bg", "bn", "ca", "cs", "cy", "da", "de",
+        "el", "en", "eo", "es", "et", "fa", "fi", "fr", "ga", "gl",
+        "gu", "he", "hi", "hr", "ht", "hu", "id", "is", "it", "ja",
+        "ka", "kn", "ko", "lt", "lv", "mk", "mr", "ms", "mt", "nl",
+        "no", "pl", "pt", "ro", "ru", "sk", "sl", "sq", "sv", "sw",
+        "ta", "te", "th", "tl", "tr", "uk", "ur", "vi", "zh",
+    )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val translations = ConcurrentHashMap<String, ConcurrentHashMap<String, String>>()
     private val pending = ConcurrentHashMap<String, LinkedHashSet<TranslationRequest>>()
@@ -69,11 +77,49 @@ object AutoTranslationRuntime {
     private val eastAsianLanguages = setOf(
         "zh", "ko", "ja", "th", "vi",
     )
+    private val localeAliasCandidates = mapOf(
+        "hy" to listOf("hy"),
+        "az" to listOf("az"),
+        "eu" to listOf("eu"),
+        "gl" to listOf("gl"),
+        "ka" to listOf("ka"),
+        "kk" to listOf("kk"),
+        "km" to listOf("km"),
+        "ky" to listOf("ky"),
+        "lo" to listOf("lo"),
+        "mk" to listOf("mk"),
+        "mn" to listOf("mn"),
+        "ne" to listOf("ne"),
+        "si" to listOf("si"),
+        "sq" to listOf("sq"),
+        "sw" to listOf("sw"),
+        "ta" to listOf("ta"),
+        "te" to listOf("te"),
+        "uz" to listOf("uz"),
+    )
 
     fun supportedLocaleTags(): List<String> {
-        return TranslateLanguage.getAllLanguages()
+        val results = LinkedHashSet<String>()
+
+        documentedLanguageTags
+            .mapNotNull(::bestSupportedLocaleTag)
+            .forEach(results::add)
+
+        TranslateLanguage.getAllLanguages()
             .mapNotNull { normalizeLocaleTag(it) }
-            .distinct()
+            .forEach(results::add)
+
+        Locale.getISOLanguages()
+            .mapNotNull(::bestSupportedLocaleTag)
+            .forEach(results::add)
+
+        Locale.getAvailableLocales()
+            .mapNotNull { locale ->
+                bestSupportedLocaleTag(locale.toLanguageTag())
+            }
+            .forEach(results::add)
+
+        return results.toList()
     }
 
     fun isSupported(localeTag: String?): Boolean = resolveTranslateLanguage(localeTag) != null
@@ -380,6 +426,22 @@ object AutoTranslationRuntime {
         val normalizedLocale = normalizeLocaleTag(localeTag) ?: return null
         return TranslateLanguage.fromLanguageTag(normalizedLocale)
             ?: TranslateLanguage.fromLanguageTag(Locale.forLanguageTag(normalizedLocale).language)
+    }
+
+    private fun bestSupportedLocaleTag(localeTag: String?): String? {
+        val normalizedLocale = normalizeLocaleTag(localeTag) ?: return null
+        if (resolveTranslateLanguage(normalizedLocale) != null) {
+            return normalizedLocale
+        }
+        val language = Locale.forLanguageTag(normalizedLocale).language.lowercase(Locale.ROOT)
+        val aliasCandidates = buildList {
+            add(language)
+            addAll(localeAliasCandidates[language].orEmpty())
+        }
+        return aliasCandidates
+            .firstNotNullOfOrNull { candidate ->
+                normalizeLocaleTag(candidate)?.takeIf { resolveTranslateLanguage(it) != null }
+            }
     }
 
     private fun normalizeLocaleTag(localeTag: String?): String? {

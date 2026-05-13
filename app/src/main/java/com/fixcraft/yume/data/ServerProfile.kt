@@ -10,6 +10,8 @@ data class ServerProfile(
     val host: String,
     val port: Int = 443,
     val sni: String = "",
+    val obfuscation: Boolean = false,
+    val obfsSecret: String = "",
     val dnsServers: List<String> = DEFAULT_DNS_SERVERS,
     val mtu: Int = DEFAULT_MTU,
     val requireAnonymProof: Boolean = true,
@@ -32,6 +34,8 @@ data class ServerProfile(
         .put("host", host)
         .put("port", port)
         .put("sni", sni)
+        .put("obfuscation", obfuscation)
+        .put("obfs_secret", obfsSecret)
         .put("dns_servers", JSONArray().apply { dnsServers.forEach(::put) })
         .put("mtu", mtu)
         .put("require_anonym_proof", requireAnonymProof)
@@ -49,6 +53,8 @@ data class ServerProfile(
             host = json.optString("host"),
             port = json.optInt("port", 443).coerceIn(1, 65535),
             sni = json.optString("sni"),
+            obfuscation = json.optBoolean("obfuscation", false),
+            obfsSecret = json.optString("obfs_secret"),
             dnsServers = buildList {
                 val dnsArray = json.optJSONArray("dns_servers")
                 if (dnsArray != null) {

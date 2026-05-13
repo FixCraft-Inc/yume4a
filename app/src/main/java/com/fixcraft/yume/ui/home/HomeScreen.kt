@@ -34,6 +34,7 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -59,6 +60,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.fixcraft.yume.AndroidSystemSettings
 import com.fixcraft.yume.BuildConfig
@@ -71,6 +73,8 @@ import com.fixcraft.yume.data.ServerProfile
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.i18n.logStrings
 import com.fixcraft.yume.i18n.VpnLogTranslator
+import com.fixcraft.yume.ui.appDialogProperties
+import com.fixcraft.yume.ui.appDialogWidth
 import com.fixcraft.yume.ui.theme.YumeErrorContainer
 import com.fixcraft.yume.ui.theme.YumeErrorContent
 import com.fixcraft.yume.ui.theme.YumeProtectedContainer
@@ -92,6 +96,8 @@ internal data class ProfileDraft(
     val host: String = "",
     val port: String = "443",
     val sni: String = "",
+    val obfuscation: Boolean = false,
+    val obfsSecret: String = "",
     val dnsServers: String = "1.1.1.1, 9.9.9.9",
     val mtu: String = "1500",
     val requireAnonymProof: Boolean = true,
@@ -126,7 +132,7 @@ fun HomeScreen(
     onDisconnect: () -> Unit,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: suspend (String?, String, String, String, String, String, String, Boolean, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String) -> String?,
     onImportCaFile: () -> Unit,
     onImportAuthKeyFile: () -> Unit,
     onSaveCaText: suspend (String, String) -> String?,
@@ -136,9 +142,7 @@ fun HomeScreen(
 ) {
     val strings = appStrings()
     val context = LocalContext.current
-    val logUiStrings = remember(uiState.appSettings.language, uiState.appSettings.logLanguage) {
-        logStrings(context, uiState.appSettings)
-    }
+    val logUiStrings = logStrings(context, uiState.appSettings)
     val snackbarHostState = remember { SnackbarHostState() }
     var editorDraft by remember { mutableStateOf<ProfileDraft?>(null) }
     var materialDraft by remember { mutableStateOf<MaterialTextDraft?>(null) }
@@ -303,6 +307,8 @@ fun HomeScreen(
                     updated.host,
                     updated.port,
                     updated.sni,
+                    updated.obfuscation,
+                    updated.obfsSecret,
                     updated.dnsServers,
                     updated.mtu,
                     updated.requireAnonymProof,
@@ -543,6 +549,11 @@ private fun SelectedServerCard(
                 text = "${strings.authKeyLabel}: ${selectedAuthKey?.displayName ?: strings.notAssigned}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (selectedAuthKey == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "${strings.httpsMaskingLabel}: ${if (profile.obfuscation) strings.enabled else strings.disabled}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             profile.notes.takeIf { it.isNotBlank() }?.let { notes ->
@@ -799,14 +810,18 @@ private fun SecureMaterialRow(
                     text = material.displayName,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     text = material.subtitle,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (!selected && material.isDefault) {
                     StatusPill(
                         text = strings.builtIn,
@@ -814,21 +829,23 @@ private fun SecureMaterialRow(
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                     )
                 }
+                if (material.importedEncrypted) {
+                    EncryptedKeyBadge()
+                }
+                if (selected) {
+                    SelectionBadge()
+                }
                 if (onDelete != null) {
-                    TextButton(
+                    IconButton(
+                        modifier = Modifier.size(32.dp),
                         onClick = onDelete,
-                        colors = ButtonDefaults.textButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error,
-                        ),
                     ) {
                         Icon(
                             painter = painterResource(R.drawable.ic_delete_action),
                             contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
                         )
                     }
-                }
-                if (selected) {
-                    SelectionBadge()
                 }
             }
         }
@@ -1183,6 +1200,7 @@ private fun StatusDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        modifier = Modifier.appDialogWidth(),
         title = { Text(strings.yumeStatusTitle) },
         text = {
             Column(
@@ -1281,6 +1299,7 @@ private fun StatusDialog(
                 Text(strings.close)
             }
         },
+        properties = appDialogProperties,
     )
 }
 
@@ -1342,6 +1361,7 @@ internal fun ProfileEditorDialog(
                 onDismiss()
             }
         },
+        modifier = Modifier.appDialogWidth(),
         title = {
             Text(if (draft.id == null) strings.addServerTitle else strings.editServerTitle)
         },
@@ -1384,6 +1404,61 @@ internal fun ProfileEditorDialog(
                         Text(strings.tlsServerNameHelper)
                     },
                 )
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                localDraft = localDraft.copy(obfuscation = !localDraft.obfuscation)
+                            }
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                text = strings.httpsMaskingTitle,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = if (localDraft.obfuscation) {
+                                    strings.httpsMaskingEnabled
+                                } else {
+                                    strings.httpsMaskingDisabled
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            modifier = Modifier.align(Alignment.Top),
+                            checked = localDraft.obfuscation,
+                            onCheckedChange = { checked ->
+                                localDraft = localDraft.copy(obfuscation = checked)
+                            },
+                        )
+                    }
+                }
+                if (localDraft.obfuscation) {
+                    OutlinedTextField(
+                        value = localDraft.obfsSecret,
+                        onValueChange = { localDraft = localDraft.copy(obfsSecret = it) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(strings.httpsMaskingSecretLabel) },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        supportingText = {
+                            Text(strings.httpsMaskingSecretHelper)
+                        },
+                    )
+                }
                 OutlinedTextField(
                     value = localDraft.dnsServers,
                     onValueChange = { localDraft = localDraft.copy(dnsServers = it) },
@@ -1418,7 +1493,10 @@ internal fun ProfileEditorDialog(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
                             Text(
                                 text = strings.requireAnonymProofTitle,
                                 style = MaterialTheme.typography.bodyMedium,
@@ -1435,6 +1513,7 @@ internal fun ProfileEditorDialog(
                             )
                         }
                         Switch(
+                            modifier = Modifier.align(Alignment.Top),
                             checked = localDraft.requireAnonymProof,
                             onCheckedChange = { checked ->
                                 localDraft = localDraft.copy(requireAnonymProof = checked)
@@ -1511,6 +1590,7 @@ internal fun ProfileEditorDialog(
                 Text(strings.cancel)
             }
         },
+        properties = appDialogProperties,
     )
 }
 
@@ -1554,7 +1634,7 @@ private fun MaterialChoiceSection(
                 SelectableMaterialChoice(
                     label = material.displayName,
                     subtitle = material.subtitle,
-                    encrypted = material.type == SecureMaterialType.AuthKey,
+                    encrypted = material.importedEncrypted,
                     selected = material.id == selectedMaterialId,
                     onClick = { onSelect(material.id) },
                 )
@@ -1590,7 +1670,7 @@ private fun SelectableMaterialChoice(
         Row(
             modifier = Modifier.padding(14.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.Top,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(
                 modifier = Modifier.weight(1f),
@@ -1600,16 +1680,20 @@ private fun SelectableMaterialChoice(
                     text = label,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             if (encrypted || selected) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (encrypted) {
@@ -1643,6 +1727,7 @@ internal fun MaterialTextDialog(
                 onDismiss()
             }
         },
+        modifier = Modifier.appDialogWidth(),
         title = { Text(draft.title) },
         text = {
             Column(
@@ -1765,6 +1850,7 @@ internal fun MaterialTextDialog(
                 Text(strings.cancel)
             }
         },
+        properties = appDialogProperties,
     )
 }
 
@@ -1788,6 +1874,7 @@ internal fun AuthKeyImportDialog(
                 onDismiss()
             }
         },
+        modifier = Modifier.appDialogWidth(),
         title = { Text(strings.importAuthKeyTitle) },
         text = {
             Column(
@@ -1899,6 +1986,79 @@ internal fun AuthKeyImportDialog(
                 Text(strings.cancel)
             }
         },
+        properties = appDialogProperties,
+    )
+}
+
+@Composable
+internal fun AuthKeyUnlockDialog(
+    authKeyName: String,
+    initialError: String?,
+    onDismiss: () -> Unit,
+    onUnlock: (String) -> Unit,
+) {
+    val strings = appStrings()
+    var password by remember(authKeyName) { mutableStateOf("") }
+    var error by remember(authKeyName, initialError) { mutableStateOf(initialError) }
+
+    AlertDialog(
+        onDismissRequest = {
+            onDismiss()
+        },
+        modifier = Modifier.appDialogWidth(),
+        title = { Text(strings.unlockAuthKeyTitle) },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = strings.unlockAuthKeyDetail(authKeyName),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = {
+                        password = it
+                        error = null
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(strings.passwordLabel) },
+                    singleLine = true,
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                )
+                if (!error.isNullOrBlank()) {
+                    Text(
+                        text = error.orEmpty(),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val trimmedPassword = password.trim()
+                    if (trimmedPassword.isEmpty()) {
+                        error = strings.passwordRequired
+                    } else {
+                        onUnlock(trimmedPassword)
+                    }
+                },
+            ) {
+                Text(strings.unlockButton)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+            ) {
+                Text(strings.cancel)
+            }
+        },
+        properties = appDialogProperties,
     )
 }
 
@@ -1909,6 +2069,8 @@ internal fun ServerProfile.toDraft(): ProfileDraft {
         host = host,
         port = port.toString(),
         sni = sni,
+        obfuscation = obfuscation,
+        obfsSecret = obfsSecret,
         dnsServers = dnsServers.joinToString(", "),
         mtu = mtu.toString(),
         requireAnonymProof = requireAnonymProof,

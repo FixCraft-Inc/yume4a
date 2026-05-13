@@ -25,7 +25,7 @@ public final class CountryDbExporter {
 
     private record Range(long start, long end, String isoCode) {}
 
-    private record CountryNames(String isoCode, String english, String russian, String japanese) {}
+    private record CountryNames(String isoCode, String english, String russian, String japanese, String ukrainian) {}
 
     public static void main(String[] args) throws Exception {
         if (args.length != 3) {
@@ -75,7 +75,8 @@ public final class CountryDbExporter {
                 String english = localizedName(localizedNames, "en", isoCode);
                 String russian = localizedName(localizedNames, "ru", english);
                 String japanese = localizedName(localizedNames, "ja", english);
-                namesByIso.putIfAbsent(isoCode, new CountryNames(isoCode, english, russian, japanese));
+                String ukrainian = localizedName(localizedNames, "uk", english);
+                namesByIso.putIfAbsent(isoCode, new CountryNames(isoCode, english, russian, japanese, ukrainian));
             }
         }
 
@@ -118,6 +119,8 @@ public final class CountryDbExporter {
                 writer.write(escape(names.russian));
                 writer.write('\t');
                 writer.write(escape(names.japanese));
+                writer.write('\t');
+                writer.write(escape(names.ukrainian));
                 writer.newLine();
             }
         }

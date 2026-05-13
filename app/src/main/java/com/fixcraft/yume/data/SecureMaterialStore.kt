@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties
 import com.fixcraft.yume.R
 import com.fixcraft.yume.crypto.BaseFwxCompat
 import com.fixcraft.yume.i18n.appStrings
+import com.fixcraft.yume.transport.AuthKeyImportResolver
 import com.fixcraft.yume.transport.YumeAuthKeyValidator
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,17 +42,17 @@ data class SecureMaterialSummary(
     val type: SecureMaterialType,
     val sourceLabel: String,
     val fingerprint: String,
+    val importedEncrypted: Boolean = false,
     val isDefault: Boolean = false,
     val createdAtEpochMs: Long = System.currentTimeMillis(),
 ) {
     val subtitle: String
-        get() = buildString {
-            append(sourceLabel)
-            if (fingerprint.isNotBlank()) {
-                append(" • ")
-                append(fingerprint)
-            }
-        }
+        get() = buildList {
+            sourceLabel.trim()
+                .takeIf { it.isNotEmpty() && !it.equals(displayName.trim(), ignoreCase = true) }
+                ?.let(::add)
+            fingerprint.takeIf { it.isNotBlank() }?.let { add("ID $it") }
+        }.joinToString("  ")
 
     fun toJson(): JSONObject = JSONObject()
         .put("id", id)
@@ -59,6 +60,7 @@ data class SecureMaterialSummary(
         .put("type", type.wireValue)
         .put("source_label", sourceLabel)
         .put("fingerprint", fingerprint)
+        .put("imported_encrypted", importedEncrypted)
         .put("created_at_epoch_ms", createdAtEpochMs)
 
     companion object {
@@ -74,6 +76,7 @@ data class SecureMaterialSummary(
                 type = type,
                 sourceLabel = json.optString("source_label").trim(),
                 fingerprint = json.optString("fingerprint"),
+                importedEncrypted = json.optBoolean("imported_encrypted", false),
                 createdAtEpochMs = json.optLong("created_at_epoch_ms", System.currentTimeMillis()),
             )
         }
@@ -118,8 +121,60 @@ class SecureMaterialStore private constructor(context: Context) {
         }
         val summary = _userMaterials.value.firstOrNull { it.id == id }
             ?: throw IllegalArgumentException("Material not found")
-        val bytes = unwrapStoredBytes(summary, decryptFromFile(fileFor(summary.id)))
-        return normalizePem(bytes.toString(Charsets.UTF_8))
+        val bytes = decryptFromFile(fileFor(summary.id))
+        return when (summary.type) {
+            SecureMaterialType.AnonymCa -> normalizePem(bytes.toString(Charsets.UTF_8))
+            SecureMaterialType.AuthKey -> readAuthKeyPem(summary, bytes, userPassword = null)
+        }
+    }
+
+    fun readAuthKeyPem(id: String, userPassword: String?): String {
+        val summary = _userMaterials.value.firstOrNull { it.id == id }
+            ?: throw IllegalArgumentException("Material not found")
+        require(summary.type == SecureMaterialType.AuthKey) { "Material is not an auth key" }
+        return readAuthKeyPem(summary, decryptFromFile(fileFor(summary.id)), userPassword)
+    }
+
+    fun saveImportedAuthKeyText(
+        displayName: String,
+        rawText: String,
+        encrypted: Boolean,
+        password: String,
+        sourceLabel: String = displayName,
+    ): SecureMaterialSummary {
+        val validatedPem = AuthKeyImportResolver.resolveText(rawText, encrypted, password)
+        val storedBytes = if (encrypted) {
+            rawText.toByteArray(Charsets.UTF_8)
+        } else {
+            validatedPem.toByteArray(Charsets.UTF_8)
+        }
+        return saveMaterialBytesInternal(
+            type = SecureMaterialType.AuthKey,
+            displayName = displayName,
+            storedBytes = storedBytes,
+            sourceLabel = sourceLabel,
+            importedEncrypted = encrypted,
+            fingerprintSourcePem = validatedPem,
+        )
+    }
+
+    fun saveImportedAuthKeyBytes(
+        displayName: String,
+        bytes: ByteArray,
+        encrypted: Boolean,
+        password: String,
+        sourceLabel: String = displayName,
+    ): SecureMaterialSummary {
+        val validatedPem = AuthKeyImportResolver.resolveBytes(bytes, encrypted, password)
+        val storedBytes = if (encrypted) bytes else validatedPem.toByteArray(Charsets.UTF_8)
+        return saveMaterialBytesInternal(
+            type = SecureMaterialType.AuthKey,
+            displayName = displayName,
+            storedBytes = storedBytes,
+            sourceLabel = sourceLabel,
+            importedEncrypted = encrypted,
+            fingerprintSourcePem = validatedPem,
+        )
     }
 
     fun saveMaterialText(
@@ -127,24 +182,17 @@ class SecureMaterialStore private constructor(context: Context) {
         displayName: String,
         rawPemText: String,
         sourceLabel: String = displayName,
+        importedEncrypted: Boolean = false,
     ): SecureMaterialSummary {
-        val strings = strings()
-        val normalizedName = displayName.trim().ifEmpty {
-            if (type == SecureMaterialType.AnonymCa) strings.importedCaFallbackName else strings.importedAuthKeyFallbackName
-        }
-        val normalizedSource = sourceLabel.trim().ifEmpty { strings.importedLabel }
         val normalizedPem = normalizeAndValidate(type, rawPemText)
-        val summary = SecureMaterialSummary(
-            id = UUID.randomUUID().toString(),
-            displayName = normalizedName,
+        return saveMaterialBytesInternal(
             type = type,
-            sourceLabel = normalizedSource,
-            fingerprint = shortFingerprint(normalizedPem),
+            displayName = displayName,
+            storedBytes = normalizedPem.toByteArray(Charsets.UTF_8),
+            sourceLabel = sourceLabel,
+            importedEncrypted = importedEncrypted,
+            fingerprintSourcePem = normalizedPem,
         )
-        encryptToFile(fileFor(summary.id), wrapStoredBytes(type, normalizedPem.toByteArray(Charsets.UTF_8)))
-        val updated = listOf(summary) + _userMaterials.value
-        persistUserMaterials(updated)
-        return summary
     }
 
     fun saveMaterialBytes(
@@ -152,8 +200,17 @@ class SecureMaterialStore private constructor(context: Context) {
         displayName: String,
         bytes: ByteArray,
         sourceLabel: String = displayName,
+        importedEncrypted: Boolean = false,
     ): SecureMaterialSummary {
-        return saveMaterialText(type, displayName, bytes.toString(Charsets.UTF_8), sourceLabel)
+        val normalizedPem = normalizeAndValidate(type, bytes.toString(Charsets.UTF_8))
+        return saveMaterialBytesInternal(
+            type = type,
+            displayName = displayName,
+            storedBytes = normalizedPem.toByteArray(Charsets.UTF_8),
+            sourceLabel = sourceLabel,
+            importedEncrypted = importedEncrypted,
+            fingerprintSourcePem = normalizedPem,
+        )
     }
 
     fun deleteMaterial(id: String): SecureMaterialSummary? {
@@ -167,6 +224,33 @@ class SecureMaterialStore private constructor(context: Context) {
     }
 
     private fun strings() = appStrings(appContext, AppSettingsStore.readLanguage(appContext))
+
+    private fun saveMaterialBytesInternal(
+        type: SecureMaterialType,
+        displayName: String,
+        storedBytes: ByteArray,
+        sourceLabel: String,
+        importedEncrypted: Boolean,
+        fingerprintSourcePem: String,
+    ): SecureMaterialSummary {
+        val strings = strings()
+        val normalizedName = displayName.trim().ifEmpty {
+            if (type == SecureMaterialType.AnonymCa) strings.importedCaFallbackName else strings.importedAuthKeyFallbackName
+        }
+        val normalizedSource = sourceLabel.trim().ifEmpty { strings.importedLabel }
+        val summary = SecureMaterialSummary(
+            id = UUID.randomUUID().toString(),
+            displayName = normalizedName,
+            type = type,
+            sourceLabel = normalizedSource,
+            fingerprint = shortFingerprint(fingerprintSourcePem),
+            importedEncrypted = importedEncrypted,
+        )
+        encryptToFile(fileFor(summary.id), storedBytes)
+        val updated = listOf(summary) + _userMaterials.value
+        persistUserMaterials(updated)
+        return summary
+    }
 
     private fun defaultAnonymCaSummary(): SecureMaterialSummary {
         val pem = normalizePem(readDefaultAnonymCaPem())
@@ -324,30 +408,19 @@ class SecureMaterialStore private constructor(context: Context) {
 
     private fun fileFor(id: String): File = File(secureDir, "$id.bin")
 
-    private fun wrapStoredBytes(type: SecureMaterialType, plaintext: ByteArray): ByteArray {
-        if (type != SecureMaterialType.AuthKey) {
-            return plaintext
-        }
-        val password = AppVaultManager.derivePassword(appContext, AUTH_KEY_STORAGE_PURPOSE)
-        return BaseFwxCompat.fwxAesEncryptRaw(plaintext, password)
-    }
-
-    private fun unwrapStoredBytes(summary: SecureMaterialSummary, ciphertextPlaintext: ByteArray): ByteArray {
-        if (summary.type != SecureMaterialType.AuthKey) {
-            return ciphertextPlaintext
-        }
+    private fun unwrapLegacyStoredAuthKeyBytes(ciphertextPlaintext: ByteArray): ByteArray {
         if (!BaseFwxCompat.looksLikeRawFwxAes(ciphertextPlaintext)) {
-            migrateLegacyAuthKeyPayload(summary, ciphertextPlaintext)
             return ciphertextPlaintext
         }
         val password = AppVaultManager.derivePassword(appContext, AUTH_KEY_STORAGE_PURPOSE)
-        return BaseFwxCompat.fwxAesDecryptRaw(ciphertextPlaintext, password)
-    }
-
-    private fun migrateLegacyAuthKeyPayload(summary: SecureMaterialSummary, plaintext: ByteArray) {
-        runCatching {
-            encryptToFile(fileFor(summary.id), wrapStoredBytes(SecureMaterialType.AuthKey, plaintext))
-        }
+        val unwrapped = runCatching { BaseFwxCompat.fwxAesDecryptRaw(ciphertextPlaintext, password) }.getOrNull()
+            ?: return ciphertextPlaintext
+        val normalizedPem = runCatching {
+            val candidate = normalizePem(unwrapped.toString(Charsets.UTF_8))
+            validateAuthKeyPem(candidate)
+            candidate
+        }.getOrNull() ?: return ciphertextPlaintext
+        return normalizedPem.toByteArray(Charsets.UTF_8)
     }
 
     private fun upgradeLegacyAuthKeyStorage(materials: List<SecureMaterialSummary>) {
@@ -360,11 +433,30 @@ class SecureMaterialStore private constructor(context: Context) {
                         return@runCatching
                     }
                     val stored = decryptFromFile(file)
-                    if (!BaseFwxCompat.looksLikeRawFwxAes(stored)) {
-                        encryptToFile(file, wrapStoredBytes(SecureMaterialType.AuthKey, stored))
+                    val normalized = unwrapLegacyStoredAuthKeyBytes(stored)
+                    if (!normalized.contentEquals(stored)) {
+                        encryptToFile(file, normalized)
                     }
                 }
             }
+    }
+
+    private fun readAuthKeyPem(summary: SecureMaterialSummary, storedBytes: ByteArray, userPassword: String?): String {
+        val normalizedStoredBytes = unwrapLegacyStoredAuthKeyBytes(storedBytes)
+        val plaintextPem = runCatching {
+            val candidate = normalizePem(normalizedStoredBytes.toString(Charsets.UTF_8))
+            validateAuthKeyPem(candidate)
+            candidate
+        }.getOrNull()
+        if (!summary.importedEncrypted) {
+            return plaintextPem ?: throw IllegalArgumentException("Stored auth key is not a PEM private key")
+        }
+        if (plaintextPem != null) {
+            return plaintextPem
+        }
+        val normalizedPassword = userPassword?.trim().orEmpty()
+        require(normalizedPassword.isNotEmpty()) { "Password required for encrypted auth key" }
+        return AuthKeyImportResolver.resolveBytes(normalizedStoredBytes, encrypted = true, password = normalizedPassword)
     }
 
     private fun shortFingerprint(pemText: String): String {

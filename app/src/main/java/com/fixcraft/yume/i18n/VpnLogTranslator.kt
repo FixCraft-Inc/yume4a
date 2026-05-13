@@ -4,6 +4,7 @@ import android.content.Context
 import com.fixcraft.yume.data.ConnectionTechnique
 import com.fixcraft.yume.data.AppSettings
 import com.fixcraft.yume.data.PerformanceProfile
+import com.fixcraft.yume.data.canonicalLabel
 
 private data class LogPatternRule(
     val pattern: Regex,
@@ -107,22 +108,22 @@ object VpnLogTranslator {
 
     private fun localizeTechniqueName(value: String, strings: AppStrings): String {
         return when (value) {
-            ConnectionTechnique.Tun2SocksStable.displayName -> strings.connectionTechniqueName(ConnectionTechnique.Tun2SocksStable)
-            ConnectionTechnique.NativeDirectBeta.displayName -> strings.connectionTechniqueName(ConnectionTechnique.NativeDirectBeta)
+            ConnectionTechnique.Tun2SocksStable.canonicalLabel() -> strings.connectionTechniqueName(ConnectionTechnique.Tun2SocksStable)
+            ConnectionTechnique.NativeDirectBeta.canonicalLabel() -> strings.connectionTechniqueName(ConnectionTechnique.NativeDirectBeta)
             else -> value
         }
     }
 
     private fun localizeProfileName(value: String, strings: AppStrings): String {
         return when (value) {
-            PerformanceProfile.Latency.displayName -> strings.performanceProfileName(PerformanceProfile.Latency)
-            PerformanceProfile.Balanced.displayName -> strings.performanceProfileName(PerformanceProfile.Balanced)
-            PerformanceProfile.Throughput.displayName -> strings.performanceProfileName(PerformanceProfile.Throughput)
+            PerformanceProfile.Latency.canonicalLabel() -> strings.performanceProfileName(PerformanceProfile.Latency)
+            PerformanceProfile.Balanced.canonicalLabel() -> strings.performanceProfileName(PerformanceProfile.Balanced)
+            PerformanceProfile.Throughput.canonicalLabel() -> strings.performanceProfileName(PerformanceProfile.Throughput)
             else -> value
         }
     }
 }
 
 fun logStrings(context: Context, settings: AppSettings): AppStrings {
-    return appStrings(context, settings.logLanguage.resolve(settings.language))
+    return appStrings(context, settings.effectiveLogLanguage().resolve(settings.language))
 }

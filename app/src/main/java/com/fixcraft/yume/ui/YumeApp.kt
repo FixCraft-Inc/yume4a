@@ -66,6 +66,7 @@ import com.fixcraft.yume.i18n.ProvideAppStrings
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.diagnostics.DiagnosticsScreen
 import com.fixcraft.yume.ui.home.AuthKeyImportDialog
+import com.fixcraft.yume.ui.home.AuthKeyUnlockDialog
 import com.fixcraft.yume.ui.home.HomeDashboardScreen
 import com.fixcraft.yume.ui.home.PendingAuthKeyImport
 import com.fixcraft.yume.ui.security.SecurityScreen
@@ -103,7 +104,7 @@ fun YumeApp(
     onDisconnect: () -> Unit,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: suspend (String?, String, String, String, String, String, String, Boolean, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String) -> String?,
     onImportCaFile: () -> Unit,
     onImportAuthKeyFile: () -> Unit,
     onSaveCaText: suspend (String, String) -> String?,
@@ -111,6 +112,10 @@ fun YumeApp(
     pendingAuthKeyImport: PendingAuthKeyImport?,
     onImportAuthKeyPayload: suspend (String, ByteArray, Boolean, String) -> String?,
     onDismissAuthKeyImport: () -> Unit,
+    pendingAuthKeyUnlockName: String?,
+    pendingAuthKeyUnlockError: String?,
+    onDismissAuthKeyUnlock: () -> Unit,
+    onUnlockAuthKey: (String) -> Unit,
     onDeleteMaterial: (String) -> Unit,
     onSelectTechnique: (ConnectionTechnique) -> Unit,
     onSelectPerformanceProfile: (PerformanceProfile) -> Unit,
@@ -282,6 +287,14 @@ fun YumeApp(
                 onImport = onImportAuthKeyPayload,
             )
         }
+        pendingAuthKeyUnlockName?.let { authKeyName ->
+            AuthKeyUnlockDialog(
+                authKeyName = authKeyName,
+                initialError = pendingAuthKeyUnlockError,
+                onDismiss = onDismissAuthKeyUnlock,
+                onUnlock = onUnlockAuthKey,
+            )
+        }
         languagePreparationState?.let { state ->
             LanguagePreparationDialog(state)
         }
@@ -295,9 +308,12 @@ fun YumeApp(
 private fun LanguagePreparationDialog(
     state: LanguagePreparationUiState,
 ) {
-    Dialog(onDismissRequest = {}) {
+    Dialog(
+        onDismissRequest = {},
+        properties = appDialogProperties,
+    ) {
         Card(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.appDialogWidth(),
         ) {
             Column(
                 modifier = Modifier.padding(20.dp),
@@ -329,9 +345,12 @@ private fun LanguagePreparationDialog(
 private fun BusyDialog(
     state: BusyUiState,
 ) {
-    Dialog(onDismissRequest = {}) {
+    Dialog(
+        onDismissRequest = {},
+        properties = appDialogProperties,
+    ) {
         Card(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.appDialogWidth(),
         ) {
             Column(
                 modifier = Modifier.padding(20.dp),

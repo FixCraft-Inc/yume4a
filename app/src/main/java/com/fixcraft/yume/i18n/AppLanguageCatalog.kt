@@ -57,6 +57,7 @@ object AppLanguageCatalog {
             AppLanguage.Maintained.English -> "English"
             AppLanguage.Maintained.Russian -> "Русский"
             AppLanguage.Maintained.Japanese -> "日本語"
+            AppLanguage.Maintained.Ukrainian -> "Українська"
             is AppLanguage.AutoTranslated -> nativeLanguageName(language.localeTag)
         }
     }

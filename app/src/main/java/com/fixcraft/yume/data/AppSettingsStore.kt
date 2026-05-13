@@ -10,18 +10,12 @@ import java.util.Locale
 
 enum class ConnectionTechnique(
     val wireValue: String,
-    val displayName: String,
-    val description: String,
 ) {
     Tun2SocksStable(
         wireValue = "tun2socks_stable",
-        displayName = "Tun2Socks stable",
-        description = "Stable Android path through tun2socks.",
     ),
     NativeDirectBeta(
         wireValue = "native_direct_beta",
-        displayName = "Native direct beta",
-        description = "Bridge-backed beta path with tighter tuning.",
     );
 
     companion object {
@@ -34,30 +28,37 @@ enum class ConnectionTechnique(
     }
 }
 
+fun ConnectionTechnique.canonicalLabel(): String = when (this) {
+    ConnectionTechnique.Tun2SocksStable -> "Tun2Socks stable"
+    ConnectionTechnique.NativeDirectBeta -> "Native direct beta"
+}
+
+fun ConnectionTechnique.supportsUserSelectablePerformanceProfiles(): Boolean {
+    return this == ConnectionTechnique.Tun2SocksStable
+}
+
 enum class PerformanceProfile(
     val wireValue: String,
-    val displayName: String,
-    val description: String,
 ) {
     Latency(
         wireValue = "latency",
-        displayName = "Latency",
-        description = "Lower queueing for interactive traffic.",
     ),
     Balanced(
         wireValue = "balanced",
-        displayName = "Balanced",
-        description = "Default mixed-use profile.",
     ),
     Throughput(
         wireValue = "throughput",
-        displayName = "Throughput",
-        description = "Larger buffers for sustained transfers.",
     );
 
     companion object {
         fun fromWireValue(value: String): PerformanceProfile? = entries.firstOrNull { it.wireValue == value }
     }
+}
+
+fun PerformanceProfile.canonicalLabel(): String = when (this) {
+    PerformanceProfile.Latency -> "Latency"
+    PerformanceProfile.Balanced -> "Balanced"
+    PerformanceProfile.Throughput -> "Throughput"
 }
 
 enum class ThemeColorMode(
@@ -91,6 +92,8 @@ sealed class AppLanguage(
         data object Russian : Maintained("ru", "ru")
 
         data object Japanese : Maintained("ja", "ja")
+
+        data object Ukrainian : Maintained("uk", "uk")
     }
 
     data class AutoTranslated(
@@ -116,6 +119,7 @@ sealed class AppLanguage(
             Maintained.English.localeTag -> ResolvedAppLanguage.English
             Maintained.Russian.localeTag -> ResolvedAppLanguage.Russian
             Maintained.Japanese.localeTag -> ResolvedAppLanguage.Japanese
+            Maintained.Ukrainian.localeTag -> ResolvedAppLanguage.Ukrainian
             else -> ResolvedAppLanguage.AutoTranslated(normalizedTag)
         }
     }
@@ -125,6 +129,7 @@ sealed class AppLanguage(
             Maintained.English,
             Maintained.Russian,
             Maintained.Japanese,
+            Maintained.Ukrainian,
         )
 
         fun fromWireValue(value: String?): AppLanguage {
@@ -163,6 +168,8 @@ sealed class ResolvedAppLanguage(
 
     data object Japanese : ResolvedAppLanguage("ja")
 
+    data object Ukrainian : ResolvedAppLanguage("uk")
+
     data class AutoTranslated(
         override val localeTag: String,
     ) : ResolvedAppLanguage(localeTag)
@@ -174,7 +181,8 @@ enum class LogLanguage(
     FollowApp("app"),
     English("en"),
     Russian("ru"),
-    Japanese("ja");
+    Japanese("ja"),
+    Ukrainian("uk");
 
     fun resolve(appLanguage: AppLanguage, systemLocale: Locale = Locale.getDefault()): AppLanguage.Maintained {
         return when (this) {
@@ -183,6 +191,7 @@ enum class LogLanguage(
                     ResolvedAppLanguage.English -> AppLanguage.Maintained.English
                     ResolvedAppLanguage.Russian -> AppLanguage.Maintained.Russian
                     ResolvedAppLanguage.Japanese -> AppLanguage.Maintained.Japanese
+                    ResolvedAppLanguage.Ukrainian -> AppLanguage.Maintained.Ukrainian
                     is ResolvedAppLanguage.AutoTranslated -> AppLanguage.Maintained.English
                 }
             }
@@ -190,6 +199,7 @@ enum class LogLanguage(
             English -> AppLanguage.Maintained.English
             Russian -> AppLanguage.Maintained.Russian
             Japanese -> AppLanguage.Maintained.Japanese
+            Ukrainian -> AppLanguage.Maintained.Ukrainian
         }
     }
 
@@ -208,7 +218,10 @@ data class AppSettings(
     val language: AppLanguage = AppLanguage.SystemDefault,
     val logLanguage: LogLanguage = LogLanguage.FollowApp,
     val advancedMode: Boolean = false,
-)
+) {
+    fun effectiveLogLanguage(): LogLanguage =
+        if (advancedMode) logLanguage else LogLanguage.FollowApp
+}
 
 class AppSettingsStore private constructor(context: Context) {
     private val appContext = context.applicationContext ?: context

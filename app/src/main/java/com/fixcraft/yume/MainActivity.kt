@@ -51,7 +51,10 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
     private var pendingAuthKeyImport by mutableStateOf<PendingAuthKeyImport?>(null)
+    private var pendingAuthKeyUnlockName by mutableStateOf<String?>(null)
+    private var pendingAuthKeyUnlockError by mutableStateOf<String?>(null)
     private var transientBusyState by mutableStateOf<BusyUiState?>(null)
+    private var pendingConnectAuthKeyPassword: String? = null
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(AppLocaleManager.wrap(newBase))
@@ -62,8 +65,9 @@ class MainActivity : ComponentActivity() {
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Android VPN permission granted.")
-            viewModel.connectSelectedProfile()
+            connectSelectedProfileWithPendingPassword()
         } else {
+            pendingConnectAuthKeyPassword = null
             YumeVpnRuntime.appendLog(VpnLogLevel.Warn, "Android VPN permission was denied.")
             YumeVpnRuntime.update(
                 VpnConnectionState(
@@ -152,7 +156,17 @@ class MainActivity : ComponentActivity() {
             ) {
                 YumeApp(
                     uiState = uiState,
-                    onConnect = { requestNotificationPermissionThenConnect() },
+                    onConnect = {
+                        val encryptedAuthKeyName = uiState.selectedAuthKeyMaterial
+                            ?.takeIf { it.importedEncrypted }
+                            ?.displayName
+                        if (encryptedAuthKeyName != null) {
+                            pendingAuthKeyUnlockError = null
+                            pendingAuthKeyUnlockName = encryptedAuthKeyName
+                        } else {
+                            requestNotificationPermissionThenConnect()
+                        }
+                    },
                     onDisconnect = viewModel::disconnect,
                     onSelectProfile = viewModel::selectProfile,
                     onDeleteProfile = viewModel::deleteProfile,
@@ -217,6 +231,28 @@ class MainActivity : ComponentActivity() {
                     busyState = uiState.busyState ?: transientBusyState,
                     diagnosticsReport = viewModel.buildDiagnosticsReport(),
                     onClearNotice = viewModel::clearNotice,
+                    pendingAuthKeyUnlockName = pendingAuthKeyUnlockName,
+                    pendingAuthKeyUnlockError = pendingAuthKeyUnlockError,
+                    onDismissAuthKeyUnlock = {
+                        pendingAuthKeyUnlockName = null
+                        pendingAuthKeyUnlockError = null
+                    },
+                    onUnlockAuthKey = { password ->
+                        val authKeyName = pendingAuthKeyUnlockName
+                            ?: uiState.selectedAuthKeyMaterial?.displayName
+                            ?: return@YumeApp
+                        pendingAuthKeyUnlockName = null
+                        pendingAuthKeyUnlockError = null
+                        lifecycleScope.launch {
+                            val error = viewModel.validateSelectedEncryptedAuthKey(password)
+                            if (error == null) {
+                                requestNotificationPermissionThenConnect(password)
+                            } else {
+                                pendingAuthKeyUnlockError = error
+                                pendingAuthKeyUnlockName = authKeyName
+                            }
+                        }
+                    },
                 )
             }
         }
@@ -299,7 +335,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun requestNotificationPermissionThenConnect() {
+    private fun requestNotificationPermissionThenConnect(authKeyPassword: String? = null) {
+        pendingConnectAuthKeyPassword = authKeyPassword
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             requestBatteryOptimizationThenConnect()
             return
@@ -339,7 +376,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestVpnPermissionAndConnect() {
-        val selectedProfileId = viewModel.uiState.value.selectedProfileId ?: return
+        val selectedProfileId = viewModel.uiState.value.selectedProfileId ?: run {
+            pendingConnectAuthKeyPassword = null
+            return
+        }
         val permissionIntent = runCatching {
             VpnService.prepare(applicationContext)
         }.getOrElse { throwable ->
@@ -358,12 +398,18 @@ class MainActivity : ComponentActivity() {
         }
         if (permissionIntent == null) {
             YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Android VPN permission is already granted.")
-            viewModel.connectSelectedProfile()
+            connectSelectedProfileWithPendingPassword()
         } else {
             viewModel.markPermissionRequired(selectedProfileId)
             YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Opening the Android VPN permission dialog.")
             vpnPermissionLauncher.launch(permissionIntent)
         }
+    }
+
+    private fun connectSelectedProfileWithPendingPassword() {
+        val authKeyPassword = pendingConnectAuthKeyPassword
+        pendingConnectAuthKeyPassword = null
+        viewModel.connectSelectedProfile(authKeyPassword)
     }
 
     private fun handleMaterialImport(uri: Uri?, type: SecureMaterialType) {

@@ -32,7 +32,7 @@ fun ServersScreen(
     uiState: MainUiState,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: suspend (String?, String, String, String, String, String, String, Boolean, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String) -> String?,
 ) {
     val strings = appStrings()
     var editorDraft by remember { mutableStateOf<ProfileDraft?>(null) }
@@ -106,6 +106,8 @@ fun ServersScreen(
                     updated.host,
                     updated.port,
                     updated.sni,
+                    updated.obfuscation,
+                    updated.obfsSecret,
                     updated.dnsServers,
                     updated.mtu,
                     updated.requireAnonymProof,

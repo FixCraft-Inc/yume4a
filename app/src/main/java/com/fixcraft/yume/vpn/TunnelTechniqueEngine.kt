@@ -3,6 +3,7 @@ package com.fixcraft.yume.vpn
 import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.data.ConnectionTechnique
 import com.fixcraft.yume.data.PerformanceProfile
+import com.fixcraft.yume.data.canonicalLabel
 import com.fixcraft.yume.transport.YumeTransportTuning
 
 sealed interface TunnelRuntimeConfig {
@@ -39,6 +40,7 @@ data class Tun2SocksRuntimeConfig(
     val tcpEvictionGraceMs: Long,
     val tcpEvictionBatchSize: Int,
     val bridgeChunkBytes: Int,
+    val routeTcpBufferBytes: Int,
     val tcpStreamBufferBytes: Int,
     val udpStreamBufferBytes: Int,
     val outboundFrameQueueCapacity: Int,
@@ -52,14 +54,14 @@ data class Tun2SocksRuntimeConfig(
     val postRoutingTrafficRampDelayMs: Long,
 ) : TunnelRuntimeConfig {
     override val technique: ConnectionTechnique = ConnectionTechnique.Tun2SocksStable
-    override val summary: String = "${technique.displayName} / ${performanceProfile.displayName}"
+    override val summary: String = "${technique.canonicalLabel()} / ${performanceProfile.canonicalLabel()}"
     override val diagnosticsSummary: String = bridgeDiagnosticsSummary()
 
     fun bridgeDiagnosticsSummary(includeTechnique: Boolean = true): String = buildString {
         if (includeTechnique) {
-            appendLine("Technique: ${technique.displayName}")
+            appendLine("Technique: ${technique.canonicalLabel()}")
         }
-        appendLine("Profile: ${performanceProfile.displayName}")
+        appendLine("Profile: ${performanceProfile.canonicalLabel()}")
         appendLine("TCP relays: $maxActiveTcpRelays")
         appendLine("Relay acquire timeout: ${relayAcquireTimeoutMs}ms")
         appendLine("Relay acquire slice: ${relayAcquireSliceMs}ms")
@@ -67,6 +69,7 @@ data class Tun2SocksRuntimeConfig(
         appendLine("TCP eviction grace: ${tcpEvictionGraceMs}ms")
         appendLine("TCP eviction batch: $tcpEvictionBatchSize")
         appendLine("Bridge chunk: ${bridgeChunkBytes / 1024} KiB")
+        appendLine("Route-core TCP buffer: ${routeTcpBufferBytes / 1024} KiB")
         appendLine("TCP stream buffer: ${tcpStreamBufferBytes / 1024} KiB")
         appendLine("UDP stream buffer: ${udpStreamBufferBytes / 1024} KiB")
         appendLine("Outbound frame queue: $outboundFrameQueueCapacity")
@@ -78,7 +81,7 @@ data class Tun2SocksRuntimeConfig(
         appendLine("DNS relay concurrency: $dnsRelayMaxConcurrency")
         appendLine("Pre-routing stability delay: ${preRoutingStabilityDelayMs}ms")
         appendLine("Post-routing traffic ramp: ${postRoutingTrafficRampDelayMs}ms")
-        append("UDP 443 policy: forced TCP fallback")
+        append("UDP 443 policy: route-core drop for TCP fallback")
     }
 
     fun toBootstrapTuning(): YumeTransportTuning {
@@ -93,20 +96,36 @@ data class Tun2SocksRuntimeConfig(
 data class NativeDirectRuntimeConfig(
     override val performanceProfile: PerformanceProfile,
     val bridgeTuning: Tun2SocksRuntimeConfig,
-    val compatibilityBridgeEnabled: Boolean = true,
+    val engineStatus: NativeDirectEngineStatus = NativeDirectEngineStatus.PacketNative,
+    val nativeQueueCapacity: Int,
+    val tcpOpenConcurrency: Int,
+    val tcpFlowWindowBytes: Int,
+    val udpFlowBufferBytes: Int,
+    val ipv6FailClosed: Boolean = true,
 ) : TunnelRuntimeConfig {
     override val technique: ConnectionTechnique = ConnectionTechnique.NativeDirectBeta
-    override val summary: String = "${technique.displayName} / ${performanceProfile.displayName}"
+    override val summary: String = technique.canonicalLabel()
     override val diagnosticsSummary: String = buildString {
-        appendLine("Technique: ${technique.displayName}")
-        appendLine("Profile: ${performanceProfile.displayName}")
-        if (compatibilityBridgeEnabled) {
-            appendLine("Status: bridge-backed beta path with technique-specific tuning")
-        } else {
-            appendLine("Status: packet-native data plane")
-        }
+        appendLine("Technique: ${technique.canonicalLabel()}")
+        appendLine("Profile: $NATIVE_DIRECT_FIXED_TUNING_LABEL")
+        appendLine(
+            "Status: " + when (engineStatus) {
+                NativeDirectEngineStatus.CompatibilityBridgeFallback ->
+                    "legacy bridge fallback"
+
+                NativeDirectEngineStatus.PacketNative ->
+                    "direct Yume stream tunnel backend"
+            }
+        )
+        appendLine("Native queue: $nativeQueueCapacity")
+        appendLine("Native TCP open fan-out: $tcpOpenConcurrency")
+        appendLine("Native TCP active streams: ${bridgeTuning.maxActiveTcpRelays}")
+        appendLine("Native TCP flow window: ${tcpFlowWindowBytes / 1024} KiB")
+        appendLine("Native UDP flow buffer: ${udpFlowBufferBytes / 1024} KiB")
+        appendLine("UDP policy: DNS only; non-DNS UDP is dropped so apps fall back to TCP")
+        appendLine("IPv6 policy: ${if (ipv6FailClosed) "fail-closed" else "enabled"}")
         appendLine()
-        appendLine("Applied bridge tuning")
+        appendLine("Applied tunnel tuning")
         append(bridgeTuning.bridgeDiagnosticsSummary(includeTechnique = false))
     }
 }
@@ -185,9 +204,14 @@ object NativeDirectTechniqueEngine : TunnelTechniqueEngine {
     override val isAvailable: Boolean = BuildConfig.ENABLE_NATIVE_DIRECT_BETA
 
     override fun runtimeConfig(profile: PerformanceProfile): TunnelRuntimeConfig {
+        val bridgeTuning = nativeDirectBridgeTuning()
         return NativeDirectRuntimeConfig(
-            performanceProfile = profile,
-            bridgeTuning = nativeDirectBridgeTuning(profile),
+            performanceProfile = PerformanceProfile.Balanced,
+            bridgeTuning = bridgeTuning,
+            nativeQueueCapacity = bridgeTuning.outboundFrameQueueCapacity,
+            tcpOpenConcurrency = nativeDirectTcpOpenConcurrency(bridgeTuning.maxActiveTcpRelays),
+            tcpFlowWindowBytes = bridgeTuning.tcpStreamBufferBytes,
+            udpFlowBufferBytes = bridgeTuning.udpStreamBufferBytes,
         )
     }
 
@@ -211,142 +235,106 @@ object NativeDirectTechniqueEngine : TunnelTechniqueEngine {
     }
 }
 
+private const val NATIVE_DIRECT_FIXED_TUNING_LABEL = "Fixed native tuning"
+
 private fun stableBridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeConfig {
     return when (profile) {
         PerformanceProfile.Latency -> Tun2SocksRuntimeConfig(
             performanceProfile = profile,
-            maxActiveTcpRelays = 16,
-            relayAcquireTimeoutMs = 1_500L,
-            relayAcquireSliceMs = 150L,
-            idleTcpEvictionMs = 2_500L,
-            tcpEvictionGraceMs = 1_500L,
-            tcpEvictionBatchSize = 4,
-            bridgeChunkBytes = 4 * 1024,
-            tcpStreamBufferBytes = 192 * 1024,
-            udpStreamBufferBytes = 96 * 1024,
-            outboundFrameQueueCapacity = 48,
+            maxActiveTcpRelays = 48,
+            relayAcquireTimeoutMs = 2_000L,
+            relayAcquireSliceMs = 100L,
+            idleTcpEvictionMs = 5_000L,
+            tcpEvictionGraceMs = 2_000L,
+            tcpEvictionBatchSize = 8,
+            bridgeChunkBytes = 8 * 1024,
+            routeTcpBufferBytes = 128 * 1024,
+            tcpStreamBufferBytes = 512 * 1024,
+            udpStreamBufferBytes = 128 * 1024,
+            outboundFrameQueueCapacity = 128,
             tun2SocksConnectTimeoutMs = 4_000,
             tun2SocksTcpReadWriteTimeoutMs = 60_000,
             tun2SocksUdpReadWriteTimeoutMs = 9_000,
-            maxDnsUdpAssociations = 20,
-            maxUdpAssociations = 28,
-            dnsRelayMaxConcurrency = 6,
-            preRoutingStabilityDelayMs = 1_000L,
-            postRoutingTrafficRampDelayMs = 4_000L,
+            maxDnsUdpAssociations = 32,
+            maxUdpAssociations = 48,
+            dnsRelayMaxConcurrency = 10,
+            preRoutingStabilityDelayMs = 150L,
+            postRoutingTrafficRampDelayMs = 0L,
         )
 
         PerformanceProfile.Balanced -> Tun2SocksRuntimeConfig(
             performanceProfile = profile,
-            maxActiveTcpRelays = 24,
-            relayAcquireTimeoutMs = 3_500L,
-            relayAcquireSliceMs = 200L,
-            idleTcpEvictionMs = 5_000L,
-            tcpEvictionGraceMs = 2_200L,
-            tcpEvictionBatchSize = 4,
-            bridgeChunkBytes = 4 * 1024,
-            tcpStreamBufferBytes = 320 * 1024,
-            udpStreamBufferBytes = 160 * 1024,
-            outboundFrameQueueCapacity = 80,
+            maxActiveTcpRelays = 64,
+            relayAcquireTimeoutMs = 5_000L,
+            relayAcquireSliceMs = 150L,
+            idleTcpEvictionMs = 15_000L,
+            tcpEvictionGraceMs = 5_000L,
+            tcpEvictionBatchSize = 8,
+            bridgeChunkBytes = 16 * 1024,
+            routeTcpBufferBytes = 192 * 1024,
+            tcpStreamBufferBytes = 1024 * 1024,
+            udpStreamBufferBytes = 256 * 1024,
+            outboundFrameQueueCapacity = 192,
             tun2SocksConnectTimeoutMs = 5_000,
             tun2SocksTcpReadWriteTimeoutMs = 120_000,
             tun2SocksUdpReadWriteTimeoutMs = 15_000,
-            maxDnsUdpAssociations = 24,
-            maxUdpAssociations = 36,
-            dnsRelayMaxConcurrency = 8,
-            preRoutingStabilityDelayMs = 1_200L,
-            postRoutingTrafficRampDelayMs = 6_000L,
+            maxDnsUdpAssociations = 40,
+            maxUdpAssociations = 64,
+            dnsRelayMaxConcurrency = 12,
+            preRoutingStabilityDelayMs = 250L,
+            postRoutingTrafficRampDelayMs = 0L,
         )
 
         PerformanceProfile.Throughput -> Tun2SocksRuntimeConfig(
             performanceProfile = profile,
-            maxActiveTcpRelays = 36,
-            relayAcquireTimeoutMs = 6_000L,
-            relayAcquireSliceMs = 250L,
-            idleTcpEvictionMs = 9_000L,
-            tcpEvictionGraceMs = 3_500L,
-            tcpEvictionBatchSize = 2,
-            bridgeChunkBytes = 8 * 1024,
-            tcpStreamBufferBytes = 512 * 1024,
-            udpStreamBufferBytes = 256 * 1024,
-            outboundFrameQueueCapacity = 128,
+            maxActiveTcpRelays = 80,
+            relayAcquireTimeoutMs = 8_000L,
+            relayAcquireSliceMs = 150L,
+            idleTcpEvictionMs = 30_000L,
+            tcpEvictionGraceMs = 8_000L,
+            tcpEvictionBatchSize = 8,
+            bridgeChunkBytes = 32 * 1024,
+            routeTcpBufferBytes = 256 * 1024,
+            tcpStreamBufferBytes = 2 * 1024 * 1024,
+            udpStreamBufferBytes = 512 * 1024,
+            outboundFrameQueueCapacity = 256,
             tun2SocksConnectTimeoutMs = 8_000,
             tun2SocksTcpReadWriteTimeoutMs = 180_000,
             tun2SocksUdpReadWriteTimeoutMs = 30_000,
-            maxDnsUdpAssociations = 32,
-            maxUdpAssociations = 52,
-            dnsRelayMaxConcurrency = 12,
-            preRoutingStabilityDelayMs = 1_500L,
-            postRoutingTrafficRampDelayMs = 8_000L,
+            maxDnsUdpAssociations = 48,
+            maxUdpAssociations = 80,
+            dnsRelayMaxConcurrency = 16,
+            preRoutingStabilityDelayMs = 350L,
+            postRoutingTrafficRampDelayMs = 0L,
         )
     }
 }
 
-private fun nativeDirectBridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeConfig {
-    return when (profile) {
-        PerformanceProfile.Latency -> Tun2SocksRuntimeConfig(
-            performanceProfile = profile,
-            maxActiveTcpRelays = 20,
-            relayAcquireTimeoutMs = 1_800L,
-            relayAcquireSliceMs = 150L,
-            idleTcpEvictionMs = 3_000L,
-            tcpEvictionGraceMs = 1_500L,
-            tcpEvictionBatchSize = 4,
-            bridgeChunkBytes = 4 * 1024,
-            tcpStreamBufferBytes = 224 * 1024,
-            udpStreamBufferBytes = 112 * 1024,
-            outboundFrameQueueCapacity = 64,
-            tun2SocksConnectTimeoutMs = 3_500,
-            tun2SocksTcpReadWriteTimeoutMs = 75_000,
-            tun2SocksUdpReadWriteTimeoutMs = 10_000,
-            maxDnsUdpAssociations = 24,
-            maxUdpAssociations = 32,
-            dnsRelayMaxConcurrency = 8,
-            preRoutingStabilityDelayMs = 850L,
-            postRoutingTrafficRampDelayMs = 3_000L,
-        )
+private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
+    return Tun2SocksRuntimeConfig(
+        performanceProfile = PerformanceProfile.Balanced,
+        maxActiveTcpRelays = 96,
+        relayAcquireTimeoutMs = 5_000L,
+        relayAcquireSliceMs = 100L,
+        idleTcpEvictionMs = 18_000L,
+        tcpEvictionGraceMs = 6_000L,
+        tcpEvictionBatchSize = 8,
+        bridgeChunkBytes = 32 * 1024,
+        routeTcpBufferBytes = 256 * 1024,
+        tcpStreamBufferBytes = 2 * 1024 * 1024,
+        udpStreamBufferBytes = 256 * 1024,
+        outboundFrameQueueCapacity = 384,
+        tun2SocksConnectTimeoutMs = 5_000,
+        tun2SocksTcpReadWriteTimeoutMs = 120_000,
+        tun2SocksUdpReadWriteTimeoutMs = 10_000,
+        maxDnsUdpAssociations = 16,
+        maxUdpAssociations = 16,
+        dnsRelayMaxConcurrency = 6,
+        preRoutingStabilityDelayMs = 100L,
+        postRoutingTrafficRampDelayMs = 0L,
+    )
+}
 
-        PerformanceProfile.Balanced -> Tun2SocksRuntimeConfig(
-            performanceProfile = profile,
-            maxActiveTcpRelays = 30,
-            relayAcquireTimeoutMs = 3_000L,
-            relayAcquireSliceMs = 200L,
-            idleTcpEvictionMs = 5_500L,
-            tcpEvictionGraceMs = 2_200L,
-            tcpEvictionBatchSize = 4,
-            bridgeChunkBytes = 8 * 1024,
-            tcpStreamBufferBytes = 384 * 1024,
-            udpStreamBufferBytes = 192 * 1024,
-            outboundFrameQueueCapacity = 96,
-            tun2SocksConnectTimeoutMs = 4_500,
-            tun2SocksTcpReadWriteTimeoutMs = 105_000,
-            tun2SocksUdpReadWriteTimeoutMs = 14_000,
-            maxDnsUdpAssociations = 32,
-            maxUdpAssociations = 44,
-            dnsRelayMaxConcurrency = 12,
-            preRoutingStabilityDelayMs = 1_000L,
-            postRoutingTrafficRampDelayMs = 4_500L,
-        )
-
-        PerformanceProfile.Throughput -> Tun2SocksRuntimeConfig(
-            performanceProfile = profile,
-            maxActiveTcpRelays = 44,
-            relayAcquireTimeoutMs = 5_000L,
-            relayAcquireSliceMs = 250L,
-            idleTcpEvictionMs = 8_500L,
-            tcpEvictionGraceMs = 3_000L,
-            tcpEvictionBatchSize = 2,
-            bridgeChunkBytes = 8 * 1024,
-            tcpStreamBufferBytes = 640 * 1024,
-            udpStreamBufferBytes = 320 * 1024,
-            outboundFrameQueueCapacity = 160,
-            tun2SocksConnectTimeoutMs = 6_500,
-            tun2SocksTcpReadWriteTimeoutMs = 150_000,
-            tun2SocksUdpReadWriteTimeoutMs = 25_000,
-            maxDnsUdpAssociations = 40,
-            maxUdpAssociations = 60,
-            dnsRelayMaxConcurrency = 16,
-            preRoutingStabilityDelayMs = 1_300L,
-            postRoutingTrafficRampDelayMs = 6_500L,
-        )
-    }
+private fun nativeDirectTcpOpenConcurrency(maxActiveTcpRelays: Int): Int {
+    return (maxActiveTcpRelays.coerceAtLeast(1) / 6).coerceIn(12, 24)
 }

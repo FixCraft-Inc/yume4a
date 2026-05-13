@@ -15,9 +15,476 @@ import com.fixcraft.yume.data.PerformanceProfile
 import com.fixcraft.yume.data.ResolvedAppLanguage
 import com.fixcraft.yume.data.SecureMaterialType
 import com.fixcraft.yume.data.ThemeColorMode
+import com.fixcraft.yume.data.canonicalLabel
 import com.fixcraft.yume.vpn.VpnPhase
 import java.util.Locale
 import kotlinx.coroutines.flow.MutableStateFlow
+
+private typealias TranslationTable = Map<String, String>
+
+private fun translationTableOf(vararg entries: Pair<String, String>): TranslationTable {
+    val table = LinkedHashMap<String, String>(entries.size)
+    for ((key, value) in entries) {
+        check(table.put(key, value) == null) { "Duplicate translation key: $key" }
+    }
+    return table
+}
+
+private val ukrainianTranslations = translationTableOf(
+    "Back" to "Назад",
+    "Home" to "Головна",
+    "Servers" to "Сервери",
+    "Security" to "Безпека",
+    "Tools" to "Інструменти",
+    "Settings" to "Налаштування",
+    "Diagnostics" to "Діагностика",
+    "Language" to "Мова",
+    "Log language" to "Мова журналу",
+    "Maintained" to "Підтримувані",
+    "Auto-translated" to "Автопереклад",
+    "Close" to "Закрити",
+    "App language" to "Мова застосунку",
+    "Log (Beta)" to "Журнал (бета)",
+    "Unavailable in this build." to "Недоступно в цій збірці.",
+    "Stable Android path through tun2socks with TCP and UDP support." to "Стабільний Android-шлях через tun2socks із підтримкою TCP та UDP.",
+    "Direct Yume TCP and UDP path. Fixed tuning. IPv6 stays fail-closed." to "Прямий Yume TCP- та UDP-шлях. Фіксоване налаштування. IPv6 залишається у режимі fail-closed.",
+    "Original" to "Оригінал",
+    "Follows your phone" to "Як у телефоні",
+    "Follow app" to "Як у застосунку",
+    "On-device translation" to "Переклад на пристрої",
+    "Auto" to "Авто",
+    "Native" to "Рідна",
+    "Downloaded" to "Завантажено",
+    "Remove download" to "Видалити завантаження",
+    "Preparing language" to "Підготовка мови",
+    "Downloading language data" to "Завантаження мовних даних",
+    "Translating the app" to "Переклад застосунку",
+    "Working" to "Виконується",
+    "Connection" to "Підключення",
+    "Profile" to "Профіль",
+    "Fixed native tuning" to "Фіксоване нативне налаштування",
+    "Native direct uses fixed tuning. Performance profiles apply only to Tun2Socks stable." to "Native direct використовує фіксоване налаштування. Профілі продуктивності застосовуються лише до Tun2Socks stable.",
+    "Theme" to "Тема",
+    "Advanced" to "Додатково",
+    "App data" to "Дані застосунку",
+    "Advanced mode" to "Розширений режим",
+    "Show developer and power-user tools in the app." to "Показувати в застосунку інструменти для розробників і досвідчених користувачів.",
+    "Advanced mode on" to "Розширений режим увімкнено",
+    "Advanced mode off" to "Розширений режим вимкнено",
+    "AMOLED black" to "AMOLED чорний",
+    "Use true black in dark mode." to "Використовувати справжній чорний у темній темі.",
+    "Protection" to "Захист",
+    "Android secure" to "Захищено Android",
+    "Password required" to "Потрібен пароль",
+    "Set password" to "Встановити пароль",
+    "Change password" to "Змінити пароль",
+    "Remove password" to "Прибрати пароль",
+    "Unlock app data" to "Розблокувати дані застосунку",
+    "Unlock auth key" to "Розблокувати ключ авторизації",
+    "Password" to "Пароль",
+    "Current password" to "Поточний пароль",
+    "New password" to "Новий пароль",
+    "Confirm password" to "Підтвердьте пароль",
+    "Unlock" to "Розблокувати",
+    "Current password required" to "Потрібен поточний пароль",
+    "New password required" to "Потрібен новий пароль",
+    "Use at least 6 characters" to "Використовуйте щонайменше 6 символів",
+    "Passwords do not match" to "Паролі не збігаються",
+    "App data password enabled" to "Пароль для даних застосунку увімкнено",
+    "App data password changed" to "Пароль для даних застосунку змінено",
+    "App data password removed" to "Пароль для даних застосунку видалено",
+    "Couldn't enable the app data password." to "Не вдалося увімкнути пароль для даних застосунку.",
+    "Couldn't change the app data password." to "Не вдалося змінити пароль для даних застосунку.",
+    "Couldn't remove the app data password." to "Не вдалося прибрати пароль для даних застосунку.",
+    "Couldn't unlock this auth key. Check the password." to "Не вдалося розблокувати цей ключ авторизації. Перевірте пароль.",
+    "Device" to "Пристрій",
+    "About" to "Про застосунок",
+    "Credits" to "Подяки",
+    "Text tools" to "Текстові інструменти",
+    "Input" to "Ввід",
+    "Output" to "Вивід",
+    "Input required" to "Потрібен ввід",
+    "Operation failed" to "Операція не вдалася",
+    "Encrypt" to "Зашифрувати",
+    "Decrypt" to "Розшифрувати",
+    "Clear" to "Очистити",
+    "System" to "Система",
+    "Author" to "Автор",
+    "Company" to "Компанія",
+    "Credits written by" to "Текст подяк",
+    "Recognition" to "Про визнання",
+    "From F1xGOD" to "Від F1xGOD",
+    "Battery settings" to "Налаштування батареї",
+    "Notification settings" to "Налаштування сповіщень",
+    "Notifications" to "Сповіщення",
+    "Battery optimization" to "Оптимізація батареї",
+    "Dynamic colors" to "Динамічні кольори",
+    "Allowed" to "Дозволено",
+    "Permission required" to "Потрібен дозвіл",
+    "Optimized" to "Оптимізується",
+    "Unrestricted" to "Без обмежень",
+    "Enabled" to "Увімкнено",
+    "Disabled" to "Вимкнено",
+    "Available" to "Доступно",
+    "Unavailable on this Android version" to "Недоступно на цій версії Android",
+    "Pick, edit, or remove a saved gateway." to "Виберіть, змініть або видаліть збережений шлюз.",
+    "Add server" to "Додати сервер",
+    "Your Yume tunnel" to "Ваш тунель Yume",
+    "Set up Yume VPN" to "Налаштувати Yume VPN",
+    "No servers configured" to "Сервери не налаштовано",
+    "Add your first gateway" to "Додайте перший шлюз",
+    "Trust & auth" to "Довіра й авторизація",
+    "CA and auth keys." to "CA та ключі авторизації.",
+    "Selected server" to "Вибраний сервер",
+    "Anonym CA" to "Анонімний CA",
+    "Auth key" to "Ключ авторизації",
+    "Missing" to "Відсутній",
+    "Not assigned" to "Не призначено",
+    "Paste Anonym CA" to "Вставити анонімний CA",
+    "Imported CA" to "Імпортований CA",
+    "Paste auth key" to "Вставити ключ авторизації",
+    "Import auth key" to "Імпортувати ключ авторизації",
+    "Imported auth key" to "Імпортований ключ авторизації",
+    "Embedded Anonym CA" to "Вбудований анонімний CA",
+    "Imported" to "Імпортовано",
+    "Ready" to "Готово",
+    "Needs key" to "Потрібен ключ",
+    "Auth key needed" to "Потрібен ключ авторизації",
+    "Tap Connect." to "Натисніть «Підключити».",
+    "Add an auth key." to "Додайте ключ авторизації.",
+    "No server" to "Немає сервера",
+    "Pick a server" to "Виберіть сервер",
+    "Add one to connect." to "Додайте сервер для підключення.",
+    "Choose one to connect." to "Виберіть сервер для підключення.",
+    "Required" to "Обов’язково",
+    "Optional" to "Необов’язково",
+    "Path" to "Маршрут",
+    "Exit IP" to "Вихідний IP",
+    "Upstream" to "Верхня мережа",
+    "Unknown" to "Невідомо",
+    "Unavailable" to "Недоступно",
+    "Connect" to "Підключити",
+    "Disconnect" to "Відключити",
+    "Continue" to "Продовжити",
+    "Try again" to "Спробувати ще раз",
+    "Status" to "Стан",
+    "Edit server" to "Змінити сервер",
+    "Assign auth key" to "Призначити ключ",
+    "Waiting" to "Очікування",
+    "Interface up" to "Інтерфейс піднято",
+    "Interface idle" to "Інтерфейс простоює",
+    "Latest log" to "Останній журнал",
+    "Relay" to "Релей",
+    "Routing" to "Маршрутизація",
+    "Tunnel active" to "Тунель активний",
+    "Session log and build info." to "Журнал сесії та інформація про збірку.",
+    "Current phase" to "Поточна фаза",
+    "Technique" to "Техніка",
+    "Copy diagnostics" to "Копіювати діагностику",
+    "Share diagnostics" to "Поділитися діагностикою",
+    "Report" to "Звіт",
+    "Yume status" to "Стан Yume",
+    "Brief" to "Коротко",
+    "Client" to "Клієнт",
+    "Lifecycle" to "Життєвий цикл",
+    "Lifecycle msg" to "Повідомлення циклу",
+    "Server mode" to "Режим сервера",
+    "Peer cert" to "Сертифікат вузла",
+    "Interface" to "Інтерфейс",
+    "Background" to "Фон",
+    "No server selected" to "Сервер не вибрано",
+    "Not set" to "Не задано",
+    "Established" to "Піднято",
+    "Battery optimized" to "Оптимізація батареї",
+    "Server version" to "Версія сервера",
+    "Allow background" to "Дозволити у фоні",
+    "Session log" to "Журнал сесії",
+    "No session events yet." to "Подій сесії ще немає.",
+    "Systemwide Android VPN routing is active." to "Системна Android VPN-маршрутизація активна.",
+    "Anonym CA certificates" to "Сертифікати анонімного CA",
+    "Auth keys" to "Ключі авторизації",
+    "Regular" to "Звичайний",
+    "Encrypted" to "Зашифрований",
+    "Import file" to "Імпортувати файл",
+    "Paste text" to "Вставити текст",
+    "Built in" to "Вбудований",
+    "Saved servers" to "Збережені сервери",
+    "Select, edit, or remove saved servers." to "Виберіть, змініть або видаліть збережені сервери.",
+    "Live" to "Активний",
+    "Selected" to "Вибрано",
+    "Edit" to "Змінити",
+    "Delete" to "Видалити",
+    "Profile name" to "Назва профілю",
+    "Server host" to "Хост сервера",
+    "Port" to "Порт",
+    "TLS server name" to "TLS-ім’я сервера",
+    "DNS servers" to "DNS-сервери",
+    "Require anonym proof" to "Вимагати anonym proof",
+    "Notes" to "Нотатки",
+    "Save" to "Зберегти",
+    "Update" to "Оновити",
+    "Cancel" to "Скасувати",
+    "Saved name" to "Збережена назва",
+    "PEM text" to "PEM-текст",
+    "Yume Android Diagnostics" to "Діагностика Yume Android",
+    "App" to "Застосунок",
+    "Performance profile" to "Профіль продуктивності",
+    "Theme colors" to "Кольори теми",
+    "AMOLED dark theme" to "AMOLED темна тема",
+    "On" to "Увімк",
+    "Off" to "Вимк",
+    "Phase" to "Фаза",
+    "Headline" to "Заголовок",
+    "Detail" to "Опис",
+    "Endpoint" to "Адреса",
+    "TLS name" to "TLS-ім’я",
+    "Anonym policy" to "Політика anonym",
+    "Upstream network" to "Верхня мережа",
+    "Control socket protected" to "Керувальний сокет захищено",
+    "VPN interface established" to "VPN-інтерфейс піднято",
+    "Traffic routed through Yume" to "Трафік іде через Yume",
+    "OS" to "ОС",
+    "Android version" to "Версія Android",
+    "API level" to "Рівень API",
+    "Security patch" to "Патч безпеки",
+    "Manufacturer" to "Виробник",
+    "Brand" to "Бренд",
+    "Model" to "Модель",
+    "Device code" to "Код пристрою",
+    "Product" to "Продукт",
+    "Hardware" to "Апаратна платформа",
+    "Supported ABIs" to "Підтримувані ABI",
+    "Build fingerprint" to "Відбиток збірки",
+    "Runtime" to "Параметри",
+    "Event log" to "Журнал подій",
+    "No session events recorded." to "Події сесії ще не записані.",
+    "None" to "Немає",
+    "Yes" to "Так",
+    "No" to "Ні",
+    "Permission denied" to "Дозвіл відхилено",
+    "VPN prepare failed" to "Не вдалося підготувати VPN",
+    "Upstream lost" to "Верхню мережу втрачено",
+    "Waiting for network" to "Очікування мережі",
+    "Connecting" to "Підключення",
+    "Disconnecting" to "Відключення",
+    "Disconnected" to "Відключено",
+    "Connection failed" to "Помилка підключення",
+    "Verifying route" to "Перевірка маршруту",
+    "Protected" to "Захищено",
+    "Protected via Yume" to "Захищено через Yume",
+    "Verifying" to "Перевірка",
+    "Cellular" to "Мобільна мережа",
+    "Other" to "Інша",
+    "Use Android protection by default, or add a password before the app opens." to "Типово використовуйте захист Android або додайте пароль перед відкриттям застосунку.",
+    "Enter the password to open Yume and load encrypted data." to "Введіть пароль, щоб відкрити Yume і завантажити зашифровані дані.",
+    "Yume will ask for this password before the app opens. Stored data stays encrypted at rest." to "Yume запитуватиме цей пароль перед відкриттям застосунку. Дані зберігатимуться зашифрованими.",
+    "Enter the current password, then set a new one for encrypted app data." to "Введіть поточний пароль, а потім встановіть новий для зашифрованих даних застосунку.",
+    "Enter the current password to return app data protection to Android-only mode." to "Введіть поточний пароль, щоб повернути захист даних застосунку до режиму лише Android.",
+    "Encrypt or decrypt text with BaseFWX-compatible modes." to "Шифруйте або розшифровуйте текст у режимах, сумісних з BaseFWX.",
+    "Password is required for all BaseFWX text modes here." to "Тут пароль потрібен для всіх текстових режимів BaseFWX.",
+    "Pick a gateway, keep trust material on-device, and route Android traffic through Yume." to "Виберіть шлюз, зберігайте матеріали довіри на пристрої та спрямовуйте Android-трафік через Yume.",
+    "Import trust material and an auth key, then add your first server." to "Імпортуйте матеріали довіри та ключ авторизації, а потім додайте перший сервер.",
+    "A server profile stores host, TLS name, DNS, MTU, Anonym CA, and auth key. Your first saved profile becomes active." to "Профіль сервера зберігає хост, TLS-ім’я, DNS, MTU, Anonym CA та ключ авторизації. Перший збережений профіль стає активним.",
+    "Import a PEM auth key below, then edit this server to assign it before connecting." to "Спочатку імпортуйте нижче PEM-ключ авторизації, потім відкрийте цей сервер і призначте його перед підключенням.",
+    "Edit this server and assign one of the imported auth keys before connecting." to "Відкрийте цей сервер і призначте один з імпортованих ключів авторизації перед підключенням.",
+    "Yume Android diagnostics" to "Діагностика Yume Android",
+    "Applied tunnel tuning" to "Застосоване налаштування тунелю",
+    "legacy bridge fallback" to "резервний старий bridge",
+    "Native queue" to "Нативна черга",
+    "Native TCP flow window" to "Нативне вікно TCP-потоку",
+    "Native UDP flow buffer" to "Нативний буфер UDP-потоку",
+    "IPv6 policy" to "Політика IPv6",
+    "fail-closed" to "fail-closed",
+    "TCP relays" to "TCP-релеї",
+    "Relay acquire timeout" to "Таймаут отримання релея",
+    "Relay acquire slice" to "Крок очікування релея",
+    "Idle TCP eviction" to "Видалення простаючих TCP",
+    "TCP eviction grace" to "Пільговий період TCP eviction",
+    "TCP eviction batch" to "Пакет TCP eviction",
+    "Bridge chunk" to "Розмір bridge chunk",
+    "TCP stream buffer" to "Буфер TCP-потоку",
+    "UDP stream buffer" to "Буфер UDP-потоку",
+    "Outbound frame queue" to "Черга вихідних фреймів",
+    "tun2socks connect timeout" to "Таймаут підключення tun2socks",
+    "tun2socks TCP read/write timeout" to "Таймаут читання/запису TCP tun2socks",
+    "tun2socks UDP read/write timeout" to "Таймаут читання/запису UDP tun2socks",
+    "Max DNS UDP associations" to "Макс. DNS UDP-асоціацій",
+    "Max UDP associations" to "Макс. UDP-асоціацій",
+    "DNS relay concurrency" to "Паралелізм DNS-релея",
+    "Pre-routing stability delay" to "Затримка стабілізації до маршрутизації",
+    "Post-routing traffic ramp" to "Плавний запуск трафіку після маршрутизації",
+    "UDP 443 policy" to "Політика UDP 443",
+    "forced TCP fallback" to "примусовий перехід на TCP",
+    "bridge-backed beta path with technique-specific tuning" to "beta-маршрут через bridge з налаштуванням під техніку",
+    "direct Yume stream tunnel backend" to "прямий тунельний backend Yume stream",
+    "Authenticating to Yume over 443" to "Автентифікація в Yume через 443",
+    "Stable Android path through tun2socks." to "Стабільний Android-маршрут через tun2socks.",
+    "Reserved for a future packet-native Android path." to "Зарезервовано для майбутнього packet-native шляху на Android.",
+    "Latency" to "Затримка",
+    "Balanced" to "Баланс",
+    "Throughput" to "Пропускна здатність",
+    "Lower queueing for interactive traffic." to "Менше черг для інтерактивного трафіку.",
+    "Default mixed-use profile." to "Типовий профіль для змішаного використання.",
+    "Larger buffers for sustained transfers." to "Більші буфери для тривалих передач.",
+    "Muted built-in colors." to "Приглушені вбудовані кольори.",
+    "Material You on Android 12+." to "Material You на Android 12+.",
+    "System default" to "Системний",
+    "AMOLED on" to "AMOLED увімкнено",
+    "AMOLED off" to "AMOLED вимкнено",
+    "Preparing" to "Підготовка",
+    "Connected" to "Підключено",
+    "Error" to "Помилка",
+    "Permission needed" to "Потрібен дозвіл",
+    "Anonym CA missing" to "Анонімний CA відсутній",
+    "Auth key required" to "Потрібен ключ авторизації",
+    "Auth key unavailable" to "Ключ авторизації недоступний",
+    "Credential load failed" to "Не вдалося завантажити облікові дані",
+    "Traffic is flowing through Yume." to "Трафік проходить через Yume.",
+    "Android needs permission to start the VPN." to "Android потрібен дозвіл, щоб запустити VPN.",
+    "Profile name is required" to "Назва профілю обов’язкова",
+    "Server host is required" to "Хост сервера обов’язковий",
+    "Port must be between 1 and 65535" to "Порт має бути в діапазоні від 1 до 65535",
+    "MTU must be between 1280 and 1500" to "MTU має бути в діапазоні від 1280 до 1500",
+    "DNS servers must be numeric IPv4 or IPv6 addresses" to "DNS-сервери мають бути числовими IPv4- або IPv6-адресами",
+    "Selected Anonym CA is unavailable" to "Вибраний Anonym CA недоступний",
+    "Selected auth key is unavailable" to "Вибраний ключ авторизації недоступний",
+    "Server saved" to "Сервер збережено",
+    "The embedded Anonym CA cannot be removed" to "Вбудований Anonym CA не можна видалити",
+    "Native direct beta is disabled in this build until the packet-native engine is ready." to "Native direct beta вимкнено в цій збірці, доки packet-native рушій не буде готовий.",
+    "Android VPN permission was denied." to "У дозволі Android VPN відмовлено.",
+    "Android VPN permission was denied. Yume cannot create a VPN interface without it." to "У дозволі Android VPN відмовлено. Без нього Yume не може створити VPN-інтерфейс.",
+    "Android VPN permission granted." to "Дозвіл Android VPN надано.",
+    "Android VPN permission is already granted." to "Дозвіл Android VPN уже надано.",
+    "Android needs VPN permission before Yume can create the interface." to "Перш ніж Yume зможе створити інтерфейс, Android потрібен дозвіл на VPN.",
+    "Requesting Android notification permission for VPN status updates." to "Запитується дозвіл Android на сповіщення для оновлень стану VPN.",
+    "Opening the Android VPN permission dialog." to "Відкривається діалог дозволу Android VPN.",
+    "The selected anonym CA is unavailable." to "Вибраний anonym CA недоступний.",
+    "This server does not have an auth key assigned." to "Цьому серверу не призначено ключ авторизації.",
+    "The selected auth key is unavailable." to "Вибраний ключ авторизації недоступний.",
+    "Local CA and auth key are ready. Starting the Android VPN service." to "Локальний CA і ключ авторизації готові. Запускається служба Android VPN.",
+    "Protected the control socket from the VPN path." to "Керувальний сокет виведено з VPN-маршруту.",
+    "Received Yume AUTH challenge." to "Отримано AUTH challenge від Yume.",
+    "Authenticated to the Yume server." to "Автентифікацію на сервері Yume завершено.",
+    "Running an in-app routed Android traffic probe through Yume." to "Запускається внутрішня перевірка маршрутизованого Android-трафіку через Yume.",
+    "TLS handshake failed on this Android TLS provider" to "TLS-узгодження не вдалося в цьому TLS-провайдері Android",
+    "Handshake failed" to "Рукостискання не вдалося",
+    "No upstream network is available. Waiting for Wi-Fi or cellular." to "Немає доступної верхньої мережі. Очікування Wi-Fi або мобільної мережі.",
+    "Upstream network lost. Waiting for Wi-Fi or cellular." to "Верхню мережу втрачено. Очікування Wi-Fi або мобільної мережі.",
+    "Wi-Fi or cellular is unavailable, so Yume cannot rebuild the protected control path yet." to "Wi-Fi або мобільна мережа недоступні, тому Yume поки не може заново побудувати захищений керувальний шлях.",
+    "Wi-Fi or cellular disappeared. Yume is waiting to rebuild the authenticated control path." to "Wi-Fi або мобільна мережа зникли. Yume чекає, щоб заново побудувати автентифікований керувальний шлях.",
+    "Ethernet" to "Ethernet",
+    "Hop" to "Хоп",
+    "Idle" to "Простій",
+    "Unknown location" to "Невідоме місце",
+    "Local SOCKS5" to "Локальний SOCKS5",
+    "Inner" to "Внутрішній",
+    "Proxy ready" to "Проксі готовий",
+    "Android VPNs are most stable between 1280 and 1500." to "VPN на Android найстабільніші в діапазоні від 1280 до 1500.",
+    "Imported PEM certificates and keys stay encrypted in the app and out of cloud backup." to "Імпортовані PEM-сертифікати та ключі залишаються зашифрованими в застосунку й поза хмарними резервними копіями.",
+    "Nothing imported yet." to "Ще нічого не імпортовано.",
+    "No custom CAs imported." to "Користувацькі CA ще не імпортовано.",
+    "The embedded Anonym CA is always available. Import your own PEM CA if you need a different trust anchor." to "Вбудований Anonym CA завжди доступний. Імпортуйте власний PEM CA, якщо потрібен інший кореневий сертифікат довіри.",
+    "Choose the trust anchor for anonym verification." to "Виберіть кореневий сертифікат довіри для перевірки anonym.",
+    "No auth keys imported yet." to "Ключі авторизації ще не імпортовано.",
+    "Yume auth uses a PEM private key. Import it from a file or paste the PEM text and then assign it to a server." to "Yume auth використовує PEM-закритий ключ. Імпортуйте його з файла або вставте PEM-текст, а потім призначте серверу.",
+    "Choose the PEM private key used for client auth. Leave empty only if you are not ready to connect yet." to "Виберіть PEM-закритий ключ для авторизації клієнта. Залишайте порожнім лише якщо ще не готові підключатися.",
+    "Import a PEM private key later if you are only saving the server for now." to "Якщо зараз ви лише зберігаєте сервер, PEM-закритий ключ можна імпортувати пізніше.",
+    "This is the input format. Plain PEM is accepted as-is. If the key was encrypted with BaseFWX, switch to Encrypted and enter its password." to "Це формат введення. Звичайний PEM приймається як є. Якщо ключ було зашифровано BaseFWX, перейдіть у режим «Зашифрований» і введіть його пароль.",
+    "Paste the full PEM including BEGIN/END lines." to "Вставте повний PEM разом із рядками BEGIN/END.",
+    "Paste the PEM private key, or switch to Encrypted and enter the BaseFWX password." to "Вставте PEM-закритий ключ або перейдіть у режим «Зашифрований» і введіть пароль BaseFWX.",
+    "Comma or newline separated numeric IPv4 or IPv6 addresses." to "Числові адреси IPv4 або IPv6, розділені комами чи новими рядками.",
+    "Optional. Leave blank to use the server host." to "Необов’язково. Залиште порожнім, щоб використовувати хост сервера.",
+    "Only allow servers running trusted anonym proof mode." to "Дозволяти лише сервери, що працюють у довіреному режимі anonym proof.",
+    "Allow normal-mode servers too. Verity will show FAIL and the server operator may monitor proxied traffic." to "Також дозволяти сервери у звичайному режимі. Verity покаже FAIL, а оператор сервера може відстежувати проксійований трафік.",
+    "Import an Anonym CA or switch this server to the embedded CA." to "Імпортуйте Anonym CA або переключіть цей сервер на вбудований CA.",
+    "Import an auth key and assign it to this server." to "Імпортуйте ключ авторизації та призначте його цьому серверу.",
+    "The assigned auth key is missing. Edit the server and choose another one." to "Призначений ключ авторизації відсутній. Змініть сервер і виберіть інший.",
+    "If the installed app does not match this UI, uninstall it and reinstall the fresh debug APK." to "Якщо встановлений застосунок не відповідає цьому інтерфейсу, видаліть його й перевстановіть свіжий debug APK.",
+    "Native direct beta" to "Native direct beta",
+    "packet-native data plane" to "packet-native data plane",
+    "Loop-safe" to "Захист від циклів",
+    "Verity" to "Verity",
+    "fwxAES light" to "fwxAES light",
+    "fwxAES heavy" to "fwxAES heavy",
+    "Updating app data protection." to "Оновлення захисту даних застосунку.",
+    "Route is up. Verifying traffic." to "Маршрут піднято. Перевірка трафіку.",
+    "Choose the trust anchor for anonym verification when this server runs anonym mode. Normal-mode servers can connect without requiring it." to "Виберіть кореневий сертифікат довіри для перевірки anonym, коли цей сервер працює в anonym-режимі. Сервери у звичайному режимі можуть підключатися без нього.",
+    "Lead developer and designer." to "Головний розробник і дизайнер.",
+    "Founder & CEO, FixCraft, Inc." to "Засновник і CEO, FixCraft, Inc.",
+    "Debug support and fast implementation help for the main developer." to "Допомога з налагодженням і швидкою реалізацією для основного розробника.",
+    "#1 Best Employee of the Year" to "#1 найкращий працівник року",
+    "\"We only got this far because my friend ChatGPT is here. I could not have handled all this app work without that help.\"" to "\"Ми зайшли так далеко лише тому, що поруч був мій друг ChatGPT. Я б не впорався з таким обсягом роботи над застосунком без цієї допомоги.\"",
+    "\"Building on open source is one of the most empowering experiences in software development. You do not have to wait for someone else to fix an issue or add a feature — you can build the solution yourself.\"" to "\"Розробка на основі open source — один із найсильніших досвідів у програмуванні. Не потрібно чекати, поки хтось виправить проблему чи додасть функцію — ви можете створити рішення самі.\"",
+    "Yume could not load the CA or auth key for this server." to "Yume не зміг завантажити CA або ключ авторизації для цього сервера.",
+)
+
+private val ukrainianTemplates = translationTableOf(
+    "Getting %s ready." to "Готуємо %s.",
+    "Downloading %s for offline use." to "Завантажуємо %s для офлайн-роботи.",
+    "Translating %s: %d of %d" to "Перекладаємо %s: %d з %d",
+    "Couldn't finish %s yet. Try again with a stable connection." to "Не вдалося завершити підготовку %s. Спробуйте ще раз зі стабільним з’єднанням.",
+    "Removed %s download." to "Завантаження %s видалено.",
+    "Couldn't remove %s download." to "Не вдалося видалити завантаження %s.",
+    "%s saved: %s" to "%s збережено: %s",
+    "%s imported: %s" to "%s імпортовано: %s",
+    "Failed to read the selected %s" to "Не вдалося прочитати вибраний %s",
+    "No text provided for %s" to "Для %s не вказано текст",
+    "Failed to save %s" to "Не вдалося зберегти %s",
+    "Failed to import %s" to "Не вдалося імпортувати %s",
+    "Saving %s." to "Збереження: %s.",
+    "Importing %s." to "Імпорт: %s.",
+    "Reading selected %s file." to "Читання вибраного файла: %s.",
+    "%s with %s." to "%s: %s.",
+    "Selected server: %s (%s)." to "Вибраний сервер: %s (%s).",
+    "Technique: %s." to "Техніка: %s.",
+    "Starting Yume Android session for %s (%s)." to "Запуск Android-сеансу Yume для %s (%s).",
+    "Requested protection policy: %s." to "Запитана політика захисту: %s.",
+    "Loaded anonym CA: %s." to "Завантажено анонімний CA: %s.",
+    "Loaded auth key: %s." to "Завантажено ключ авторизації: %s.",
+    "Opening authenticated Yume control path on %s." to "Відкривається автентифікований керувальний шлях Yume через %s.",
+    "Selected IPv4 control endpoint %s for %s." to "Вибрано IPv4 керувальний endpoint %s для %s.",
+    "TLS handshake completed: %s." to "TLS-узгодження завершено: %s.",
+    "Running a Yume relay canary via %s." to "Запускається relay canary Yume через %s.",
+    "Verified app relay traffic via Yume. Exit IP: %s." to "Трафік застосунку через Yume підтверджено. Вихідний IP: %s.",
+    "Verified system traffic via Yume. Exit IP: %s." to "Системний трафік через Yume підтверджено. Вихідний IP: %s.",
+    "TLS handshake failed: %s" to "TLS-узгодження не вдалося: %s",
+    "VpnService.prepare() failed: %s" to "VpnService.prepare() завершився помилкою: %s",
+    "Unhandled VPN coroutine failure: %s" to "Необроблена помилка VPN coroutine: %s",
+    "Failed to verify systemwide Yume routing: %s" to "Не вдалося підтвердити системну маршрутизацію Yume: %s",
+    "%s removed" to "%s видалено",
+    "Reconnect for %s." to "Перепідключіться для %s.",
+    "Checking keys and VPN permission for %s." to "Перевірка ключів і VPN-дозволу для %s.",
+    "Loading keys and opening a control path to %s." to "Завантаження ключів і відкриття керувального шляху до %s.",
+    "Using %s" to "Використовується %s",
+    "Selected server: %s, %s: %s, %s: %s" to "Вибраний сервер: %s, %s: %s, %s: %s",
+    "Current phase: %s • Technique: %s • Profile: %s" to "Поточна фаза: %s • Техніка: %s • Профіль: %s",
+    "App: %s" to "Застосунок: %s",
+    "Path: %s • %s" to "Маршрут: %s • %s",
+    "Exit IP: %s • Upstream: %s" to "Вихідний IP: %s • Верхня мережа: %s",
+    "Auth key: %s" to "Ключ авторизації: %s",
+    "Protected in %s" to "Захищено через %s",
+    "DEBUG build v%s (%d)" to "DEBUG-збірка v%s (%d)",
+    "Please unlock the key %s." to "Розблокуйте ключ %s.",
+    "Unlocking %s." to "Розблокування %s.",
+)
+
+private fun staticTranslations(language: ResolvedAppLanguage): TranslationTable? = when (language) {
+    ResolvedAppLanguage.Ukrainian -> ukrainianTranslations
+    else -> null
+}
+
+private fun templateTranslations(language: ResolvedAppLanguage): TranslationTable? = when (language) {
+    ResolvedAppLanguage.Ukrainian -> ukrainianTemplates
+    else -> null
+}
+
+private fun languageLocale(language: ResolvedAppLanguage): Locale = when (language) {
+    ResolvedAppLanguage.English -> Locale.ENGLISH
+    ResolvedAppLanguage.Russian -> Locale.forLanguageTag("ru")
+    ResolvedAppLanguage.Japanese -> Locale.JAPANESE
+    ResolvedAppLanguage.Ukrainian -> Locale.forLanguageTag("uk")
+    is ResolvedAppLanguage.AutoTranslated -> Locale.forLanguageTag(language.localeTag)
+}
 
 data class TranslationSeed(
     val english: String,
@@ -30,15 +497,38 @@ class AppStrings private constructor(
     private val autoTranslate: ((TranslationSeed) -> String)? = null,
     private val seedCollector: MutableSet<TranslationSeed>? = null,
 ) {
-    private fun t(english: String, russian: String, japanese: String = english): String {
+    private fun t(
+        english: String,
+        russian: String,
+        japanese: String = english,
+    ): String {
         val seed = TranslationSeed(english, russian, japanese)
         seedCollector?.add(seed)
         return when (language) {
             ResolvedAppLanguage.English -> english
             ResolvedAppLanguage.Russian -> russian
             ResolvedAppLanguage.Japanese -> japanese
+            ResolvedAppLanguage.Ukrainian -> staticTranslations(language)?.get(english) ?: english
             is ResolvedAppLanguage.AutoTranslated -> autoTranslate?.invoke(seed) ?: english
         }
+    }
+
+    private fun tf(
+        english: String,
+        russian: String,
+        japanese: String = english,
+        vararg args: Any,
+    ): String {
+        val template = when (language) {
+            ResolvedAppLanguage.English -> english
+            ResolvedAppLanguage.Russian -> russian
+            ResolvedAppLanguage.Japanese -> japanese
+            ResolvedAppLanguage.Ukrainian -> templateTranslations(language)?.get(english)
+                ?: staticTranslations(language)?.get(english)
+                ?: english
+            is ResolvedAppLanguage.AutoTranslated -> autoTranslate?.invoke(TranslationSeed(english, russian, japanese)) ?: english
+        }
+        return if (args.isEmpty()) template else String.format(languageLocale(language), template, *args)
     }
 
     val back = t("Back", "Назад", "戻る")
@@ -83,7 +573,7 @@ class AppStrings private constructor(
     )
     val advancedModeOn = t("Advanced mode on", "Продвинутый режим включен", "高度なモードを有効にしました")
     val advancedModeOff = t("Advanced mode off", "Продвинутый режим выключен", "高度なモードを無効にしました")
-    val amoledTitle = t("AMOLED black", "Глубокий черный", "AMOLEDブラック")
+    val amoledTitle = t("AMOLED black", "AMOLED черный", "AMOLEDブラック")
     val amoledDescription = t("Use true black in dark mode.", "Использовать чисто черный цвет в темной теме.", "ダークモードで純粋な黒を使います。")
     val appDataSubtitle = t(
         "Use Android protection by default, or add a password before the app opens.",
@@ -97,6 +587,7 @@ class AppStrings private constructor(
     val changePasswordButton = t("Change password", "Сменить пароль", "パスワードを変更")
     val removePasswordButton = t("Remove password", "Убрать пароль", "パスワードを解除")
     val unlockAppDataTitle = t("Unlock app data", "Разблокировать данные приложения", "アプリデータを解除")
+    val unlockAuthKeyTitle = t("Unlock auth key", "Разблокировать ключ авторизации", "認証キーを解除")
     val unlockAppDataDetail = t(
         "Enter the password to open Yume and load encrypted data.",
         "Введите пароль, чтобы открыть Yume и загрузить зашифрованные данные.",
@@ -144,6 +635,11 @@ class AppStrings private constructor(
         "Couldn't remove the app data password.",
         "Не удалось убрать пароль для данных приложения.",
         "アプリデータのパスワードを解除できませんでした。",
+    )
+    val authKeyUnlockFailed = t(
+        "Couldn't unlock this auth key. Check the password.",
+        "Не удалось разблокировать этот ключ авторизации. Проверьте пароль.",
+        "この認証キーを解除できませんでした。パスワードを確認してください。",
     )
 
     val deviceGroupTitle = t("Device", "Устройство", "デバイス")
@@ -206,21 +702,21 @@ class AppStrings private constructor(
     val yourYumeTunnelTitle = t("Your Yume tunnel", "Ваш туннель Yume", "あなたの Yume トンネル")
     val setUpYumeVpnTitle = t("Set up Yume VPN", "Настройте Yume VPN", "Yume VPN を設定")
     val yourYumeTunnelSubtitle = t(
-        "Save trust and auth material locally, pick a gateway, and bring up a loop-safe systemwide Yume VPN on Android.",
-        "Сохраните локально доверенные материалы и ключи, выберите шлюз и поднимите loop-safe системный Yume VPN на Android.",
-        "信頼情報と認証情報を端末に保存し、ゲートウェイを選んで、Android 全体を保護するループセーフな Yume VPN を起動します。",
+        "Pick a gateway, keep trust material on-device, and route Android traffic through Yume.",
+        "Выберите шлюз, храните доверенные материалы на устройстве и направляйте Android-трафик через Yume.",
+        "ゲートウェイを選び、信頼情報を端末に保持したまま、Android の通信を Yume 経由にします。",
     )
     val setUpYumeVpnSubtitle = t(
-        "Import trust or auth material at any time, then add your first server profile.",
-        "Импортируйте доверенные данные или ключ авторизации в любое время, затем добавьте первый профиль сервера.",
-        "信頼情報や認証情報は後からでも追加できます。まずは最初のサーバープロファイルを追加してください。",
+        "Import trust material and an auth key, then add your first server.",
+        "Импортируйте доверенные материалы и ключ авторизации, затем добавьте первый сервер.",
+        "信頼情報と認証キーを取り込み、最初のサーバーを追加してください。",
     )
     val noServersConfigured = t("No servers configured", "Серверы не настроены", "サーバー未設定")
     val addFirstGatewayTitle = t("Add your first gateway", "Добавьте первый шлюз", "最初のゲートウェイを追加")
     val addFirstGatewayDetail = t(
-        "Server profiles store the host, TLS name, DNS, MTU, Anonym CA, and auth key. The first saved profile becomes active.",
-        "Профиль сервера хранит хост, TLS-имя, DNS, MTU, анонимный CA и ключ авторизации. Первый сохраненный профиль станет активным.",
-        "サーバープロファイルにはホスト、TLS 名、DNS、MTU、匿名CA、認証キーを保存します。最初に保存したプロファイルが選択されます。",
+        "A server profile stores host, TLS name, DNS, MTU, Anonym CA, and auth key. Your first saved profile becomes active.",
+        "Профиль сервера хранит хост, TLS-имя, DNS, MTU, Anonym CA и ключ авторизации. Первый сохраненный профиль станет активным.",
+        "サーバープロファイルにはホスト、TLS 名、DNS、MTU、匿名CA、認証キーを保存します。最初に保存したプロファイルが有効になります。",
     )
 
     val securityTitle = t("Trust & auth", "Доверие и авторизация", "信頼と認証")
@@ -328,9 +824,9 @@ class AppStrings private constructor(
 
     val trustAuthHeader = t("Trust & auth", "Доверие и авторизация", "信頼と認証")
     val trustAuthDescription = t(
-        "Imported PEM certificates and keys are encrypted at rest inside the app and stored outside cloud backup. Auth keys also keep a BaseFWX layer at rest.",
-        "Импортированные PEM-сертификаты и ключи шифруются при хранении внутри приложения и не попадают в облачное резервное копирование. Ключи авторизации также защищены слоем BaseFWX.",
-        "インポートしたPEM証明書とキーはアプリ内で暗号化保存され、クラウドバックアップ対象外です。認証キーには保存時に BaseFWX レイヤーも適用されます。",
+        "Imported PEM certificates and keys stay encrypted in the app and out of cloud backup.",
+        "Импортированные PEM-сертификаты и ключи остаются зашифрованными в приложении и не попадают в облачное резервное копирование.",
+        "インポートした PEM 証明書とキーはアプリ内で暗号化され、クラウドバックアップの対象外です。",
     )
     val anonymCaCertificatesTitle = t("Anonym CA certificates", "Сертификаты анонимного CA", "匿名CA証明書")
     val anonymCaCertificatesSubtitle = t(
@@ -373,6 +869,24 @@ class AppStrings private constructor(
     val portLabel = t("Port", "Порт", "ポート")
     val tlsServerNameLabel = t("TLS server name", "TLS-имя сервера", "TLSサーバー名")
     val tlsServerNameHelper = t("Optional. Leave blank to use the server host.", "Необязательно. Оставьте пустым, чтобы использовать хост сервера.", "任意。空欄の場合はサーバーホストを使います。")
+    val httpsMaskingTitle = t("HTTPS masking", "HTTPS-маскировка", "HTTPSマスキング")
+    val httpsMaskingLabel = t("HTTPS masking", "HTTPS-маскировка", "HTTPSマスキング")
+    val httpsMaskingEnabled = t(
+        "Send the HTTP/2 carrier preface after TLS so the control path looks like browser traffic. Enable only when the server has obfs on.",
+        "Отправлять HTTP/2 carrier после TLS, чтобы управляющий канал выглядел как браузерный трафик. Включайте только если на сервере включен obfs.",
+        "TLS の後に HTTP/2 carrier を送り、制御経路をブラウザー通信のように見せます。サーバー側で obfs が有効な場合のみ使ってください。",
+    )
+    val httpsMaskingDisabled = t(
+        "Connect directly to the Yume AUTH exchange without the HTTPS masking preface.",
+        "Подключаться напрямую к обмену Yume AUTH без HTTPS-маскировки.",
+        "HTTPS マスキングの前置きなしで Yume AUTH に直接接続します。",
+    )
+    val httpsMaskingSecretLabel = t("HTTPS masking secret", "Секрет HTTPS-маскировки", "HTTPSマスキングシークレット")
+    val httpsMaskingSecretHelper = t(
+        "Must match --obfs-secret. Leave blank only when the server has no obfs secret.",
+        "Должен совпадать с --obfs-secret. Оставляйте пустым только если на сервере нет obfs-secret.",
+        "--obfs-secret と一致させます。サーバーに obfs secret がない場合だけ空欄にします。",
+    )
     val dnsServersLabel = t("DNS servers", "DNS-серверы", "DNSサーバー")
     val dnsServersHelper = t("Comma or newline separated numeric IPv4 or IPv6 addresses.", "Числовые IPv4- или IPv6-адреса, разделенные запятыми или новой строкой.", "カンマまたは改行で区切った数値のIPv4/IPv6アドレス。")
     val mtuHelper = t("Android VPNs are most stable between 1280 and 1500.", "VPN на Android наиболее стабильны при MTU от 1280 до 1500.", "Android VPN は 1280 から 1500 の間で最も安定します。")
@@ -462,7 +976,13 @@ class AppStrings private constructor(
     val buildFingerprintLabel = t("Build fingerprint", "Отпечаток сборки", "ビルドフィンガープリント")
     val runtimeTitle = t("Runtime", "Параметры", "ランタイム")
     val runtimeStatusLabel = t("Status", "Состояние", "状態")
-    val runtimeAppliedBridgeTuningTitle = t("Applied bridge tuning", "Примененная bridge-настройка", "適用されたブリッジ調整")
+    val runtimeAppliedBridgeTuningTitle = t("Applied tunnel tuning", "Примененная настройка туннеля", "適用されたトンネル調整")
+    val runtimeCompatibilityBridgeFallbackStatus = t("legacy bridge fallback", "резервный старый bridge", "旧ブリッジへのフォールバック")
+    val runtimeNativeQueueLabel = t("Native queue", "Нативная очередь", "ネイティブキュー")
+    val runtimeNativeTcpFlowWindowLabel = t("Native TCP flow window", "Нативное окно TCP-потока", "ネイティブ TCP フローウィンドウ")
+    val runtimeNativeUdpFlowBufferLabel = t("Native UDP flow buffer", "Нативный буфер UDP-потока", "ネイティブ UDP フローバッファ")
+    val runtimeIpv6PolicyLabel = t("IPv6 policy", "Политика IPv6", "IPv6 ポリシー")
+    val runtimeIpv6FailClosedStatus = t("fail-closed", "fail-closed", "フェイルクローズ")
     val runtimeTcpRelaysLabel = t("TCP relays", "TCP-релеи", "TCP リレー")
     val runtimeRelayAcquireTimeoutLabel = t("Relay acquire timeout", "Таймаут получения релея", "リレー取得タイムアウト")
     val runtimeRelayAcquireSliceLabel = t("Relay acquire slice", "Шаг ожидания релея", "リレー取得スライス")
@@ -484,7 +1004,7 @@ class AppStrings private constructor(
     val runtimeUdp443PolicyLabel = t("UDP 443 policy", "Политика UDP 443", "UDP 443 ポリシー")
     val runtimeForcedTcpFallback = t("forced TCP fallback", "принудительный переход на TCP", "TCP フォールバック強制")
     val runtimeBridgeBackedBetaStatus = t("bridge-backed beta path with technique-specific tuning", "beta-маршрут через bridge с настройкой под технику", "方式別チューニング付きのブリッジベータ経路")
-    val runtimePacketNativeStatus = t("packet-native data plane", "packet-native data plane", "パケットネイティブデータプレーン")
+    val runtimePacketNativeStatus = t("direct Yume stream tunnel backend", "прямой туннельный backend Yume stream", "Yume ストリーム直接トンネルバックエンド")
     val eventLogTitle = t("Event log", "Журнал событий", "イベントログ")
     val noSessionEventsRecorded = t("No session events recorded.", "События сессии еще не записаны.", "セッションイベントはまだ記録されていません。")
     val none = t("None", "Нет", "なし")
@@ -500,7 +1020,11 @@ class AppStrings private constructor(
     val authKeyUnavailable = t("Selected auth key is unavailable", "Выбранный ключ авторизации недоступен", "選択した認証キーは利用できません")
     val serverSaved = t("Server saved", "Сервер сохранен", "サーバーを保存しました")
     val embeddedAnonymCaCannotBeRemoved = t("The embedded Anonym CA cannot be removed", "Встроенный анонимный CA нельзя удалить", "組み込み匿名CAは削除できません")
-    val nativeDirectUnavailable = t("Native direct beta is unavailable in this build.", "Native direct beta недоступен в этой сборке.", "Native direct beta はこのビルドでは利用できません。")
+    val nativeDirectUnavailable = t(
+        "Native direct beta is disabled in this build until the packet-native engine is ready.",
+        "Native direct beta отключен в этой сборке, пока packet-native движок не будет готов.",
+        "Native direct beta は、パケットネイティブエンジンの準備が整うまでこのビルドでは無効です。",
+    )
     val amoledOn = t("AMOLED on", "AMOLED включен", "AMOLED オン")
     val amoledOff = t("AMOLED off", "AMOLED выключен", "AMOLED オフ")
     val permissionRequiredHeadline = t("Permission required", "Нужно разрешение", "権限が必要")
@@ -566,35 +1090,58 @@ class AppStrings private constructor(
         "Помощь с отладкой и быстрыми правками для основного разработчика.",
         "メイン開発者向けのデバッグ支援と迅速な実装補助。",
     )
+    val openSourceComponentLabel = t(
+        "Open source component",
+        "Компонент с открытым исходным кодом",
+        "オープンソースコンポーネント",
+    )
+    val yumeSocksTunnelCreditRole = t(
+        "Originally derived from hev-socks5-tunnel and hev-task-system by hev <r@hev.cc> (MIT), and lwIP by the Swedish Institute of Computer Science (BSD-3-Clause). Significantly modified for YUME on Android; ongoing development is independent and does not track upstream.",
+        "Изначально основан на hev-socks5-tunnel и hev-task-system от hev <r@hev.cc> (MIT) и lwIP от Шведского института компьютерных наук (BSD-3-Clause). Существенно изменён для YUME на Android; дальнейшая разработка ведётся независимо и не синхронизируется с апстримом.",
+        "もとは hev <r@hev.cc> による hev-socks5-tunnel と hev-task-system（MIT）、およびスウェーデン計算機科学研究所による lwIP（BSD-3-Clause）から派生しています。YUME（Android）向けに大幅に改変されており、今後の開発はアップストリームとは独立して進められます。",
+    )
     val developerCreditQuote = "\"Credit is only fair when everyone has their place, and AI deserves to be recognized too.\""
-    val founderThanksQuote = t(
-        "\"We only got this far because my friend ChatGPT is here. I could not have handled all this app work without that help.\"",
-        "\"Мы дошли так далеко только потому, что рядом был мой друг ChatGPT. Я бы не справился с таким объемом работы над приложением без этой помощи.\"",
-        "\"ここまで来られたのは、友人の ChatGPT がいてくれたからです。この量のアプリ開発を、その助けなしで進めることはできませんでした。\"",
+
+    val founderQuote = t(
+        "\"Building on open source is one of the most empowering experiences in software development. You do not have to wait for someone else to fix an issue or add a feature — you can build the solution yourself.\"",
+        "\"Разработка на основе open source — один из самых вдохновляющих опытов в создании программного обеспечения. Вам не нужно ждать, пока кто-то исправит проблему или добавит новую функцию — вы можете создать решение самостоятельно.\"",
+        "\"オープンソースの上に開発することは、ソフトウェア開発において最も力を与えてくれる体験の一つです。問題の修正や機能の追加を誰かに待つ必要はなく、自分で解決策を作ることができます。\"",
     )
 
     fun connectionTechniqueName(technique: ConnectionTechnique): String = when (technique) {
-        ConnectionTechnique.Tun2SocksStable -> "Tun2Socks stable"
-        ConnectionTechnique.NativeDirectBeta -> t("Native direct beta", "Native direct beta")
+        ConnectionTechnique.Tun2SocksStable -> technique.canonicalLabel()
+        ConnectionTechnique.NativeDirectBeta -> technique.canonicalLabel()
     }
 
     fun connectionTechniqueDescription(technique: ConnectionTechnique): String = when (technique) {
         ConnectionTechnique.Tun2SocksStable -> t(
-            "Stable Android path through tun2socks.",
-            "Стабильный Android-маршрут через tun2socks.",
-            "tun2socks を使う安定した Android 経路です。",
+            "Stable Android path through tun2socks with TCP and UDP support.",
+            "Стабильный Android-маршрут через tun2socks с поддержкой TCP и UDP.",
+            "TCP と UDP をサポートする、tun2socks ベースの安定した Android 経路です。",
         )
         ConnectionTechnique.NativeDirectBeta -> t(
-            "Bridge-backed beta path with tighter tuning.",
-            "Бета-маршрут с bridge и более точной настройкой.",
-            "ブリッジ経由のベータ経路で、より細かく調整されています。",
+            "Direct Yume TCP and UDP path. Fixed tuning. IPv6 stays fail-closed.",
+            "Прямой Yume TCP- и UDP-путь. Фиксированная нативная настройка. IPv6 остается в режиме fail-closed.",
+            "Yume の TCP / UDP を直接使う経路です。調整は固定で、IPv6 は引き続きフェイルクローズです。",
         )
     }
 
+    val nativeDirectFixedTuningName = t(
+        "Fixed native tuning",
+        "Фиксированная нативная настройка",
+        "固定ネイティブ調整",
+    )
+
+    val nativeDirectFixedTuningDescription = t(
+        "Native direct uses fixed tuning. Performance profiles apply only to Tun2Socks stable.",
+        "Native direct использует фиксированную настройку. Профили производительности применяются только к Tun2Socks stable.",
+        "Native direct は固定チューニングです。パフォーマンスプロファイルは Tun2Socks stable にのみ適用されます。",
+    )
+
     fun performanceProfileName(profile: PerformanceProfile): String = when (profile) {
-        PerformanceProfile.Latency -> t("Latency", "Задержка", "低遅延")
-        PerformanceProfile.Balanced -> t("Balanced", "Баланс", "バランス")
-        PerformanceProfile.Throughput -> t("Throughput", "Пропускная способность", "スループット")
+        PerformanceProfile.Latency -> t(profile.canonicalLabel(), "Задержка", "低遅延")
+        PerformanceProfile.Balanced -> t(profile.canonicalLabel(), "Баланс", "バランス")
+        PerformanceProfile.Throughput -> t(profile.canonicalLabel(), "Пропускная способность", "スループット")
     }
 
     fun performanceProfileDescription(profile: PerformanceProfile): String = when (profile) {
@@ -618,6 +1165,7 @@ class AppStrings private constructor(
         AppLanguage.Maintained.English -> "English"
         AppLanguage.Maintained.Russian -> "Русский"
         AppLanguage.Maintained.Japanese -> "日本語"
+        AppLanguage.Maintained.Ukrainian -> "Українська"
         is AppLanguage.AutoTranslated -> AppLanguageCatalog.displayName(appLanguage)
     }
 
@@ -626,6 +1174,7 @@ class AppStrings private constructor(
         AppLanguage.Maintained.English -> originalLabel
         AppLanguage.Maintained.Russian -> nativeLabel
         AppLanguage.Maintained.Japanese -> nativeLabel
+        AppLanguage.Maintained.Ukrainian -> nativeLabel
         is AppLanguage.AutoTranslated -> onDeviceTranslationLabel
     }
 
@@ -646,6 +1195,7 @@ class AppStrings private constructor(
         LogLanguage.English -> "English"
         LogLanguage.Russian -> "Русский"
         LogLanguage.Japanese -> "日本語"
+        LogLanguage.Ukrainian -> "Українська"
     }
 
     fun logLanguageDescription(logLanguage: LogLanguage): String? = when (logLanguage) {
@@ -653,6 +1203,7 @@ class AppStrings private constructor(
         LogLanguage.English -> originalLabel
         LogLanguage.Russian -> nativeLabel
         LogLanguage.Japanese -> nativeLabel
+        LogLanguage.Ukrainian -> nativeLabel
     }
 
     fun logLanguageSummary(logLanguage: LogLanguage): String {
@@ -665,118 +1216,93 @@ class AppStrings private constructor(
     }
 
     fun preparingLanguage(languageName: String): String {
-        return t(
-            "Getting $languageName ready.",
-            "Подготавливаем $languageName.",
-            "$languageName を準備しています。",
-        )
+        return tf("Getting %s ready.", "Подготавливаем %s.", "%s を準備しています。", languageName)
     }
 
     fun downloadingLanguage(languageName: String): String {
-        return t(
-            "Downloading $languageName for offline use.",
-            "$languageName загружается для офлайн-работы.",
-            "$languageName をオフライン用にダウンロードしています。",
+        return tf(
+            "Downloading %s for offline use.",
+            "%s загружается для офлайн-работы.",
+            "%s をオフライン用にダウンロードしています。",
+            languageName,
         )
     }
 
     fun translatingLanguage(languageName: String, done: Int, total: Int): String {
-        return t(
-            "Translating $languageName: $done of $total",
-            "Переводим $languageName: $done из $total",
-            "$languageName を翻訳中: $done / $total",
-        )
+        return tf("Translating %s: %d of %d", "Переводим %s: %d из %d", "%s を翻訳中: %d / %d", languageName, done, total)
     }
 
     fun languagePreparationFailed(languageName: String): String {
-        return t(
-            "Couldn't finish $languageName yet. Try again with a stable connection.",
-            "Не удалось завершить подготовку $languageName. Попробуйте еще раз при стабильном соединении.",
-            "$languageName の準備を完了できませんでした。安定した接続で再試行してください。",
+        return tf(
+            "Couldn't finish %s yet. Try again with a stable connection.",
+            "Не удалось завершить подготовку %s. Попробуйте еще раз при стабильном соединении.",
+            "%s の準備を完了できませんでした。安定した接続で再試行してください。",
+            languageName,
         )
     }
 
     fun deletedLanguageDownload(languageName: String): String {
-        return t(
-            "Removed $languageName download.",
-            "Загрузка $languageName удалена.",
-            "$languageName のダウンロードを削除しました。",
-        )
+        return tf("Removed %s download.", "Загрузка %s удалена.", "%s のダウンロードを削除しました。", languageName)
     }
 
     fun failedToDeleteLanguageDownload(languageName: String): String {
-        return t(
-            "Couldn't remove $languageName download.",
-            "Не удалось удалить загрузку $languageName.",
-            "$languageName のダウンロードを削除できませんでした。",
+        return tf(
+            "Couldn't remove %s download.",
+            "Не удалось удалить загрузку %s.",
+            "%s のダウンロードを削除できませんでした。",
+            languageName,
         )
     }
 
     fun materialSaved(typeLabel: String, displayName: String): String {
-        return t("$typeLabel saved: $displayName", "$typeLabel сохранен: $displayName", "$typeLabel を保存しました: $displayName")
+        return tf("%s saved: %s", "%s сохранен: %s", "%s を保存しました: %s", typeLabel, displayName)
     }
 
     fun materialImported(typeLabel: String, displayName: String): String {
-        return t("$typeLabel imported: $displayName", "$typeLabel импортирован: $displayName", "$typeLabel をインポートしました: $displayName")
+        return tf("%s imported: %s", "%s импортирован: %s", "%s をインポートしました: %s", typeLabel, displayName)
     }
 
     fun failedToReadSelected(typeLabel: String): String {
         val normalizedType = typeLabel.lowercase(Locale.ROOT)
-        return t(
-            "Failed to read the selected $normalizedType",
-            "Не удалось прочитать выбранный $normalizedType",
-            "選択した${normalizedType}を読み取れませんでした",
-        )
+        return tf("Failed to read the selected %s", "Не удалось прочитать выбранный %s", "選択した%sを読み取れませんでした", normalizedType)
     }
 
     fun materialTextEmpty(typeLabel: String): String {
-        return t(
-            "No text provided for $typeLabel",
-            "Для $typeLabel не указан текст",
-            "$typeLabel のテキストが入力されていません",
-        )
+        return tf("No text provided for %s", "Для %s не указан текст", "%s のテキストが入力されていません", typeLabel)
     }
 
     fun failedToSave(typeLabel: String): String {
         val normalizedType = typeLabel.lowercase(Locale.ROOT)
-        return t("Failed to save $normalizedType", "Не удалось сохранить $normalizedType", "$normalizedType を保存できませんでした")
+        return tf("Failed to save %s", "Не удалось сохранить %s", "%s を保存できませんでした", normalizedType)
     }
 
     fun failedToImport(typeLabel: String): String {
         val normalizedType = typeLabel.lowercase(Locale.ROOT)
-        return t("Failed to import $normalizedType", "Не удалось импортировать $normalizedType", "$normalizedType をインポートできませんでした")
+        return tf("Failed to import %s", "Не удалось импортировать %s", "%s をインポートできませんでした", normalizedType)
     }
 
     fun saving(typeLabel: String): String {
-        return t(
-            "Saving $typeLabel.",
-            "Сохранение: $typeLabel.",
-            "$typeLabel を保存しています。",
-        )
+        return tf("Saving %s.", "Сохранение: %s.", "%s を保存しています。", typeLabel)
     }
 
     fun importing(typeLabel: String): String {
-        return t(
-            "Importing $typeLabel.",
-            "Импорт: $typeLabel.",
-            "$typeLabel をインポートしています。",
-        )
+        return tf("Importing %s.", "Импорт: %s.", "%s をインポートしています。", typeLabel)
     }
 
     fun readingSelectedFile(typeLabel: String): String {
-        return t(
-            "Reading selected $typeLabel file.",
-            "Чтение выбранного файла: $typeLabel.",
-            "選択した${typeLabel}ファイルを読み込んでいます。",
-        )
+        return tf("Reading selected %s file.", "Чтение выбранного файла: %s.", "選択した%sファイルを読み込んでいます。", typeLabel)
+    }
+
+    fun unlockAuthKeyDetail(authKeyName: String): String {
+        return tf("Please unlock the key %s.", "Разблокируйте ключ %s.", "キー %s を解除してください。", authKeyName)
+    }
+
+    fun unlockingAuthKey(authKeyName: String): String {
+        return tf("Unlocking %s.", "Разблокировка %s.", "%s を解除しています。", authKeyName)
     }
 
     fun savingServer(profileName: String): String {
-        return t(
-            "Saving $profileName.",
-            "Сохранение: $profileName.",
-            "$profileName を保存しています。",
-        )
+        return tf("Saving %s.", "Сохранение: %s.", "%s を保存しています。", profileName)
     }
 
     val updatingAppDataProtection = t(
@@ -786,11 +1312,7 @@ class AppStrings private constructor(
     )
 
     fun processingText(actionLabel: String, modeLabel: String): String {
-        return t(
-            "$actionLabel with $modeLabel.",
-            "$actionLabel: $modeLabel.",
-            "${modeLabel} で${actionLabel}しています。",
-        )
+        return tf("%s with %s.", "%s: %s.", "%2\$s で%1\$sしています。", actionLabel, modeLabel)
     }
 
     fun logAndroidNeedsVpnPermission(): String = t(
@@ -829,11 +1351,8 @@ class AppStrings private constructor(
         "Android の VPN 権限はすでに許可されています。",
     )
 
-    fun logSelectedServer(name: String, endpointLabel: String): String = t(
-        "Selected server: $name ($endpointLabel).",
-        "Выбранный сервер: $name ($endpointLabel).",
-        "選択したサーバー: $name ($endpointLabel)。",
-    )
+    fun logSelectedServer(name: String, endpointLabel: String): String =
+        tf("Selected server: %s (%s).", "Выбранный сервер: %s (%s).", "選択したサーバー: %s (%s)。", name, endpointLabel)
 
     fun logSelectedAnonymCaUnavailable(): String = t(
         "The selected anonym CA is unavailable.",
@@ -859,11 +1378,8 @@ class AppStrings private constructor(
         "ローカル CA と認証キーの準備ができました。Android VPN サービスを開始します。",
     )
 
-    fun logTechnique(summary: String): String = t(
-        "Technique: $summary.",
-        "Техника: $summary.",
-        "方式: $summary。",
-    )
+    fun logTechnique(summary: String): String =
+        tf("Technique: %s.", "Техника: %s.", "方式: %s。", summary)
 
     fun localizedHeadline(headline: String): String = when (headline) {
         "Disconnected" -> disconnectedHeadline
@@ -888,35 +1404,31 @@ class AppStrings private constructor(
         else -> detail
     }
 
-    fun logStartingAndroidSession(name: String, endpointLabel: String): String = t(
-        "Starting Yume Android session for $name ($endpointLabel).",
-        "Запуск Android-сессии Yume для $name ($endpointLabel).",
-        "$name ($endpointLabel) の Yume Android セッションを開始しています。",
-    )
+    fun logStartingAndroidSession(name: String, endpointLabel: String): String =
+        tf(
+            "Starting Yume Android session for %s (%s).",
+            "Запуск Android-сессии Yume для %s (%s).",
+            "%s (%s) の Yume Android セッションを開始しています。",
+            name,
+            endpointLabel,
+        )
 
-    fun logRequestedProtectionPolicy(value: String): String = t(
-        "Requested protection policy: $value.",
-        "Запрошенная политика защиты: $value.",
-        "要求された保護ポリシー: $value。",
-    )
+    fun logRequestedProtectionPolicy(value: String): String =
+        tf("Requested protection policy: %s.", "Запрошенная политика защиты: %s.", "要求された保護ポリシー: %s。", value)
 
-    fun logLoadedAnonymCa(displayName: String): String = t(
-        "Loaded anonym CA: $displayName.",
-        "Загружен анонимный CA: $displayName.",
-        "匿名CAを読み込みました: $displayName。",
-    )
+    fun logLoadedAnonymCa(displayName: String): String =
+        tf("Loaded anonym CA: %s.", "Загружен анонимный CA: %s.", "匿名CAを読み込みました: %s。", displayName)
 
-    fun logLoadedAuthKey(displayName: String): String = t(
-        "Loaded auth key: $displayName.",
-        "Загружен ключ авторизации: $displayName.",
-        "認証キーを読み込みました: $displayName。",
-    )
+    fun logLoadedAuthKey(displayName: String): String =
+        tf("Loaded auth key: %s.", "Загружен ключ авторизации: %s.", "認証キーを読み込みました: %s。", displayName)
 
-    fun logOpeningAuthenticatedControlPath(networkLabel: String): String = t(
-        "Opening authenticated Yume control path on $networkLabel.",
-        "Открывается аутентифицированный управляющий путь Yume через $networkLabel.",
-        "$networkLabel で認証済みの Yume 制御経路を開いています。",
-    )
+    fun logOpeningAuthenticatedControlPath(networkLabel: String): String =
+        tf(
+            "Opening authenticated Yume control path on %s.",
+            "Открывается аутентифицированный управляющий путь Yume через %s.",
+            "%s で認証済みの Yume 制御経路を開いています。",
+            networkLabel,
+        )
 
     fun logProtectedControlSocket(): String = t(
         "Protected the control socket from the VPN path.",
@@ -924,17 +1436,17 @@ class AppStrings private constructor(
         "制御ソケットを VPN 経路から保護しました。",
     )
 
-    fun logSelectedIpv4ControlEndpoint(endpoint: String, host: String): String = t(
-        "Selected IPv4 control endpoint $endpoint for $host.",
-        "Выбран IPv4 управляющий endpoint $endpoint для $host.",
-        "$host 用に IPv4 制御エンドポイント $endpoint を選択しました。",
-    )
+    fun logSelectedIpv4ControlEndpoint(endpoint: String, host: String): String =
+        tf(
+            "Selected IPv4 control endpoint %s for %s.",
+            "Выбран IPv4 управляющий endpoint %s для %s.",
+            "%2\$s 用に IPv4 制御エンドポイント %1\$s を選択しました。",
+            endpoint,
+            host,
+        )
 
-    fun logTlsHandshakeCompleted(detail: String): String = t(
-        "TLS handshake completed: $detail.",
-        "TLS-рукопожатие завершено: $detail.",
-        "TLS ハンドシェイクが完了しました: $detail。",
-    )
+    fun logTlsHandshakeCompleted(detail: String): String =
+        tf("TLS handshake completed: %s.", "TLS-рукопожатие завершено: %s.", "TLS ハンドシェイクが完了しました: %s。", detail)
 
     fun logReceivedAuthChallenge(): String = t(
         "Received Yume AUTH challenge.",
@@ -948,17 +1460,16 @@ class AppStrings private constructor(
         "Yume サーバーへの認証が完了しました。",
     )
 
-    fun logRunningRelayCanary(target: String): String = t(
-        "Running a Yume relay canary via $target.",
-        "Запуск relay canary Yume через $target.",
-        "$target 経由で Yume リレーのカナリア確認を実行しています。",
-    )
+    fun logRunningRelayCanary(target: String): String =
+        tf("Running a Yume relay canary via %s.", "Запуск relay canary Yume через %s.", "%s 経由で Yume リレーのカナリア確認を実行しています。", target)
 
-    fun logVerifiedAppRelayTraffic(exitIp: String): String = t(
-        "Verified app relay traffic via Yume. Exit IP: $exitIp.",
-        "Трафик приложения через Yume подтвержден. Выходной IP: $exitIp.",
-        "Yume 経由のアプリ中継トラフィックを確認しました。出口 IP: $exitIp。",
-    )
+    fun logVerifiedAppRelayTraffic(exitIp: String): String =
+        tf(
+            "Verified app relay traffic via Yume. Exit IP: %s.",
+            "Трафик приложения через Yume подтвержден. Выходной IP: %s.",
+            "Yume 経由のアプリ中継トラフィックを確認しました。出口 IP: %s。",
+            exitIp,
+        )
 
     fun logRunningRoutedProbe(): String = t(
         "Running an in-app routed Android traffic probe through Yume.",
@@ -966,17 +1477,16 @@ class AppStrings private constructor(
         "Yume 経由でアプリ内の Android ルーティング確認を実行しています。",
     )
 
-    fun logVerifiedSystemTraffic(exitIp: String): String = t(
-        "Verified system traffic via Yume. Exit IP: $exitIp.",
-        "Системный трафик через Yume подтвержден. Выходной IP: $exitIp.",
-        "Yume 経由のシステムトラフィックを確認しました。出口 IP: $exitIp。",
-    )
+    fun logVerifiedSystemTraffic(exitIp: String): String =
+        tf(
+            "Verified system traffic via Yume. Exit IP: %s.",
+            "Системный трафик через Yume подтвержден. Выходной IP: %s.",
+            "Yume 経由のシステムトラフィックを確認しました。出口 IP: %s。",
+            exitIp,
+        )
 
-    fun logTlsHandshakeFailed(detail: String): String = t(
-        "TLS handshake failed: $detail",
-        "TLS-рукопожатие не удалось: $detail",
-        "TLS ハンドシェイクに失敗しました: $detail",
-    )
+    fun logTlsHandshakeFailed(detail: String): String =
+        tf("TLS handshake failed: %s", "TLS-рукопожатие не удалось: %s", "TLS ハンドシェイクに失敗しました: %s", detail)
 
     fun logTlsProviderHandshakeFailed(): String = t(
         "TLS handshake failed on this Android TLS provider",
@@ -984,23 +1494,13 @@ class AppStrings private constructor(
         "この Android TLS プロバイダでは TLS ハンドシェイクに失敗しました",
     )
 
-    fun logHandshakeFailed(): String = t(
-        "Handshake failed",
-        "Рукопожатие не удалось",
-        "ハンドシェイクに失敗しました",
-    )
+    fun logHandshakeFailed(): String = t("Handshake failed", "Рукопожатие не удалось", "ハンドシェイクに失敗しました")
 
-    fun logVpnPrepareFailed(detail: String): String = t(
-        "VpnService.prepare() failed: $detail",
-        "VpnService.prepare() завершился ошибкой: $detail",
-        "VpnService.prepare() に失敗しました: $detail",
-    )
+    fun logVpnPrepareFailed(detail: String): String =
+        tf("VpnService.prepare() failed: %s", "VpnService.prepare() завершился ошибкой: %s", "VpnService.prepare() に失敗しました: %s", detail)
 
-    fun logUnhandledVpnCoroutineFailure(detail: String): String = t(
-        "Unhandled VPN coroutine failure: $detail",
-        "Необработанная ошибка VPN coroutine: $detail",
-        "VPN コルーチンで未処理の障害が発生しました: $detail",
-    )
+    fun logUnhandledVpnCoroutineFailure(detail: String): String =
+        tf("Unhandled VPN coroutine failure: %s", "Необработанная ошибка VPN coroutine: %s", "VPN コルーチンで未処理の障害が発生しました: %s", detail)
 
     fun logNoUpstreamNetwork(): String = t(
         "No upstream network is available. Waiting for Wi-Fi or cellular.",
@@ -1014,36 +1514,40 @@ class AppStrings private constructor(
         "上流ネットワークが失われました。Wi-Fi またはモバイル回線を待機しています。",
     )
 
-    fun logFailedToVerifySystemRouting(detail: String): String = t(
-        "Failed to verify systemwide Yume routing: $detail",
-        "Не удалось подтвердить системную маршрутизацию Yume: $detail",
-        "システム全体の Yume ルーティング確認に失敗しました: $detail",
-    )
+    fun logFailedToVerifySystemRouting(detail: String): String =
+        tf(
+            "Failed to verify systemwide Yume routing: %s",
+            "Не удалось подтвердить системную маршрутизацию Yume: %s",
+            "システム全体の Yume ルーティング確認に失敗しました: %s",
+            detail,
+        )
 
-    fun removed(displayName: String): String = t("$displayName removed", "$displayName удален", "$displayName を削除しました")
+    fun removed(displayName: String): String = tf("%s removed", "%s удален", "%s を削除しました", displayName)
 
     fun reconnectFor(label: String): String {
-        return t("Reconnect for $label.", "Переподключитесь для $label.", "$label を有効にするには再接続してください。")
+        return tf("Reconnect for %s.", "Переподключитесь для %s.", "%s を有効にするには再接続してください。", label)
     }
 
     fun checkingKeysFor(endpointLabel: String): String {
-        return t(
-            "Checking keys and VPN permission for $endpointLabel.",
-            "Проверка ключей и VPN-разрешения для $endpointLabel.",
-            "$endpointLabel のキーと VPN 権限を確認しています。",
+        return tf(
+            "Checking keys and VPN permission for %s.",
+            "Проверка ключей и VPN-разрешения для %s.",
+            "%s のキーと VPN 権限を確認しています。",
+            endpointLabel,
         )
     }
 
     fun loadingKeysFor(endpointLabel: String): String {
-        return t(
-            "Loading keys and opening a control path to $endpointLabel.",
-            "Загрузка ключей и открытие управляющего пути к $endpointLabel.",
-            "$endpointLabel への制御経路を開くためにキーを読み込んでいます。",
+        return tf(
+            "Loading keys and opening a control path to %s.",
+            "Загрузка ключей и открытие управляющего пути к %s.",
+            "%s への制御経路を開くためにキーを読み込んでいます。",
+            endpointLabel,
         )
     }
 
     fun usingAnonymCa(displayName: String): String {
-        return t("Using $displayName", "Используется $displayName", "$displayName を使用中")
+        return tf("Using %s", "Используется %s", "%s を使用中", displayName)
     }
 
     fun selectedServerSummary(
@@ -1051,29 +1555,43 @@ class AppStrings private constructor(
         selectedCaName: String,
         selectedAuthKeyName: String,
     ): String {
-        return t(
-            "Selected server: $profileName, $anonymCaLabel: $selectedCaName, ${this.authKeyLabel}: $selectedAuthKeyName",
-            "Выбранный сервер: $profileName, $anonymCaLabel: $selectedCaName, ${this.authKeyLabel}: $selectedAuthKeyName",
-            "選択中のサーバー: $profileName、$anonymCaLabel: $selectedCaName、${this.authKeyLabel}: $selectedAuthKeyName",
+        return tf(
+            "Selected server: %s, %s: %s, %s: %s",
+            "Выбранный сервер: %s, %s: %s, %s: %s",
+            "選択中のサーバー: %s、%s: %s、%s: %s",
+            profileName,
+            anonymCaLabel,
+            selectedCaName,
+            authKeyLabel,
+            selectedAuthKeyName,
         )
     }
 
     fun currentPhaseSummary(phase: String, technique: String, profile: String): String {
-        return t(
-            "Current phase: $phase • Technique: $technique • Profile: $profile",
-            "Текущая фаза: $phase • Техника: $technique • Профиль: $profile",
-            "現在のフェーズ: $phase • 方式: $technique • プロファイル: $profile",
+        return tf(
+            "Current phase: %s • Technique: %s • Profile: %s",
+            "Текущая фаза: %s • Техника: %s • Профиль: %s",
+            "現在のフェーズ: %s • 方式: %s • プロファイル: %s",
+            phase,
+            technique,
+            profile,
         )
     }
 
-    fun appVersion(value: String): String = t("App: $value", "Приложение: $value", "アプリ: $value")
+    fun appVersion(value: String): String = tf("App: %s", "Приложение: %s", "アプリ: %s", value)
 
     fun routePath(technique: String, profile: String): String {
-        return t("Path: $technique • $profile", "Маршрут: $technique • $profile", "経路: $technique • $profile")
+        return tf("Path: %s • %s", "Маршрут: %s • %s", "経路: %s • %s", technique, profile)
     }
 
     fun exitIpAndUpstream(exitIp: String, upstream: String): String {
-        return t("Exit IP: $exitIp • Upstream: $upstream", "Выходной IP: $exitIp • Верхняя сеть: $upstream", "出口IP: $exitIp • 上流: $upstream")
+        return tf(
+            "Exit IP: %s • Upstream: %s",
+            "Выходной IP: %s • Верхняя сеть: %s",
+            "出口IP: %s • 上流: %s",
+            exitIp,
+            upstream,
+        )
     }
 
     fun anonymSummary(required: Boolean): String {
@@ -1082,7 +1600,7 @@ class AppStrings private constructor(
     }
 
     fun authKeySummary(displayName: String): String {
-        return t("Auth key: $displayName", "Ключ авторизации: $displayName", "認証キー: $displayName")
+        return tf("Auth key: %s", "Ключ авторизации: %s", "認証キー: %s", displayName)
     }
 
     fun materialTypeLabel(type: SecureMaterialType): String = when (type) {
@@ -1106,11 +1624,7 @@ class AppStrings private constructor(
     }
 
     fun notificationProtectedIn(location: String): String {
-        return t(
-            "Protected in $location",
-            "Защищено через $location",
-            "$location に接続中",
-        )
+        return tf("Protected in %s", "Защищено через %s", "%s に接続中", location)
     }
 
     fun notificationTrafficTotals(download: String, upload: String): String {
@@ -1119,11 +1633,7 @@ class AppStrings private constructor(
 
     fun buildVersionLabel(versionName: String, versionCode: Int, debug: Boolean): String {
         return if (debug) {
-            t(
-                "DEBUG build v$versionName ($versionCode)",
-                "DEBUG-сборка v$versionName ($versionCode)",
-                "DEBUG ビルド v$versionName ($versionCode)",
-            )
+            tf("DEBUG build v%s (%d)", "DEBUG-сборка v%s (%d)", "DEBUG ビルド v%s (%d)", versionName, versionCode)
         } else {
             "v$versionName"
         }

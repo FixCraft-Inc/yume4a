@@ -64,10 +64,18 @@ internal data class YumeInnerSessionState(
 internal object YumeInnerCrypto {
     private const val USER_KDF_SALT_SIZE = 16
     private const val HEAVY_PBKDF2_ITERATIONS = 1_000_000
-    private const val HEAVY_ARGON2_TIME_COST = 5
-    private const val HEAVY_ARGON2_MEMORY_COST = 1 shl 17
+    // Mobile-tuned Argon2id: enough work to be meaningful on a phone CPU
+    // (Snapdragon ~1-2s) without spending 10s blocking the auth handshake.
+    // The CLI defaults are time=4 / memory=256MiB which take ~5-15s on phones.
+    private const val HEAVY_ARGON2_TIME_COST = 3
+    private const val HEAVY_ARGON2_MEMORY_COST = 1 shl 16
     private const val HEAVY_ARGON2_PARALLELISM = 4
-    private const val HOP_DECRYPT_WINDOW = 6
+    // Match the server's kHopDecryptWindow (24). With hop_interval_ms = 500 (the
+    // server default) this gives ±12 s of clock-drift tolerance, vs ±3 s at 6.
+    // Android's System.currentTimeMillis() can jump several seconds at once
+    // when the NTP service corrects the wall clock mid-session, so the wider
+    // window is required for parity with the desktop client.
+    private const val HOP_DECRYPT_WINDOW = 24
     private val HKDF_INFO = "yume-inner-v1".toByteArray(StandardCharsets.US_ASCII)
     private const val HOP_INFO_PREFIX = "yume-hop-v1:"
     private val RNG = SecureRandom()
@@ -212,6 +220,11 @@ internal object YumeInnerCrypto {
         if (!state.hopEnabled || state.hopIntervalMs <= 0) {
             return 0
         }
+        // Use monotonic elapsedRealtime() so a mid-session NTP wall-clock step
+        // (which Android performs as a step, not a slew) cannot drift our
+        // hop_id outside the server's tolerance window. hopOffsetMs is anchored
+        // once to the server's wall clock at AUTH time and tracks server time
+        // assuming both clocks advance at the same rate.
         val adjusted = (SystemClock.elapsedRealtime() + state.hopOffsetMs).coerceAtLeast(0)
         return adjusted / state.hopIntervalMs.toLong()
     }

@@ -31,6 +31,7 @@ object AppLocaleManager {
             ResolvedAppLanguage.English -> Locale.forLanguageTag(ResolvedAppLanguage.English.localeTag)
             ResolvedAppLanguage.Russian -> Locale.forLanguageTag(ResolvedAppLanguage.Russian.localeTag)
             ResolvedAppLanguage.Japanese -> Locale.forLanguageTag(ResolvedAppLanguage.Japanese.localeTag)
+            ResolvedAppLanguage.Ukrainian -> Locale.forLanguageTag(ResolvedAppLanguage.Ukrainian.localeTag)
             is ResolvedAppLanguage.AutoTranslated -> Locale.forLanguageTag(resolved.localeTag)
         }
     }
