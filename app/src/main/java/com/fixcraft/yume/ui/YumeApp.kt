@@ -72,6 +72,7 @@ import com.fixcraft.yume.ui.home.PendingAuthKeyImport
 import com.fixcraft.yume.ui.security.SecurityScreen
 import com.fixcraft.yume.ui.servers.ServersScreen
 import com.fixcraft.yume.ui.settings.CreditsScreen
+import com.fixcraft.yume.ui.settings.OpenSourceComponentsScreen
 import com.fixcraft.yume.ui.settings.SettingsScreen
 import com.fixcraft.yume.ui.tools.ToolsScreen
 
@@ -89,6 +90,7 @@ private object AppRoute {
     const val Settings = "settings"
     const val Diagnostics = "diagnostics"
     const val Credits = "credits"
+    const val Components = "components"
 }
 
 data class LanguagePreparationUiState(
@@ -160,6 +162,7 @@ fun YumeApp(
             AppRoute.Settings -> strings.settingsTab
             AppRoute.Diagnostics -> strings.diagnosticsTitle
             AppRoute.Credits -> strings.creditsTitle
+            AppRoute.Components -> strings.openSourceComponentsTitle
             else -> "Yume"
         }
         val navigateToTopLevel: (String) -> Unit = { route ->
@@ -191,12 +194,16 @@ fun YumeApp(
             topBar = {
                 AppTopBar(
                     title = title,
-                    showBack = currentRoute == AppRoute.Diagnostics || currentRoute == AppRoute.Credits,
+                    showBack = currentRoute == AppRoute.Diagnostics ||
+                        currentRoute == AppRoute.Credits ||
+                        currentRoute == AppRoute.Components,
                     onBack = { navController.popBackStack() },
                 )
             },
             bottomBar = {
-                if (currentRoute != AppRoute.Diagnostics && currentRoute != AppRoute.Credits) {
+                if (currentRoute != AppRoute.Diagnostics &&
+                    currentRoute != AppRoute.Credits &&
+                    currentRoute != AppRoute.Components) {
                     BottomNavBar(
                         currentRoute = currentRoute,
                         destinations = topLevelDestinations,
@@ -270,7 +277,12 @@ fun YumeApp(
                     ToolsScreen()
                 }
                 composable(AppRoute.Credits) {
-                    CreditsScreen()
+                    CreditsScreen(
+                        onOpenComponents = { navController.navigate(AppRoute.Components) },
+                    )
+                }
+                composable(AppRoute.Components) {
+                    OpenSourceComponentsScreen()
                 }
                 composable(AppRoute.Diagnostics) {
                     DiagnosticsScreen(

@@ -411,7 +411,7 @@ class YumeVpnService : VpnService() {
                 updateUnderlyingNetworks()
                 YumeVpnRuntime.appendLog(
                     VpnLogLevel.Info,
-                    "Android VPN interface established in IPv4 protected mode with local mapped DNS $MAPDNS_ADDRESS, remote resolvers ${effectiveVpnDnsServers(profile).joinToString(", ")}, and MTU ${profile.mtu}. IPv6 is not captured until Yume ships native IPv6 relay support.",
+                    "Android VPN interface up (IPv4-only). Local DNS=$MAPDNS_ADDRESS, upstream=${effectiveVpnDnsServers(profile).joinToString(", ")}, MTU=${profile.mtu}. IPv6 is not captured yet.",
                 )
             }
 
@@ -1486,7 +1486,7 @@ class YumeVpnService : VpnService() {
                 configureNativeDirectTransport(enabled = true)
                 YumeVpnRuntime.appendLog(
                     VpnLogLevel.Info,
-                    "Native direct beta is using direct Yume TCP stream transport inside the Android tunnel backend. Android routing is IPv4-only; non-DNS UDP is dropped so apps fall back to TCP, and the local SOCKS5 gateway is disabled for this technique.",
+                    "Native direct beta: TCP routes straight through Yume, IPv4-only, non-DNS UDP is dropped so apps fall back to TCP, no local SOCKS5 gateway.",
                 )
 
                 val proxyAddress = NATIVE_DIRECT_ROUTE_LABEL

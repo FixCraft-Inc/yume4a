@@ -120,27 +120,7 @@ class YumeNativeTransport(
             if (data.isEmpty()) {
                 return 0
             }
-            if (closed.get()) {
-                return -1
-            }
-            val copy = data.copyOf()
-            writeLock.withLock {
-                while (!closed.get() && pendingWriteBytes.get() + copy.size > maxBufferedWriteBytes) {
-                    writeSpaceAvailable.await(5, TimeUnit.MILLISECONDS)
-                }
-                if (closed.get()) {
-                    return -1
-                }
-                pendingWriteBytes.addAndGet(copy.size)
-            }
-            if (!writeQueue.offer(copy)) {
-                writeLock.withLock {
-                    pendingWriteBytes.addAndGet(-copy.size)
-                    writeSpaceAvailable.signalAll()
-                }
-                return -1
-            }
-            return copy.size
+            return enqueueOwned(data.copyOf())
         }
 
         override fun writeBuffer(buffer: ByteBuffer, length: Int): Int {
@@ -150,10 +130,29 @@ class YumeNativeTransport(
             if (length > buffer.remaining()) {
                 return -1
             }
-            val copy = ByteArray(length)
+            val owned = ByteArray(length)
             val source = buffer.duplicate()
-            source.get(copy, 0, length)
-            return write(copy)
+            source.get(owned, 0, length)
+            return enqueueOwned(owned)
+        }
+
+        // Takes ownership of `payload`. Used by both write paths so writeBuffer
+        // doesn't allocate twice on the per-datagram hot path.
+        private fun enqueueOwned(payload: ByteArray): Int {
+            if (closed.get()) {
+                return -1
+            }
+            writeLock.withLock {
+                while (!closed.get() && pendingWriteBytes.get() + payload.size > maxBufferedWriteBytes) {
+                    writeSpaceAvailable.await(5, TimeUnit.MILLISECONDS)
+                }
+                if (closed.get()) {
+                    return -1
+                }
+                pendingWriteBytes.addAndGet(payload.size)
+            }
+            writeQueue.put(payload)
+            return payload.size
         }
 
         override fun close(reason: String) {
@@ -382,27 +381,7 @@ class YumeNativeTransport(
             if (data.isEmpty()) {
                 return 0
             }
-            if (closed.get()) {
-                return -1
-            }
-            val copy = data.copyOf()
-            writeLock.withLock {
-                while (!closed.get() && pendingWriteBytes.get() + copy.size > maxBufferedWriteBytes) {
-                    writeSpaceAvailable.await(5, TimeUnit.MILLISECONDS)
-                }
-                if (closed.get()) {
-                    return -1
-                }
-                pendingWriteBytes.addAndGet(copy.size)
-            }
-            if (!writeQueue.offer(copy)) {
-                writeLock.withLock {
-                    pendingWriteBytes.addAndGet(-copy.size)
-                    writeSpaceAvailable.signalAll()
-                }
-                return -1
-            }
-            return copy.size
+            return enqueueOwned(data.copyOf())
         }
 
         override fun writeBuffer(buffer: ByteBuffer, length: Int): Int {
@@ -412,10 +391,29 @@ class YumeNativeTransport(
             if (length > buffer.remaining()) {
                 return -1
             }
-            val copy = ByteArray(length)
+            val owned = ByteArray(length)
             val source = buffer.duplicate()
-            source.get(copy, 0, length)
-            return write(copy)
+            source.get(owned, 0, length)
+            return enqueueOwned(owned)
+        }
+
+        // Takes ownership of `payload`. The TUN write path hammers this — every
+        // duplicated allocation hurts throughput on large transfers.
+        private fun enqueueOwned(payload: ByteArray): Int {
+            if (closed.get()) {
+                return -1
+            }
+            writeLock.withLock {
+                while (!closed.get() && pendingWriteBytes.get() + payload.size > maxBufferedWriteBytes) {
+                    writeSpaceAvailable.await(5, TimeUnit.MILLISECONDS)
+                }
+                if (closed.get()) {
+                    return -1
+                }
+                pendingWriteBytes.addAndGet(payload.size)
+            }
+            writeQueue.put(payload)
+            return payload.size
         }
 
         override fun close(reason: String) {

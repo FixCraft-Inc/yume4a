@@ -1095,10 +1095,39 @@ class AppStrings private constructor(
         "Компонент с открытым исходным кодом",
         "オープンソースコンポーネント",
     )
+    val openSourceComponentsTitle = t(
+        "Open-source components",
+        "Открытые компоненты",
+        "オープンソース構成要素",
+    )
+    val openSourceComponentsLink = t(
+        "View open-source components",
+        "Открытые компоненты",
+        "オープンソース構成要素を見る",
+    )
+    val openSourceComponentsSubtitle = t(
+        "Third-party code Yume builds on, with licences.",
+        "Стороннее ПО, на котором построен Yume, и его лицензии.",
+        "Yume が依存しているサードパーティ ライブラリとライセンス。",
+    )
+    val componentHevTunnelTitle = "hev-socks5-tunnel · hev-task-system · lwIP"
+    val componentHevTunnelUsage = t(
+        "Used only in the legacy tun2socks mode. Heavily edited for YUME; we no longer pull upstream changes.",
+        "Используется только в режиме tun2socks. Существенно изменено для YUME; обновления извне больше не подтягиваются.",
+        "tun2socks モードでのみ使用しています。YUME 向けに大幅に改変済みで、今後アップストリームの変更は取り込みません。",
+    )
+    val componentHevTunnelLicense = "MIT · MIT · BSD-3-Clause"
+    val componentBasefwxTitle = "BaseFWX"
+    val componentBasefwxUsage = t(
+        "Inner post-quantum crypto engine bundled with the runtime.",
+        "Внутренний пост-квантовый крипто-движок, встроенный в рантайм.",
+        "ランタイムに同梱されたポスト量子暗号エンジン。",
+    )
+    val componentBasefwxLicense = "Proprietary, redistributable with Yume"
     val yumeSocksTunnelCreditRole = t(
-        "Originally derived from hev-socks5-tunnel and hev-task-system by hev <r@hev.cc> (MIT), and lwIP by the Swedish Institute of Computer Science (BSD-3-Clause). Significantly modified for YUME on Android; ongoing development is independent and does not track upstream.",
-        "Изначально основан на hev-socks5-tunnel и hev-task-system от hev <r@hev.cc> (MIT) и lwIP от Шведского института компьютерных наук (BSD-3-Clause). Существенно изменён для YUME на Android; дальнейшая разработка ведётся независимо и не синхронизируется с апстримом.",
-        "もとは hev <r@hev.cc> による hev-socks5-tunnel と hev-task-system（MIT）、およびスウェーデン計算機科学研究所による lwIP（BSD-3-Clause）から派生しています。YUME（Android）向けに大幅に改変されており、今後の開発はアップストリームとは独立して進められます。",
+        "See Open-source components for the libraries Yume is built on.",
+        "См. раздел «Открытые компоненты» для библиотек, на которых построен Yume.",
+        "Yume が依拠するライブラリは「オープンソース構成要素」を参照してください。",
     )
     val developerCreditQuote = "\"Credit is only fair when everyone has their place, and AI deserves to be recognized too.\""
 
