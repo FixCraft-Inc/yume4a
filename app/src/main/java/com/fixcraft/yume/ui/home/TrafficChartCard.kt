@@ -72,13 +72,23 @@ fun TrafficChartCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
-            // Title alone on the top row — no selector cramping it.
-            Text(
-                text = "Live traffic",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontWeight = FontWeight.SemiBold,
-            )
+            // Top row: title left, compact time-window selector right.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Live traffic",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                WindowSelector(
+                    selected = window,
+                    onSelect = { window = it },
+                )
+            }
             Spacer(Modifier.height(12.dp))
 
             // Plot — fills the recovered vertical space.
@@ -111,31 +121,25 @@ fun TrafficChartCard(
 
             Spacer(Modifier.height(12.dp))
 
-            // Bottom row: rates on the left, compact window selector on
-            // the right. One row, no collisions, selector lives near
-            // the data it controls.
+            // Bottom row: rates flow left-to-right with a fixed gap.
+            // No SpaceBetween — that would push them to opposite edges
+            // and leave a void between them.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    RateStat(
-                        arrow = "↑",
-                        rate = history.latestTxRateBps,
-                        total = history.totalTxBytes,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    RateStat(
-                        arrow = "↓",
-                        rate = history.latestRxRateBps,
-                        total = history.totalRxBytes,
-                        color = MaterialTheme.colorScheme.tertiary,
-                    )
-                }
-                WindowSelector(
-                    selected = window,
-                    onSelect = { window = it },
+                RateStat(
+                    arrow = "↑",
+                    rate = history.latestTxRateBps,
+                    total = history.totalTxBytes,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                RateStat(
+                    arrow = "↓",
+                    rate = history.latestRxRateBps,
+                    total = history.totalRxBytes,
+                    color = MaterialTheme.colorScheme.tertiary,
                 )
             }
         }
