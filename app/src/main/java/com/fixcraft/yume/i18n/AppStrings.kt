@@ -1123,7 +1123,7 @@ class AppStrings private constructor(
         "Внутренний пост-квантовый крипто-движок, встроенный в рантайм.",
         "ランタイムに同梱されたポスト量子暗号エンジン。",
     )
-    val componentBasefwxLicense = "Proprietary, redistributable with Yume"
+    val componentBasefwxLicense = "GPL-3.0"
     val yumeSocksTunnelCreditRole = t(
         "See Open-source components for the libraries Yume is built on.",
         "См. раздел «Открытые компоненты» для библиотек, на которых построен Yume.",
