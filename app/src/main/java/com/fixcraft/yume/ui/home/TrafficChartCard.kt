@@ -13,12 +13,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -74,23 +72,13 @@ fun TrafficChartCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
-            // Header: title on the left, time selector on the right, single row.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(
-                    text = "Live traffic",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                WindowSelector(
-                    selected = window,
-                    onSelect = { window = it },
-                )
-            }
+            // Title alone on the top row — no selector cramping it.
+            Text(
+                text = "Live traffic",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold,
+            )
             Spacer(Modifier.height(12.dp))
 
             // Plot — fills the recovered vertical space.
@@ -123,23 +111,31 @@ fun TrafficChartCard(
 
             Spacer(Modifier.height(12.dp))
 
-            // Bottom row: rate + cumulative on one line per direction.
+            // Bottom row: rates on the left, compact window selector on
+            // the right. One row, no collisions, selector lives near
+            // the data it controls.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                RateStat(
-                    arrow = "↑",
-                    rate = history.latestTxRateBps,
-                    total = history.totalTxBytes,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                RateStat(
-                    arrow = "↓",
-                    rate = history.latestRxRateBps,
-                    total = history.totalRxBytes,
-                    color = MaterialTheme.colorScheme.tertiary,
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    RateStat(
+                        arrow = "↑",
+                        rate = history.latestTxRateBps,
+                        total = history.totalTxBytes,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    RateStat(
+                        arrow = "↓",
+                        rate = history.latestRxRateBps,
+                        total = history.totalRxBytes,
+                        color = MaterialTheme.colorScheme.tertiary,
+                    )
+                }
+                WindowSelector(
+                    selected = window,
+                    onSelect = { window = it },
                 )
             }
         }
@@ -151,21 +147,32 @@ private fun WindowSelector(
     selected: TrafficWindow,
     onSelect: (TrafficWindow) -> Unit,
 ) {
-    val options = remember { TrafficWindow.values().toList() }
-    SingleChoiceSegmentedButtonRow {
-        options.forEachIndexed { index, opt ->
-            SegmentedButton(
-                selected = opt == selected,
-                onClick = { onSelect(opt) },
-                shape = SegmentedButtonDefaults.itemShape(index, options.size),
-                colors = SegmentedButtonDefaults.colors(
-                    activeContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                    activeContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                    inactiveContainerColor = MaterialTheme.colorScheme.surface,
-                    inactiveContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                ),
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TrafficWindow.values().forEach { opt ->
+            val active = opt == selected
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(
+                        if (active) MaterialTheme.colorScheme.primaryContainer
+                        else Color.Transparent,
+                    )
+                    .clickable { onSelect(opt) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
             ) {
-                Text(opt.label, style = MaterialTheme.typography.labelMedium)
+                Text(
+                    text = opt.label,
+                    color = if (active) MaterialTheme.colorScheme.onPrimaryContainer
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                )
             }
         }
     }
