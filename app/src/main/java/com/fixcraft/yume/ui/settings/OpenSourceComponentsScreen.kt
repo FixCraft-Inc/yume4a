@@ -22,40 +22,67 @@ import com.fixcraft.yume.i18n.appStrings
 
 private data class ComponentEntry(
     val title: String,
-    val scope: String,
     val description: String,
     val license: String,
+)
+
+private data class ComponentGroup(
+    val heading: String,
+    val blurb: String,
+    val entries: List<ComponentEntry>,
 )
 
 @Composable
 fun OpenSourceComponentsScreen() {
     val strings = appStrings()
-    // Order: pieces that are part of every Yume implementation first,
-    // then anything that only ships in this Android client.
-    val components = listOf(
-        ComponentEntry(
-            title = strings.componentBasefwxTitle,
-            scope = strings.componentScopeAllImpls,
-            description = strings.componentBasefwxUsage,
-            license = strings.componentBasefwxLicense,
+    val groups = listOf(
+        ComponentGroup(
+            heading = strings.componentGroupAllImpls,
+            blurb = strings.componentGroupAllImplsBlurb,
+            entries = listOf(
+                ComponentEntry(
+                    title = strings.componentBasefwxTitle,
+                    description = strings.componentBasefwxUsage,
+                    license = strings.componentBasefwxLicense,
+                ),
+                ComponentEntry(
+                    title = strings.componentLiboqsTitle,
+                    description = strings.componentLiboqsUsage,
+                    license = strings.componentLiboqsLicense,
+                ),
+            ),
         ),
-        ComponentEntry(
-            title = strings.componentLiboqsTitle,
-            scope = strings.componentScopeAllImpls,
-            description = strings.componentLiboqsUsage,
-            license = strings.componentLiboqsLicense,
-        ),
-        ComponentEntry(
-            title = strings.componentHevTunnelTitle,
-            scope = strings.componentScopeAndroidOnly,
-            description = strings.componentHevTunnelUsage,
-            license = strings.componentHevTunnelLicense,
+        ComponentGroup(
+            heading = strings.componentGroupAndroidOnly,
+            blurb = strings.componentGroupAndroidOnlyBlurb,
+            entries = listOf(
+                ComponentEntry(
+                    title = strings.componentHevTunnelTitle,
+                    description = strings.componentHevTunnelUsage,
+                    license = strings.componentHevTunnelLicense,
+                ),
+                ComponentEntry(
+                    title = strings.componentConscryptTitle,
+                    description = strings.componentConscryptUsage,
+                    license = strings.componentConscryptLicense,
+                ),
+                ComponentEntry(
+                    title = strings.componentComposeTitle,
+                    description = strings.componentComposeUsage,
+                    license = strings.componentComposeLicense,
+                ),
+                ComponentEntry(
+                    title = strings.componentCoroutinesTitle,
+                    description = strings.componentCoroutinesUsage,
+                    license = strings.componentCoroutinesLicense,
+                ),
+            ),
         ),
     )
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         item {
             Text(
@@ -64,8 +91,24 @@ fun OpenSourceComponentsScreen() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        items(items = components, key = { it.title }) { entry ->
-            ComponentCard(entry)
+        groups.forEach { group ->
+            item(key = "header_${group.heading}") {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = group.heading,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = group.blurb,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            items(items = group.entries, key = { "${group.heading}::${it.title}" }) { entry ->
+                ComponentCard(entry)
+            }
         }
     }
 }
@@ -86,11 +129,6 @@ private fun ComponentCard(entry: ComponentEntry) {
                 text = entry.title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = entry.scope,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
             )
             Text(
                 text = entry.description,

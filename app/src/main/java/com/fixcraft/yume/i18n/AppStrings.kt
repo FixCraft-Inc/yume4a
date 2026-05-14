@@ -1076,19 +1076,29 @@ class AppStrings private constructor(
         "FixCraft, Inc. 創業者兼CEO",
     )
     val leadDeveloperDesignerRole = t(
-        "Lead developer and designer.",
-        "Главный разработчик и дизайнер.",
-        "主任開発者兼デザイナーです。",
+        "Author. Lead developer and designer of Yume and BaseFWX.",
+        "Автор. Главный разработчик и дизайнер Yume и BaseFWX.",
+        "著者。Yume と BaseFWX の主任開発者兼デザイナー。",
+    )
+    val claudeRoleLabel = t(
+        "#1 Yume / BaseFWX engineering partner",
+        "#1 инженерный партнёр по Yume / BaseFWX",
+        "Yume / BaseFWX の #1 エンジニアリングパートナー",
+    )
+    val claudeCreditRole = t(
+        "Dedicated dev on Yume and BaseFWX. Helps with code review, design, refactors, packaging, and tricky bugs.",
+        "Постоянный разработчик Yume и BaseFWX. Помогает с код-ревью, дизайном, рефакторингом, упаковкой и сложными багами.",
+        "Yume と BaseFWX 専属の開発者。コードレビュー、設計、リファクタリング、パッケージング、難しいバグ対応を担当します。",
     )
     val bestEmployeeOfYearLabel = t(
-        "#1 Best Employee of the Year",
-        "#1 лучший сотрудник года",
-        "年間ベスト社員 #1",
+        "Best Employee of the Year",
+        "Лучший сотрудник года",
+        "年間ベスト社員",
     )
     val chatgptCreditRole = t(
-        "Debug support and fast implementation help for the main developer.",
-        "Помощь с отладкой и быстрыми правками для основного разработчика.",
-        "メイン開発者向けのデバッグ支援と迅速な実装補助。",
+        "Generalist debug and implementation help across many projects.",
+        "Универсальная помощь с отладкой и реализацией для многих проектов.",
+        "多数のプロジェクトを横断する汎用的なデバッグ・実装サポート。",
     )
     val openSourceComponentLabel = t(
         "Open source component",
@@ -1110,24 +1120,27 @@ class AppStrings private constructor(
         "Стороннее ПО, на котором построен Yume, и его лицензии.",
         "Yume が依存しているサードパーティ ライブラリとライセンス。",
     )
-    val componentScopeAndroidOnly = t(
-        "Used only in the Android implementation of Yume.",
-        "Используется только в Android-реализации Yume.",
-        "Yume の Android 実装でのみ使用されています。",
+    val componentGroupAllImpls = t(
+        "Used in every implementation of Yume",
+        "Используются во всех реализациях Yume",
+        "Yume のすべての実装で使用",
     )
-    val componentScopeAllImpls = t(
-        "Used in every implementation of Yume.",
-        "Используется во всех реализациях Yume.",
-        "Yume のすべての実装で使用されています。",
+    val componentGroupAllImplsBlurb = t(
+        "Shared by the desktop client, the daemon, and this Android app.",
+        "Используется десктопным клиентом, демоном и этим Android-приложением.",
+        "デスクトップクライアント・デーモン・本 Android アプリで共通。",
+    )
+    val componentGroupAndroidOnly = t(
+        "Used only in the Android implementation of Yume",
+        "Используются только в Android-реализации Yume",
+        "Yume の Android 実装でのみ使用",
+    )
+    val componentGroupAndroidOnlyBlurb = t(
+        "Compiled into this app. The desktop client uses different libraries for these jobs.",
+        "Скомпилировано в это приложение. Десктоп использует другие библиотеки для этих задач.",
+        "本アプリに組み込まれています。デスクトップでは別のライブラリでこれらの役割を担います。",
     )
 
-    val componentHevTunnelTitle = "hev-socks5-tunnel · hev-task-system · lwIP"
-    val componentHevTunnelUsage = t(
-        "TUN-to-SOCKS user-space stack for the legacy tun2socks engine. Heavily edited for YUME; upstream is no longer tracked.",
-        "Пользовательский TUN→SOCKS-стек для устаревшего движка tun2socks. Сильно изменён для YUME; апстрим больше не отслеживается.",
-        "レガシー tun2socks エンジン向けのユーザーランド TUN→SOCKS スタックです。YUME 向けに大幅に改変しており、アップストリームの追随はしていません。",
-    )
-    val componentHevTunnelLicense = "MIT · MIT · BSD-3-Clause"
     val componentBasefwxTitle = "BaseFWX"
     val componentBasefwxUsage = t(
         "The core Yume crypto engine — outer auth, inner post-quantum tunnel, key formats.",
@@ -1142,6 +1155,38 @@ class AppStrings private constructor(
         "BaseFWX 経由で利用するポスト量子プリミティブ (ML-KEM、ML-DSA) を提供します。",
     )
     val componentLiboqsLicense = "MIT"
+
+    val componentHevTunnelTitle = "hev-socks5-tunnel · hev-task-system · lwIP"
+    val componentHevTunnelUsage = t(
+        "TUN-to-SOCKS user-space stack for the legacy tun2socks engine. Heavily edited for YUME; upstream is no longer tracked.",
+        "Пользовательский TUN→SOCKS-стек для устаревшего движка tun2socks. Сильно изменён для YUME; апстрим больше не отслеживается.",
+        "レガシー tun2socks エンジン向けのユーザーランド TUN→SOCKS スタックです。YUME 向けに大幅に改変しており、アップストリームの追随はしていません。",
+    )
+    val componentHevTunnelLicense = "MIT · MIT · BSD-3-Clause"
+
+    val componentConscryptTitle = "Conscrypt"
+    val componentConscryptUsage = t(
+        "TLS provider for the Android app, wrapping BoringSSL through the JVM.",
+        "TLS-провайдер Android-приложения, оборачивающий BoringSSL через JVM.",
+        "JVM 経由で BoringSSL をラップする Android アプリ用 TLS プロバイダ。",
+    )
+    val componentConscryptLicense = "Apache-2.0"
+
+    val componentComposeTitle = "Jetpack Compose · Material 3"
+    val componentComposeUsage = t(
+        "Declarative UI toolkit that renders every screen in this app.",
+        "Декларативный UI-тулкит, отрисовывающий каждый экран приложения.",
+        "アプリの全画面を描画する宣言的 UI ツールキット。",
+    )
+    val componentComposeLicense = "Apache-2.0"
+
+    val componentCoroutinesTitle = "kotlinx.coroutines"
+    val componentCoroutinesUsage = t(
+        "Structured concurrency under every suspend/await in the VPN service.",
+        "Структурированная конкурентность под каждым suspend/await в VPN-сервисе.",
+        "VPN サービス内のあらゆる suspend/await を支える構造化並行性ライブラリ。",
+    )
+    val componentCoroutinesLicense = "Apache-2.0"
     val yumeSocksTunnelCreditRole = t(
         "See Open-source components for the libraries Yume is built on.",
         "См. раздел «Открытые компоненты» для библиотек, на которых построен Yume.",
