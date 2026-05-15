@@ -1204,7 +1204,10 @@ class AppStrings private constructor(
         "接続すると通信量の計測が始まります",
     )
 
-    val developerCreditQuote = "\"Credit is only fair when everyone has their place, and AI deserves to be recognized too.\""
+    val developerCreditQuotes = listOf(
+        "\"Credit is only fair when everyone has their place, and AI deserves to be recognized too.\"",
+        "\"Judge the code, not the coder.\"",
+    )
 
     val founderQuote = t(
         "\"Building on open source is one of the most empowering experiences in software development. You do not have to wait for someone else to fix an issue or add a feature — you can build the solution yourself.\"",

@@ -113,11 +113,13 @@ fun CreditsScreen(
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Text(
-                        text = strings.developerCreditQuote,
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontStyle = FontStyle.Italic,
-                    )
+                    strings.developerCreditQuotes.forEach { quote ->
+                        Text(
+                            text = quote,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontStyle = FontStyle.Italic,
+                        )
+                    }
                     Text(
                         text = strings.founderNoteLabel,
                         style = MaterialTheme.typography.labelLarge,
