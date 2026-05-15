@@ -5,10 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 SECRET_FILE_DEFAULT="$ROOT_DIR/.release-signing.env"
-OUTPUT_APK_DEFAULT="$ROOT_DIR/app/build/outputs/apk/release/app-release.apk"
-UNSIGNED_APK="$ROOT_DIR/app/build/outputs/apk/release/app-release-unsigned.apk"
-ALIGNED_APK="$ROOT_DIR/app/build/outputs/apk/release/app-release-aligned.apk"
-SIGNED_APK_DEFAULT="$ROOT_DIR/app/build/outputs/apk/release/app-release.apk"
+APK_OUTPUT_DIR="$ROOT_DIR/app/build/outputs/apk/release"
+OUTPUT_DIR_DEFAULT="$APK_OUTPUT_DIR/signed"
 
 log_section() {
   printf '\n==> %s\n' "$1"
@@ -29,7 +27,16 @@ Options:
   --store-pass VALUE    keystore password
   --key-pass VALUE      key password; defaults to --store-pass
   --secret-file PATH    local env file with signing values; default: ./.release-signing.env
-  --output PATH         signed APK output path
+  --output PATH         signed APK output directory (one signed APK per ABI is written here)
+  --abi VALUE           which ABI(s) to ship. One of:
+                          all          (default — every ABI: arm64-v8a, armeabi-v7a, x86, x86_64)
+                          arm64-v8a    most modern phones
+                          armeabi-v7a  older 32-bit ARM phones
+                          x86_64       Chromebooks, Android emulators on Intel hosts
+                          x86          legacy emulator/devices
+                          arm          shorthand for arm64-v8a + armeabi-v7a
+                          intel        shorthand for x86 + x86_64
+                        comma-separated list also accepted, e.g. --abi arm64-v8a,x86_64
   --skip-clean          skip Gradle clean
   --skip-sign           build release APK only
   --help                show this help
@@ -195,9 +202,40 @@ KEYSTORE_PATH=""
 KEY_ALIAS=""
 STORE_PASSWORD=""
 KEY_PASSWORD=""
-OUTPUT_APK="$OUTPUT_APK_DEFAULT"
+OUTPUT_DIR="$OUTPUT_DIR_DEFAULT"
+ABI_SELECTION="all"
 SKIP_CLEAN=0
 SKIP_SIGN=0
+
+ALL_ABIS=("arm64-v8a" "armeabi-v7a" "x86" "x86_64")
+
+# Expand --abi argument into a space-separated list of concrete ABI ids.
+# Accepts: all, arm, intel, a single ABI, or a comma-separated list.
+resolve_abis() {
+  local selection="$1"
+  case "$selection" in
+    all|"") printf '%s\n' "${ALL_ABIS[@]}"; return 0 ;;
+    arm)    printf '%s\n' "arm64-v8a" "armeabi-v7a"; return 0 ;;
+    intel)  printf '%s\n' "x86_64" "x86"; return 0 ;;
+  esac
+
+  local -a out=()
+  local IFS=,
+  for token in $selection; do
+    token="$(trim_value "$token")"
+    case "$token" in
+      arm64-v8a|armeabi-v7a|x86|x86_64) out+=("$token") ;;
+      "" ) ;;
+      *) printf 'Unknown ABI: %s\n' "$token" >&2; return 1 ;;
+    esac
+  done
+
+  if [[ "${#out[@]}" -eq 0 ]]; then
+    printf 'No valid ABIs in --abi selection: %s\n' "$selection" >&2
+    return 1
+  fi
+  printf '%s\n' "${out[@]}"
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -222,7 +260,11 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --output)
-      OUTPUT_APK="${2:-}"
+      OUTPUT_DIR="${2:-}"
+      shift 2
+      ;;
+    --abi)
+      ABI_SELECTION="${2:-}"
       shift 2
       ;;
     --skip-clean)
@@ -249,7 +291,7 @@ KEYSTORE_PATH="$(trim_value "$KEYSTORE_PATH")"
 KEY_ALIAS="$(trim_value "$KEY_ALIAS")"
 STORE_PASSWORD="$(trim_value "$STORE_PASSWORD")"
 KEY_PASSWORD="$(trim_value "$KEY_PASSWORD")"
-OUTPUT_APK="$(trim_value "$OUTPUT_APK")"
+OUTPUT_DIR="$(trim_value "$OUTPUT_DIR")"
 
 if [[ -z "$KEYSTORE_PATH" ]]; then
   KEYSTORE_PATH="$(resolve_value YUME_RELEASE_STORE_FILE YUME_RELEASE_STORE_FILE_B64 "$SECRET_FILE" 2>/dev/null || true)"
@@ -272,18 +314,22 @@ KEYSTORE_PATH="$(trim_value "$KEYSTORE_PATH")"
 KEY_ALIAS="$(trim_value "$KEY_ALIAS")"
 STORE_PASSWORD="$(trim_value "$STORE_PASSWORD")"
 KEY_PASSWORD="$(trim_value "$KEY_PASSWORD")"
-OUTPUT_APK="$(trim_value "$OUTPUT_APK")"
+OUTPUT_DIR="$(trim_value "$OUTPUT_DIR")"
 
 SDK_DIR="$(resolve_sdk_dir)"
 ZIPALIGN="${ZIPALIGN:-$(resolve_tool zipalign "$SDK_DIR")}"
 APKSIGNER="${APKSIGNER:-$(resolve_tool apksigner "$SDK_DIR")}"
+
+readarray -t SELECTED_ABIS < <(resolve_abis "$ABI_SELECTION") \
+  || { usage >&2; exit 1; }
 
 log_section "Build config"
 log_item "root" "$ROOT_DIR"
 log_item "secret file" "$(if [[ -f "$SECRET_FILE" ]]; then printf '%s' "$SECRET_FILE"; else printf 'not found'; fi)"
 log_item "keystore" "${KEYSTORE_PATH:-not set}"
 log_item "alias" "${KEY_ALIAS:-not set}"
-log_item "output" "$OUTPUT_APK"
+log_item "output dir" "$OUTPUT_DIR"
+log_item "abi" "${SELECTED_ABIS[*]}"
 log_item "zipalign" "$ZIPALIGN"
 log_item "apksigner" "$APKSIGNER"
 log_item "clean" "$(if [[ "$SKIP_CLEAN" -eq 0 ]]; then printf 'yes'; else printf 'no'; fi)"
@@ -304,43 +350,87 @@ if [[ "$SKIP_CLEAN" -eq 0 ]]; then
   GRADLE_TASKS=(clean "${GRADLE_TASKS[@]}")
 fi
 
-log_section "Gradle build"
-./gradlew "${GRADLE_TASKS[@]}"
+# When only a subset of ABIs is requested, pass it to Gradle so the native
+# build / packaging skips work for the unselected ABIs. The build.gradle.kts
+# splits.abi block reads this property.
+GRADLE_ARGS=()
+if [[ "${#SELECTED_ABIS[@]}" -ne ${#ALL_ABIS[@]} ]]; then
+  GRADLE_ARGS+=("-PyumeAbi=$(IFS=,; printf '%s' "${SELECTED_ABIS[*]}")")
+fi
 
-if [[ "$SKIP_SIGN" -eq 1 ]]; then
-  if [[ -f "$SIGNED_APK_DEFAULT" ]]; then
-    log_section "Done"
-    printf 'Release APK: %s\n' "$SIGNED_APK_DEFAULT"
-    exit 0
-  fi
-  if [[ -f "$UNSIGNED_APK" ]]; then
-    log_section "Done"
-    printf 'Unsigned release APK: %s\n' "$UNSIGNED_APK"
-    exit 0
-  fi
-  printf 'Release APK not found after assembleRelease.\n' >&2
+log_section "Gradle build"
+./gradlew "${GRADLE_TASKS[@]}" "${GRADLE_ARGS[@]}"
+
+# ABI splits produce one unsigned APK per ABI under $APK_OUTPUT_DIR. Filter the
+# discovered set down to the requested ABIs so --abi selects which APKs get
+# zipaligned, signed, and reported.
+shopt -s nullglob
+ALL_UNSIGNED=("$APK_OUTPUT_DIR"/app-*-release-unsigned.apk)
+shopt -u nullglob
+
+declare -A SELECTED_ABI_SET=()
+for abi in "${SELECTED_ABIS[@]}"; do
+  SELECTED_ABI_SET[$abi]=1
+done
+
+UNSIGNED_APKS=()
+for apk in "${ALL_UNSIGNED[@]}"; do
+  base="$(basename "$apk")"
+  for abi in "${SELECTED_ABIS[@]}"; do
+    if [[ "$base" == app-"$abi"-release-unsigned.apk ]]; then
+      UNSIGNED_APKS+=("$apk")
+      break
+    fi
+  done
+done
+
+if [[ "${#UNSIGNED_APKS[@]}" -eq 0 ]]; then
+  printf 'No unsigned release APKs matched --abi=%s in %s.\n' "$ABI_SELECTION" "$APK_OUTPUT_DIR" >&2
+  printf 'Available:\n' >&2
+  for apk in "${ALL_UNSIGNED[@]}"; do printf '  %s\n' "$apk" >&2; done
   exit 1
 fi
 
-[[ -f "$UNSIGNED_APK" ]] || { printf 'Unsigned release APK not found: %s\n' "$UNSIGNED_APK" >&2; exit 1; }
+if [[ "$SKIP_SIGN" -eq 1 ]]; then
+  log_section "Done"
+  for apk in "${UNSIGNED_APKS[@]}"; do
+    printf '%s  %s\n' "$(du -h "$apk" | cut -f1)" "$apk"
+  done
+  exit 0
+fi
 
-mkdir -p "$(dirname "$OUTPUT_APK")"
-rm -f "$ALIGNED_APK" "$OUTPUT_APK"
+mkdir -p "$OUTPUT_DIR"
 
-log_section "Zipalign"
-"$ZIPALIGN" -p -f 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+declare -a SIGNED_OUTPUTS=()
+for unsigned in "${UNSIGNED_APKS[@]}"; do
+  base="$(basename "$unsigned")"
+  # Strip the -unsigned suffix to derive ABI-tagged signed name.
+  signed_name="${base/-unsigned/}"
+  signed="$OUTPUT_DIR/$signed_name"
+  aligned="${unsigned%.apk}-aligned.apk"
 
-log_section "Signing"
-"$APKSIGNER" sign \
-  --ks "$KEYSTORE_PATH" \
-  --ks-key-alias "$KEY_ALIAS" \
-  --ks-pass "pass:$STORE_PASSWORD" \
-  --key-pass "pass:$KEY_PASSWORD" \
-  --out "$OUTPUT_APK" \
-  "$ALIGNED_APK"
+  log_section "Zipalign  ${base}"
+  "$ZIPALIGN" -p -f 4 "$unsigned" "$aligned"
+
+  log_section "Sign       ${signed_name}"
+  "$APKSIGNER" sign \
+    --ks "$KEYSTORE_PATH" \
+    --ks-key-alias "$KEY_ALIAS" \
+    --ks-pass "pass:$STORE_PASSWORD" \
+    --key-pass "pass:$KEY_PASSWORD" \
+    --out "$signed" \
+    "$aligned"
+  rm -f "$aligned"
+  SIGNED_OUTPUTS+=("$signed")
+done
 
 log_section "Verify"
-"$APKSIGNER" verify --verbose --print-certs "$OUTPUT_APK"
+for signed in "${SIGNED_OUTPUTS[@]}"; do
+  "$APKSIGNER" verify --print-certs "$signed" >/dev/null
+  printf '    ok  %s\n' "$signed"
+done
 
 log_section "Done"
-printf 'Signed release APK: %s\n' "$OUTPUT_APK"
+for signed in "${SIGNED_OUTPUTS[@]}"; do
+  printf '%s  %s\n' "$(du -h "$signed" | cut -f1)" "$signed"
+done

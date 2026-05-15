@@ -1224,8 +1224,6 @@ private fun StatusDialog(
                 )
                 StatusFactRow(strings.briefLabel, uiState.vpnState.briefStatus)
                 StatusFactRow(strings.clientLabel, "${uiState.vpnState.clientPlatform}/${uiState.vpnState.clientVariant} ${uiState.vpnState.clientVersion}")
-                StatusFactRow(strings.lifecycleLabel, uiState.vpnState.latestLifecycleState ?: strings.unknown)
-                StatusFactRow(strings.lifecycleMessageLabel, uiState.vpnState.latestLifecycleMessage ?: strings.none)
                 StatusFactRow(strings.connectionLabel, uiState.vpnState.transportSummary)
                 StatusFactRow(strings.protectionShortLabel, uiState.vpnState.requestedProtection)
                 StatusFactRow(strings.serverModeLabel, uiState.vpnState.serverMode ?: strings.unknown)

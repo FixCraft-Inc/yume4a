@@ -37,9 +37,7 @@ import com.fixcraft.yume.tunnel.YumeTunnelBridge
 import com.fixcraft.yume.transport.YumeBootstrapClient
 import com.fixcraft.yume.transport.YumeBootstrapException
 import com.fixcraft.yume.transport.YumeBootstrapSession
-import com.fixcraft.yume.transport.YumeLifecycleAck
 import com.fixcraft.yume.transport.YumeNativeTransport
-import com.fixcraft.yume.transport.YumePresenceInfo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -110,16 +108,6 @@ class YumeVpnService : VpnService() {
     private var inFlightSocket: Socket? = null
     @Volatile
     private var tun2SocksActive = false
-    @Volatile
-    private var currentPresence: YumePresenceInfo? = null
-    @Volatile
-    private var lifecycleUnsupportedLogged = false
-    @Volatile
-    private var metadataChannelEnabled = false
-    @Volatile
-    private var hopCompatibilityMode = false
-    @Volatile
-    private var innerCompatibilityMode = false
     @Volatile
     private var activeTun2SocksConfig: Tun2SocksRuntimeConfig? = null
     @Volatile
@@ -334,11 +322,6 @@ class YumeVpnService : VpnService() {
         )
         lastLoggedUpstreamHandle = Long.MIN_VALUE
         lastLoggedUpstreamLabel = null
-        lifecycleUnsupportedLogged = false
-        metadataChannelEnabled = false
-        hopCompatibilityMode = ANDROID_HOP_COMPATIBILITY_DEFAULT
-        innerCompatibilityMode = ANDROID_INNER_COMPATIBILITY_DEFAULT
-        currentPresence = null
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Technique: ${runtimeConfig.summary}.")
         if (appSettings.connectionTechnique != techniqueEngine.technique) {
             YumeVpnRuntime.appendLog(
@@ -367,14 +350,6 @@ class YumeVpnService : VpnService() {
             )
             ensureSessionActive(generation)
             var session = requireNotNull(bootstrapSession)
-            session = registerMetadataChannel(
-                session = session,
-                profile = profile,
-                anonymCaPem = anonymCaPem,
-                authKeyPem = authKeyPem,
-                generation = generation,
-            )
-            bootstrapSession = session
             var bootstrap = session.bootstrap
             YumeVpnRuntime.appendLog(
                 VpnLogLevel.Info,
@@ -389,13 +364,7 @@ class YumeVpnService : VpnService() {
                 "Effective protection for this Yume session: ${buildEffectiveProtectionSummary(profile, bootstrap)}.",
             )
             ensureSessionActive(generation)
-            val initialRelayProbe = probeRelayCanaryWithCompatibilityFallback(
-                session = session,
-                profile = profile,
-                anonymCaPem = anonymCaPem,
-                authKeyPem = authKeyPem,
-                generation = generation,
-            )
+            val initialRelayProbe = session to probeExitIp()
             session = initialRelayProbe.first
             bootstrapSession = session
             bootstrap = session.bootstrap
@@ -434,12 +403,9 @@ class YumeVpnService : VpnService() {
             dataPlane.start()
             val initialVerification = runCatching {
                 verifySystemTrafficFlow(
-                    profile = profile,
-                    bootstrap = bootstrap,
                     relayExitIpResult = verifiedExitIpResult,
                     proxyAddress = proxyAddress,
                     resolvedProbeTargets = systemProbeTargets,
-                    session = session,
                     generation = generation,
                 )
             }.getOrElse { throwable ->
@@ -489,26 +455,8 @@ class YumeVpnService : VpnService() {
                     )
                     ensureSessionActive(generation)
                     session = requireNotNull(bootstrapSession)
-                    session = registerMetadataChannel(
-                        session = session,
-                        profile = profile,
-                        anonymCaPem = anonymCaPem,
-                        authKeyPem = authKeyPem,
-                        generation = generation,
-                    )
-                    bootstrapSession = session
                     bootstrap = session.bootstrap
-                    val relayProbe = probeRelayCanaryWithCompatibilityFallback(
-                        session = session,
-                        profile = profile,
-                        anonymCaPem = anonymCaPem,
-                        authKeyPem = authKeyPem,
-                        generation = generation,
-                    )
-                    session = relayProbe.first
-                    bootstrapSession = session
-                    bootstrap = session.bootstrap
-                    val relayExitIp = requireVerifiedRelayCanary(session, bootstrap, relayProbe.second)
+                    val relayExitIp = requireVerifiedRelayCanary(session, bootstrap, probeExitIp())
                     handoffToTraffic(profile, bootstrap, session, relayExitIp, generation)
                     nextPingAtMs = System.currentTimeMillis() + KEEPALIVE_PING_INTERVAL_MS
                     continue
@@ -516,41 +464,18 @@ class YumeVpnService : VpnService() {
                 val liveSession = bootstrapSession
                 if (liveSession == null || !liveSession.isAlive) {
                     val closeDetail = liveSession?.closeReason?.takeIf { it.isNotBlank() } ?: "unknown reason"
-                    val reopenedWithoutInner = maybeEnableInnerCompatibilityForCorruption(liveSession, closeDetail)
                     setTechniqueVerificationMode(true)
                     bootstrapSession = reconnectBootstrapSession(
                         profile = profile,
                         anonymCaPem = anonymCaPem,
                         authKeyPem = authKeyPem,
-                        reason = if (reopenedWithoutInner) {
-                            "Reopening authenticated Yume control path with inner crypto disabled after Android corruption"
-                        } else {
-                            "Authenticated Yume control path lost ($closeDetail)"
-                        },
+                        reason = "Authenticated Yume control path lost ($closeDetail)",
                         generation = generation,
                     )
                     ensureSessionActive(generation)
                     session = requireNotNull(bootstrapSession)
-                    session = registerMetadataChannel(
-                        session = session,
-                        profile = profile,
-                        anonymCaPem = anonymCaPem,
-                        authKeyPem = authKeyPem,
-                        generation = generation,
-                    )
-                    bootstrapSession = session
                     bootstrap = session.bootstrap
-                    val relayProbe = probeRelayCanaryWithCompatibilityFallback(
-                        session = session,
-                        profile = profile,
-                        anonymCaPem = anonymCaPem,
-                        authKeyPem = authKeyPem,
-                        generation = generation,
-                    )
-                    session = relayProbe.first
-                    bootstrapSession = session
-                    bootstrap = session.bootstrap
-                    val relayExitIp = requireVerifiedRelayCanary(session, bootstrap, relayProbe.second)
+                    val relayExitIp = requireVerifiedRelayCanary(session, bootstrap, probeExitIp())
                     handoffToTraffic(profile, bootstrap, session, relayExitIp, generation)
                     nextPingAtMs = System.currentTimeMillis() + KEEPALIVE_PING_INTERVAL_MS
                     continue
@@ -560,7 +485,6 @@ class YumeVpnService : VpnService() {
                         liveSession.ping(timeoutMs = PRE_ROUTING_PING_TIMEOUT_MS)
                     } catch (ex: Exception) {
                         val pingDetail = ex.message ?: "connection lost"
-                        val reopenedWithoutInner = maybeEnableInnerCompatibilityForCorruption(liveSession, pingDetail)
                         YumeVpnRuntime.appendLog(
                             VpnLogLevel.Warn,
                             "Yume PING failed: $pingDetail. Re-authenticating.",
@@ -570,35 +494,13 @@ class YumeVpnService : VpnService() {
                             profile = profile,
                             anonymCaPem = anonymCaPem,
                             authKeyPem = authKeyPem,
-                            reason = if (reopenedWithoutInner) {
-                                "Reopening authenticated Yume control path with inner crypto disabled after keepalive corruption"
-                            } else {
-                                "Yume keepalive failed"
-                            },
+                            reason = "Yume keepalive failed",
                             generation = generation,
                         )
                         ensureSessionActive(generation)
                         session = requireNotNull(bootstrapSession)
-                        session = registerMetadataChannel(
-                            session = session,
-                            profile = profile,
-                            anonymCaPem = anonymCaPem,
-                            authKeyPem = authKeyPem,
-                            generation = generation,
-                        )
-                        bootstrapSession = session
                         bootstrap = session.bootstrap
-                        val relayProbe = probeRelayCanaryWithCompatibilityFallback(
-                            session = session,
-                            profile = profile,
-                            anonymCaPem = anonymCaPem,
-                            authKeyPem = authKeyPem,
-                            generation = generation,
-                        )
-                        session = relayProbe.first
-                        bootstrapSession = session
-                        bootstrap = session.bootstrap
-                        val relayExitIp = requireVerifiedRelayCanary(session, bootstrap, relayProbe.second)
+                        val relayExitIp = requireVerifiedRelayCanary(session, bootstrap, probeExitIp())
                         handoffToTraffic(profile, bootstrap, session, relayExitIp, generation)
                     }
                     nextPingAtMs = System.currentTimeMillis() + KEEPALIVE_PING_INTERVAL_MS
@@ -618,20 +520,6 @@ class YumeVpnService : VpnService() {
                 disconnectResources()
                 return
             }
-            val session = bootstrapSession
-            if (session != null && session.isAlive) {
-                runCatching {
-                    sendLifecycleUpdate(
-                        session = session,
-                        state = "error",
-                        message = "error, disconnect",
-                        detail = ex.message ?: "vpn startup failed",
-                        effectiveProtection = buildEffectiveProtectionSummary(activeProfile, session.bootstrap),
-                        errorCode = "vpn_start_failed",
-                        timeoutMs = 1_200,
-                    )
-                }
-            }
             fail(ex.message ?: "VPN startup failed", profileId)
         }
     }
@@ -644,72 +532,40 @@ class YumeVpnService : VpnService() {
         sessionGeneration.incrementAndGet()
         runCatching { inFlightSocket?.close() }
         inFlightSocket = null
-        val currentState = YumeVpnRuntime.state.value
-        val activeProfileId = currentState.activeProfileId
         if (connectJob != null || tunInterface != null || bootstrapSession != null || tun2SocksActive) {
             YumeVpnRuntime.appendLog(VpnLogLevel.Info, message)
-            YumeVpnRuntime.update(
-                currentState.copy(
+            YumeVpnRuntime.update { current ->
+                current.copy(
                     phase = VpnPhase.Disconnecting,
                     headline = strings().disconnectingHeadline,
                     detail = message,
                     upstreamNetworkLabel = describeUpstreamNetwork(),
                 )
-            )
+            }
         }
         if (connectJob != null) {
             connectJob?.cancel()
         }
         stopTrafficTicker()
 
-        val session = bootstrapSession
         disconnectJob = serviceScope.launch {
-            try {
-                if (session != null && session.isAlive) {
-                    try {
-                        withContext(Dispatchers.IO) {
-                            withTimeoutOrNull(300L) {
-                                sendLifecycleUpdate(
-                                    session = session,
-                                    state = "disconnecting",
-                                    message = "im disconnecting",
-                                    detail = message,
-                                    effectiveProtection = buildEffectiveProtectionSummary(activeProfile, session.bootstrap),
-                                    trafficVerified = currentState.trafficRoutedThroughYume,
-                                    exitIp = currentState.exitIp.orEmpty(),
-                                    timeoutMs = 500,
-                                )
-                            } ?: YumeVpnRuntime.appendLog(
-                                VpnLogLevel.Info,
-                                "Skipping the disconnect lifecycle update because the authenticated Yume session did not respond quickly enough.",
-                            )
-                        }
-                    } catch (e: CancellationException) {
-                        YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Lifecycle update cancelled during disconnect")
-                    } catch (e: Throwable) {
-                        YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Lifecycle update failed during disconnect: ${e.javaClass.simpleName}")
-                    }
-                }
-            } finally {
-                lifecycleMutex.withLock {
-                    disconnectResources()
-                }
-                activeProfile = null
-                currentPresence = null
-                YumeVpnRuntime.update(
-                    VpnConnectionState(
-                        phase = VpnPhase.Idle,
-                        headline = strings().disconnectedHeadline,
-                        detail = message,
-                        upstreamNetworkLabel = describeUpstreamNetwork(),
-                    )
-                )
-                withContext(Dispatchers.Main.immediate) {
-                    runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
-                    runCatching { stopSelf() }
-                }
-                disconnectJob = null
+            lifecycleMutex.withLock {
+                disconnectResources()
             }
+            activeProfile = null
+            YumeVpnRuntime.update(
+                VpnConnectionState(
+                    phase = VpnPhase.Idle,
+                    headline = strings().disconnectedHeadline,
+                    detail = message,
+                    upstreamNetworkLabel = describeUpstreamNetwork(),
+                )
+            )
+            withContext(Dispatchers.Main.immediate) {
+                runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+                runCatching { stopSelf() }
+            }
+            disconnectJob = null
         }
     }
 
@@ -717,24 +573,26 @@ class YumeVpnService : VpnService() {
         val dataPlane = activeTechniqueDataPlane
         val session = bootstrapSession
         activeTechniqueDataPlane = null
+        bootstrapSession = null
+
+        // Tear down upper layers first (data plane + SOCKS gateway) before the
+        // session they depend on; any teardown error here is unrecoverable, so
+        // swallowing it just stops one shutdown step from cascading.
         runCatching { dataPlane?.setVerificationMode(false) }
         runCatching { socksProxy?.setStartupWarmupMode(false) }
         runCatching { socksProxy?.stop() }
         runCatching { dataPlane?.stop() }
         runCatching { configureNativeDirectTransport(enabled = false) }
-        bootstrapSession = null
         runCatching { session?.close() }
         runCatching { inFlightSocket?.close() }
         runCatching { tunInterface?.close() }
+
         inFlightSocket = null
-        tun2SocksActive = false
         tunInterface = null
         socksProxy = null
         localProxyAddress = null
-        hopCompatibilityMode = ANDROID_HOP_COMPATIBILITY_DEFAULT
-        innerCompatibilityMode = ANDROID_INNER_COMPATIBILITY_DEFAULT
+        tun2SocksActive = false
         activeTun2SocksConfig = null
-        activeTechniqueDataPlane = null
         warmupAllowedProbeHosts = emptySet()
         warmupAllowedProbeAddresses = emptySet()
         protectedSinceEpochMs = 0L
@@ -798,41 +656,19 @@ class YumeVpnService : VpnService() {
         disconnectJob?.cancel()
         disconnectJob = null
         serviceScope.launch {
-            try {
-                lifecycleMutex.withLock {
-                    disconnectResources()
-                }
-            } catch (e: Throwable) {
-                YumeVpnRuntime.appendLog(VpnLogLevel.Error, "Error during disconnect in fail(): ${e.message}")
-                runCatching { disconnectResources() }
-            }
+            runCatching { lifecycleMutex.withLock { disconnectResources() } }
+                .onFailure { YumeVpnRuntime.appendLog(VpnLogLevel.Error, "Disconnect during fail() did not complete cleanly: ${it.message}") }
         }
-        
-        currentPresence = null
         YumeVpnRuntime.appendLog(VpnLogLevel.Error, message)
-        YumeVpnRuntime.update(
-            VpnConnectionState(
+        YumeVpnRuntime.update { previous ->
+            previous.copy(
                 phase = VpnPhase.Error,
                 activeProfileId = profileId,
                 headline = strings().connectionFailedHeadline,
                 detail = message,
                 upstreamNetworkLabel = describeUpstreamNetwork(),
-                requestedProtection = YumeVpnRuntime.state.value.requestedProtection,
-                transportSummary = YumeVpnRuntime.state.value.transportSummary,
-                innerSummary = YumeVpnRuntime.state.value.innerSummary,
-                hopSummary = YumeVpnRuntime.state.value.hopSummary,
-                veritySummary = YumeVpnRuntime.state.value.veritySummary,
-                routingSummary = YumeVpnRuntime.state.value.routingSummary,
-                yumeProtocolVersion = YumeVpnRuntime.state.value.yumeProtocolVersion,
-                basefwxVersion = YumeVpnRuntime.state.value.basefwxVersion,
-                serverMode = YumeVpnRuntime.state.value.serverMode,
-                serverVersion = YumeVpnRuntime.state.value.serverVersion,
-                peerCertificateFingerprint = YumeVpnRuntime.state.value.peerCertificateFingerprint,
-                exitIp = YumeVpnRuntime.state.value.exitIp,
-                relaySummary = YumeVpnRuntime.state.value.relaySummary,
-                localProxyAddress = YumeVpnRuntime.state.value.localProxyAddress,
             )
-        )
+        }
         activeProfile = null
         serviceScope.launch {
             withContext(Dispatchers.Main.immediate) {
@@ -864,28 +700,9 @@ class YumeVpnService : VpnService() {
                     }
                 },
                 requireAnonymProof = profile.requireAnonymProof,
-                preferHopRequested = !hopCompatibilityMode,
-                allowInnerProtection = !innerCompatibilityMode,
                 transportTuning = currentTun2SocksConfig().toBootstrapTuning(),
                 log = { message -> YumeVpnRuntime.appendLog(VpnLogLevel.Info, message) },
             )
-        } catch (throwable: Exception) {
-            if (shouldRetryWithHop(throwable)) {
-                hopCompatibilityMode = false
-                YumeVpnRuntime.appendLog(
-                    VpnLogLevel.Warn,
-                    "Server requires inner hopping for ${profile.endpointLabel}. Reconnecting with hopping enabled for this Android Yume session.",
-                )
-                ensureSessionActive(generation)
-                return reconnectBootstrapSession(
-                    profile = profile,
-                    anonymCaPem = anonymCaPem,
-                    authKeyPem = authKeyPem,
-                    reason = "Reopening authenticated Yume control path with inner hopping enabled",
-                    generation = generation,
-                )
-            }
-            throw throwable
         } finally {
             inFlightSocket = null
         }
@@ -894,18 +711,6 @@ class YumeVpnService : VpnService() {
             VpnLogLevel.Info,
             "Authenticated control path is active over ${describeUpstreamNetwork()} (${session.bootstrap.tlsProtocol}).",
         )
-        if (hopCompatibilityMode) {
-            YumeVpnRuntime.appendLog(
-                VpnLogLevel.Warn,
-                "Android compatibility mode is active: inner crypto hopping is disabled for this Yume session.",
-            )
-        }
-        if (innerCompatibilityMode) {
-            YumeVpnRuntime.appendLog(
-                VpnLogLevel.Warn,
-                "Android compatibility mode is active: session-side inner crypto is disabled for this Yume session after a prior corruption-style reset.",
-            )
-        }
         return session
     }
 
@@ -976,192 +781,13 @@ class YumeVpnService : VpnService() {
         }
     }
 
-    private suspend fun announcePresence(
-        session: YumeBootstrapSession,
-        profile: ServerProfile,
-    ): YumePresenceInfo {
-        val preferredName = androidClientName(profile)
-        val response = session.sendControlRequest(
-            JSONObject()
-                .put("cmd", "presence.announce")
-                .put("endpoint_kind", "client")
-                .put("preferred_name", preferredName)
-                .put("hostname", "${Build.MANUFACTURER} ${Build.MODEL}".trim())
-                .put("client_platform", "android")
-                .put("client_variant", "android_vpn")
-                .put("client_version", BuildConfig.VERSION_NAME)
-                .put("relay_mode", "untrusted")
-                .put("allow_chat", false)
-                .put("allow_file", false)
-                .put("allow_bytes", false)
-                .put("allow_inbound_admin", false)
-                .put("allow_outbound_admin", false),
-            timeoutMs = 2_000,
-        )
-        if (!response.optBoolean("ok")) {
-            throw YumeBootstrapException(response.optString("error", "presence announce failed"))
-        }
-        val endpoint = response.optJSONObject("endpoint")
-            ?: throw YumeBootstrapException("The Yume server did not return presence endpoint info")
-        val info = YumePresenceInfo(
-            endpointId = endpoint.optString("endpoint_id").trim(),
-            displayName = endpoint.optString("display_name").trim().ifBlank { preferredName },
-            serverId = response.optString("server_id").trim(),
-            serverName = response.optString("server_name").trim(),
-        )
-        YumeVpnRuntime.update { state ->
-            state.copy(
-                clientPlatform = "android",
-                clientVariant = "android_vpn",
-                clientVersion = BuildConfig.VERSION_NAME,
-            )
-        }
-        return info
-    }
-
-    private suspend fun registerMetadataChannel(
-        session: YumeBootstrapSession,
-        profile: ServerProfile,
-        anonymCaPem: String,
-        authKeyPem: String,
-        generation: Long,
-    ): YumeBootstrapSession {
-        if (!metadataChannelEnabled) {
-            currentPresence = syntheticPresence(profile)
-            return session
-        }
-        return try {
-            currentPresence = announcePresence(session, profile)
-            session
-        } catch (throwable: Exception) {
-            if (shouldRetryWithoutHop(session, throwable)) {
-                val reopened = reopenWithHopCompatibility(
-                    profile = profile,
-                    anonymCaPem = anonymCaPem,
-                    authKeyPem = authKeyPem,
-                    generation = generation,
-                    reason = "Presence announce closed the hopped Yume session",
-                )
-                return registerMetadataChannel(
-                    session = reopened,
-                    profile = profile,
-                    anonymCaPem = anonymCaPem,
-                    authKeyPem = authKeyPem,
-                    generation = generation,
-                )
-            }
-            metadataChannelEnabled = false
-            currentPresence = syntheticPresence(profile)
-            YumeVpnRuntime.appendLog(
-                VpnLogLevel.Warn,
-                "Presence announce failed: ${throwable.message ?: "unknown error"}. Reopening the Yume session without the metadata channel.",
-            )
-            reopenWithoutMetadataChannel(
-                session = session,
-                profile = profile,
-                anonymCaPem = anonymCaPem,
-                authKeyPem = authKeyPem,
-                generation = generation,
-                reason = "Reopening authenticated Yume control path without metadata channel",
-            )
-        }
-    }
-
-    private fun syntheticPresence(profile: ServerProfile): YumePresenceInfo {
-        return YumePresenceInfo(
-            endpointId = "",
-            displayName = androidClientName(profile),
-            serverId = "",
-            serverName = profile.serverName,
-        )
-    }
-
-    private suspend fun sendLifecycleUpdate(
-        session: YumeBootstrapSession,
-        state: String,
-        message: String,
-        detail: String = "",
-        effectiveProtection: String = "",
-        trafficVerified: Boolean = false,
-        exitIp: String = "",
-        errorCode: String = "",
-        timeoutMs: Int = 1_500,
-    ): YumeLifecycleAck? {
-        if (!metadataChannelEnabled) {
-            return null
-        }
-        val response = try {
-            session.sendControlRequest(
-                JSONObject()
-                    .put("cmd", "client.lifecycle")
-                    .put("state", state)
-                    .put("message", message)
-                    .put("detail", detail)
-                    .put("client_platform", "android")
-                    .put("client_variant", "android_vpn")
-                    .put("client_version", BuildConfig.VERSION_NAME)
-                    .put("effective_protection", effectiveProtection)
-                    .put("traffic_verified", trafficVerified)
-                    .put("exit_ip", exitIp)
-                    .put("error_code", errorCode),
-                timeoutMs = timeoutMs,
-            )
-        } catch (throwable: Exception) {
-            metadataChannelEnabled = false
-            activeProfile?.let { profile ->
-                currentPresence = syntheticPresence(profile)
-            }
-            logLifecycleUnsupportedOnce(throwable.message ?: "lifecycle request failed")
-            return null
-        }
-        if (!response.optBoolean("ok")) {
-            val error = response.optString("error", "lifecycle update failed")
-            if (error == "unknown control command") {
-                logLifecycleUnsupportedOnce(error)
-                return null
-            }
-            throw YumeBootstrapException(error)
-        }
-        val ack = YumeLifecycleAck(
-            acceptedState = response.optString("accepted_state").trim().ifBlank { state },
-            serverTimeMs = response.optLong("server_time_ms", 0L),
-        )
-        YumeVpnRuntime.update { current ->
-            current.copy(
-                latestLifecycleState = ack.acceptedState,
-                latestLifecycleMessage = message,
-                latestLifecycleAckMs = ack.serverTimeMs,
-            )
-        }
-        return ack
-    }
-
-    private fun logLifecycleUnsupportedOnce(reason: String) {
-        if (lifecycleUnsupportedLogged) {
-            return
-        }
-        lifecycleUnsupportedLogged = true
-        YumeVpnRuntime.appendLog(VpnLogLevel.Warn, "Server lifecycle notifications unavailable: $reason.")
-    }
-
     private suspend fun requireVerifiedRelayCanary(
         session: YumeBootstrapSession,
-        bootstrap: com.fixcraft.yume.transport.YumeServerBootstrap,
+        @Suppress("UNUSED_PARAMETER") bootstrap: com.fixcraft.yume.transport.YumeServerBootstrap,
         relayExitIpResult: Result<String>,
     ): String {
         val exitIp = relayExitIpResult.getOrElse { throwable ->
             val detail = describeRelayProbeFailure(session, throwable)
-            runCatching {
-                sendLifecycleUpdate(
-                    session = session,
-                    state = "error",
-                    message = "error, disconnect",
-                    detail = detail,
-                    effectiveProtection = buildEffectiveProtectionSummary(activeProfile, bootstrap),
-                    errorCode = "relay_probe_failed",
-                    timeoutMs = 1_200,
-                )
-            }
             throw YumeBootstrapException(
                 "Failed to verify app relay traffic before starting the Android tunnel: $detail",
                 throwable,
@@ -1172,170 +798,11 @@ class YumeVpnService : VpnService() {
                 session,
                 YumeBootstrapException("The authenticated Yume session became unavailable during the relay canary"),
             )
-            runCatching {
-                sendLifecycleUpdate(
-                    session = session,
-                    state = "error",
-                    message = "error, disconnect",
-                    detail = detail,
-                    effectiveProtection = buildEffectiveProtectionSummary(activeProfile, bootstrap),
-                    errorCode = "relay_session_unavailable",
-                    timeoutMs = 1_200,
-                )
-            }
             throw YumeBootstrapException(
                 "Authenticated Yume relay session became unavailable before Android tunnel startup: $detail",
             )
         }
         return exitIp
-    }
-
-    private suspend fun probeRelayCanaryWithCompatibilityFallback(
-        session: YumeBootstrapSession,
-        profile: ServerProfile,
-        anonymCaPem: String,
-        authKeyPem: String,
-        generation: Long,
-    ): Pair<YumeBootstrapSession, Result<String>> {
-        var liveSession = session
-        var relayExitIpResult = probeExitIp()
-        if (shouldRetryWithoutHop(liveSession, relayExitIpResult.exceptionOrNull())) {
-            liveSession = reopenWithHopCompatibility(
-                profile = profile,
-                anonymCaPem = anonymCaPem,
-                authKeyPem = authKeyPem,
-                generation = generation,
-                reason = "Relay canary closed the hopped Yume session",
-            )
-            liveSession = registerMetadataChannel(
-                session = liveSession,
-                profile = profile,
-                anonymCaPem = anonymCaPem,
-                authKeyPem = authKeyPem,
-                generation = generation,
-            )
-            bootstrapSession = liveSession
-            relayExitIpResult = probeExitIp()
-        }
-        if (shouldRetryFreshSession(liveSession, relayExitIpResult.exceptionOrNull())) {
-            YumeVpnRuntime.appendLog(
-                VpnLogLevel.Warn,
-                "Relay canary failed on the current Yume session. Reopening a fresh authenticated Yume session and retrying the relay canary without the metadata channel.",
-            )
-            liveSession = reopenWithoutMetadataChannel(
-                session = liveSession,
-                profile = profile,
-                anonymCaPem = anonymCaPem,
-                authKeyPem = authKeyPem,
-                generation = generation,
-                reason = "Reopening authenticated Yume control path after relay canary failure",
-            )
-            bootstrapSession = liveSession
-            relayExitIpResult = probeExitIp()
-        }
-        return liveSession to relayExitIpResult
-    }
-
-    private fun shouldRetryWithoutHop(
-        session: YumeBootstrapSession,
-        throwable: Throwable?,
-    ): Boolean {
-        if (hopCompatibilityMode || !session.bootstrap.hopEnabled) {
-            return false
-        }
-        val detail = buildRelayRetryDetail(session, throwable)
-        return detail.contains("reached eof while reading yume frame") ||
-            detail.contains("bad record mac") ||
-            detail.contains("sslv3_alert_bad_record_mac") ||
-            detail.contains("stream truncated") ||
-            detail.contains("protocol error") ||
-            detail.contains("the authenticated yume session is unavailable") ||
-            detail.contains("failed to open a yume tcp stream")
-    }
-
-    private fun shouldRetryFreshSession(
-        session: YumeBootstrapSession,
-        throwable: Throwable?,
-    ): Boolean {
-        val detail = buildRelayRetryDetail(session, throwable)
-        return detail.contains("reached eof while reading yume frame") ||
-            detail.contains("the authenticated yume session is unavailable") ||
-            detail.contains("failed to open a yume tcp stream")
-    }
-
-    private fun shouldRetryWithHop(
-        throwable: Throwable?,
-    ): Boolean {
-        if (!hopCompatibilityMode) {
-            return false
-        }
-        val detail = buildThrowableDetail(throwable)
-        return detail.contains("requires hopping")
-    }
-
-    private fun buildRelayRetryDetail(
-        session: YumeBootstrapSession,
-        throwable: Throwable?,
-    ): String {
-        val parts = linkedSetOf<String>()
-        generateSequence(throwable) { current -> current.cause }
-            .mapNotNull { current -> current.message?.trim()?.takeIf { it.isNotEmpty() } }
-            .forEach(parts::add)
-        session.closeReason?.trim()?.takeIf { it.isNotEmpty() }?.let(parts::add)
-        return parts.joinToString(" ").lowercase(Locale.ROOT)
-    }
-
-    private fun buildThrowableDetail(throwable: Throwable?): String {
-        return generateSequence(throwable) { current -> current.cause }
-            .mapNotNull { current -> current.message?.trim()?.takeIf { it.isNotEmpty() } }
-            .joinToString(" ")
-            .lowercase(Locale.US)
-    }
-
-    private suspend fun reopenWithHopCompatibility(
-        profile: ServerProfile,
-        anonymCaPem: String,
-        authKeyPem: String,
-        generation: Long,
-        reason: String,
-    ): YumeBootstrapSession {
-        hopCompatibilityMode = true
-        runCatching { bootstrapSession?.close() }
-        bootstrapSession = null
-        YumeVpnRuntime.appendLog(
-            VpnLogLevel.Warn,
-            "$reason. Reconnecting once with inner hopping disabled for Android compatibility.",
-        )
-        ensureSessionActive(generation)
-        return reconnectBootstrapSession(
-            profile = profile,
-            anonymCaPem = anonymCaPem,
-            authKeyPem = authKeyPem,
-            reason = "Reopening authenticated Yume control path with inner hopping disabled",
-            generation = generation,
-        )
-    }
-
-    private suspend fun reopenWithoutMetadataChannel(
-        session: YumeBootstrapSession,
-        profile: ServerProfile,
-        anonymCaPem: String,
-        authKeyPem: String,
-        generation: Long,
-        reason: String,
-    ): YumeBootstrapSession {
-        metadataChannelEnabled = false
-        currentPresence = syntheticPresence(profile)
-        runCatching { session.close() }
-        bootstrapSession = null
-        ensureSessionActive(generation)
-        return reconnectBootstrapSession(
-            profile = profile,
-            anonymCaPem = anonymCaPem,
-            authKeyPem = authKeyPem,
-            reason = reason,
-            generation = generation,
-        )
     }
 
     private fun buildVpnInterface(profile: ServerProfile): ParcelFileDescriptor? {
@@ -1567,12 +1034,9 @@ class YumeVpnService : VpnService() {
     }
 
     private suspend fun verifySystemTrafficFlow(
-        profile: ServerProfile,
-        bootstrap: com.fixcraft.yume.transport.YumeServerBootstrap,
         relayExitIpResult: Result<String>,
         proxyAddress: String,
         resolvedProbeTargets: List<ResolvedProbeTarget>,
-        session: YumeBootstrapSession,
         generation: Long,
     ): RouteVerificationResult {
         ensureSessionActive(generation)
@@ -1628,15 +1092,6 @@ class YumeVpnService : VpnService() {
         } else {
             YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Verified Yume traffic via $verificationSource. Exit IP: $routedExitIp.")
         }
-        sendLifecycleUpdate(
-            session = session,
-            state = "traffic_flowing",
-            message = if (verified) "success, traffic flowing" else "connected (probe skipped)",
-            detail = strings().systemwideRoutingActiveDetail,
-            effectiveProtection = buildEffectiveProtectionSummary(profile, bootstrap),
-            trafficVerified = verified,
-            exitIp = routedExitIp.orEmpty(),
-        )
         return RouteVerificationResult(
             exitIp = routedExitIp,
             systemTrafficVerified = verified,
@@ -1693,12 +1148,9 @@ class YumeVpnService : VpnService() {
         setTechniqueVerificationMode(true)
         val initialVerification = runCatching {
             verifySystemTrafficFlow(
-                profile = profile,
-                bootstrap = bootstrap,
                 relayExitIpResult = verifiedRelayExitIpResult,
                 proxyAddress = routeLabel,
                 resolvedProbeTargets = systemProbeTargets,
-                session = session,
                 generation = generation,
             )
         }.getOrElse { throwable ->
@@ -1816,41 +1268,6 @@ class YumeVpnService : VpnService() {
         }
     }
 
-    private fun maybeEnableInnerCompatibilityForCorruption(
-        session: YumeBootstrapSession?,
-        detail: String,
-    ): Boolean {
-        if (session == null || innerCompatibilityMode || !session.bootstrap.innerActive) {
-            return false
-        }
-        if (!isCorruptionStyleControlLoss(detail)) {
-            return false
-        }
-        innerCompatibilityMode = true
-        YumeVpnRuntime.appendLog(
-            VpnLogLevel.Warn,
-            "Authenticated Yume control path showed Android corruption symptoms ($detail). Reopening with session-side inner crypto disabled to keep the VPN stable.",
-        )
-        return true
-    }
-
-    private fun isCorruptionStyleControlLoss(detail: String): Boolean {
-        val normalized = detail.trim().lowercase(Locale.US)
-        if (normalized.isEmpty()) {
-            return false
-        }
-        return normalized.contains("bad_record_mac") ||
-            normalized.contains("bad record mac") ||
-            normalized.contains("failure in ssl library") ||
-            normalized.contains("ssl/tls read error") ||
-            normalized.contains("ssl/tls write error") ||
-            normalized.contains("frame validation failed") ||
-            normalized.contains("invalid frame type") ||
-            normalized.contains("frame too large") ||
-            normalized.contains("ssl stream may be corrupted") ||
-            normalized.contains("likely corrupted")
-    }
-
     private fun buildEffectiveProtectionSummary(
         profile: ServerProfile?,
         bootstrap: com.fixcraft.yume.transport.YumeServerBootstrap,
@@ -1868,7 +1285,7 @@ class YumeVpnService : VpnService() {
         val kdf = bootstrap.innerKdf?.replaceFirstChar { char ->
             if (char.isLowerCase()) char.titlecase() else char.toString()
         } ?: if (bootstrap.capArgon2) "Argon2" else if (bootstrap.capPbkdf2) "PBKDF2" else "server default KDF"
-        return if (bootstrap.hopEnabled && !hopCompatibilityMode) {
+        return if (bootstrap.hopEnabled) {
             "$innerTarget + hop over $port ($kdf)${httpsMaskingSuffix(profile)}"
         } else {
             "$innerTarget over $port ($kdf)${httpsMaskingSuffix(profile)}"
@@ -2175,7 +1592,7 @@ class YumeVpnService : VpnService() {
         bootstrap: com.fixcraft.yume.transport.YumeServerBootstrap,
     ): String {
         val port = profile?.port ?: 443
-        if (innerCompatibilityMode || !bootstrap.innerSupported || !bootstrap.capPq) {
+        if (!bootstrap.innerSupported || !bootstrap.capPq) {
             return "TLS over $port${httpsMaskingSuffix(profile)}"
         }
         val innerTarget = when {
@@ -2189,7 +1606,7 @@ class YumeVpnService : VpnService() {
             bootstrap.capPbkdf2 -> "PBKDF2"
             else -> "server default KDF"
         }
-        return if (bootstrap.hopEnabled && !hopCompatibilityMode) {
+        return if (bootstrap.hopEnabled) {
             "$innerTarget + hop over $port ($kdfTarget)${httpsMaskingSuffix(profile)}"
         } else {
             "$innerTarget over $port ($kdfTarget)${httpsMaskingSuffix(profile)}"
@@ -2231,9 +1648,6 @@ class YumeVpnService : VpnService() {
     }
 
     private fun buildHopSummary(bootstrap: com.fixcraft.yume.transport.YumeServerBootstrap): String {
-        if (hopCompatibilityMode) {
-            return "Hop off"
-        }
         if (!bootstrap.hopEnabled) {
             return "Hop off"
         }
@@ -2851,8 +2265,6 @@ class YumeVpnService : VpnService() {
         private const val LOOPBACK_HOST = "127.0.0.1"
         private const val CONNECT_TIMEOUT_MS = 5_000
         private const val MAX_SYSTEM_PROBE_RESPONSE_BYTES = 32 * 1024
-        private const val ANDROID_HOP_COMPATIBILITY_DEFAULT = false
-        private const val ANDROID_INNER_COMPATIBILITY_DEFAULT = false
         private const val EXCLUDE_YUME_APP_FROM_ANDROID_VPN = false
         private const val CAPTURE_IPV6_IN_ANDROID_VPN = false
         private const val VPN_IPV4_PREFIX_LENGTH = 24

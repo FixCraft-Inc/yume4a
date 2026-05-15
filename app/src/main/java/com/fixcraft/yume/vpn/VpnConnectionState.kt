@@ -53,9 +53,6 @@ data class VpnConnectionState(
     val exitIp: String? = null,
     val relaySummary: String = "Idle",
     val localProxyAddress: String? = null,
-    val latestLifecycleState: String? = null,
-    val latestLifecycleMessage: String? = null,
-    val latestLifecycleAckMs: Long? = null,
     val eventLog: List<VpnLogEntry> = emptyList(),
 ) {
     val briefStatus: String

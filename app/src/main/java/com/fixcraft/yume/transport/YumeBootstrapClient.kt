@@ -142,18 +142,6 @@ data class YumeServerBootstrap(
     val serverTimeMs: Long,
 )
 
-data class YumePresenceInfo(
-    val endpointId: String,
-    val displayName: String,
-    val serverId: String,
-    val serverName: String,
-)
-
-data class YumeLifecycleAck(
-    val acceptedState: String,
-    val serverTimeMs: Long,
-)
-
 private interface YumeInboundStream {
     val streamId: Int
     val isClosed: Boolean

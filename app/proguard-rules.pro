@@ -1,21 +1,62 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# Stack traces from production crashes need to be deobfuscatable.
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# JNI: anything reachable from native code must keep its name and signature.
+-keepclasseswithmembernames,includedescriptorclasses class * {
+    native <methods>;
+}
+-keep class com.fixcraft.yume.transport.YumeNativeTransport { *; }
+-keep class com.fixcraft.yume.tunnel.YumeTunnelBridge { *; }
+-keep class com.fixcraft.yume.vpn.NativeDirectPacketEngine { *; }
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Vault/JSON storage uses class names to round-trip enums and sealed values.
+-keepclassmembers enum * { *; }
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# BouncyCastle reflective lookups by algorithm name. R8 cannot trace strings
+# like "Ed25519"/"Argon2"/"Kyber"; without keep rules the provider crashes at
+# runtime trying to load the engines.
+-keep class org.bouncycastle.jcajce.provider.** { *; }
+-keep class org.bouncycastle.jce.provider.BouncyCastleProvider { *; }
+-keep class org.bouncycastle.pqc.jcajce.provider.BouncyCastlePQCProvider { *; }
+-keep class org.bouncycastle.pqc.crypto.crystals.kyber.** { *; }
+-keep class org.bouncycastle.crypto.generators.Argon2BytesGenerator { *; }
+-keep class org.bouncycastle.crypto.params.Argon2Parameters { *; }
+-keep class org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters { *; }
+-keep class org.bouncycastle.crypto.util.** { *; }
+-keep class org.bouncycastle.openssl.** { *; }
+-keep class org.bouncycastle.asn1.** { *; }
+-dontwarn org.bouncycastle.**
+-dontnote org.bouncycastle.**
+
+# Conscrypt is auto-discovered via Provider SPI from META-INF/services.
+-keep class org.conscrypt.** { *; }
+-dontwarn org.conscrypt.**
+
+# ML Kit / Firebase use ComponentRegistrar discovered through MlKitInitProvider
+# at startup. R8 sees no direct call site for the no-arg ctor and strips it,
+# which yields NoSuchMethodException on app launch. Keep every Registrar's
+# default constructor (and the registrar classes themselves).
+-keep class * implements com.google.firebase.components.ComponentRegistrar {
+    public <init>();
+}
+-keep class com.google.firebase.components.ComponentRegistrar { *; }
+-keep class com.google.mlkit.common.internal.** { *; }
+-keep class com.google.mlkit.common.sdkinternal.** { *; }
+-keep class com.google.mlkit.nl.translate.internal.** { *; }
+-keep class com.google.mlkit.nl.translate.** { *; }
+
+# Play Services Tasks framework: ML Kit walks Task callbacks reflectively.
+-keep class com.google.android.gms.tasks.** { *; }
+
+-dontwarn com.google.android.gms.**
+-dontwarn com.google.mlkit.**
+-dontwarn com.google.firebase.**
+
+# Kotlin coroutines internals reachable from suspending lambdas.
+-keepclassmembers class kotlinx.coroutines.** { volatile <fields>; }
+-dontwarn kotlinx.coroutines.debug.**
+
+# Compose runtime / serialization helpers can have synthetic accessors that
+# are only entered via inlined call sites; keep all of them by default.
+-dontwarn androidx.compose.**

@@ -6,17 +6,13 @@ plugins {
 }
 
 fun readQuotedConstant(file: java.io.File, name: String, fallback: String): String {
-    if (!file.isFile) {
-        return fallback
-    }
+    if (!file.isFile) return fallback
     val pattern = Regex("""$name(?:\[\])?\s*=\s*"([^"]+)"""")
     return pattern.find(file.readText())?.groupValues?.get(1) ?: fallback
 }
 
 fun readTrimmedFile(file: java.io.File, fallback: String): String {
-    if (!file.isFile) {
-        return fallback
-    }
+    if (!file.isFile) return fallback
     return file.readText().trim().ifEmpty { fallback }
 }
 
@@ -74,9 +70,6 @@ android {
         buildConfigField("String", "YUME_PROTOCOL_VERSION", "\"$yumeProtocolVersion\"")
         buildConfigField("String", "BASEFWX_ENGINE_VERSION", "\"$basefwxEngineVersion\"")
         buildConfigField("String", "YUME_PROTECTION_POLICY", "\"Auto (highest available)\"")
-        // Tun2Socks remains the default release path. Native-direct stays
-        // user-selectable as a beta transport so it can be tested without
-        // silently changing existing users away from the stable backend.
         buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "true")
         buildConfigField(
             "String",
@@ -85,9 +78,21 @@ android {
         )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
 
-        ndk {
-            abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64"))
+    val requestedAbis = (project.findProperty("yumeAbi") as? String)
+        ?.split(',')
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?.takeIf { it.isNotEmpty() }
+        ?: listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include(*requestedAbis.toTypedArray())
+            isUniversalApk = false
         }
     }
 
@@ -103,11 +108,43 @@ android {
         }
         release {
             buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "true")
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+    }
+
+    packaging {
+        resources {
+            excludes += listOf(
+                "META-INF/*.kotlin_module",
+                "META-INF/AL2.0",
+                "META-INF/LGPL2.1",
+                "META-INF/*.version",
+                "META-INF/proguard/*",
+                "META-INF/maven/**",
+                "META-INF/androidx/**/LICENSE.txt",
+                "META-INF/*.SF",
+                "META-INF/*.DSA",
+                "META-INF/*.RSA",
+                "DebugProbesKt.bin",
+                "kotlin/**.kotlin_metadata",
+                "kotlin-tooling-metadata.json",
+                "**/*.kotlin_builtins",
+                "**/*.proto",
+                // BouncyCastle PQC algorithms we never instantiate. The classes
+                // themselves get stripped by R8; these blobs need an explicit
+                // exclude because they live under org/bouncycastle/ as resources.
+                "org/bouncycastle/pqc/crypto/picnic/lowmcL*.bin.properties",
+                "org/bouncycastle/x509/CertPathReviewerMessages_de.properties",
+                "org/bouncycastle/pkix/CertPathReviewerMessages_de.properties",
+            )
+        }
+        jniLibs {
+            useLegacyPackaging = false
         }
     }
 
@@ -123,9 +160,20 @@ android {
 
     sourceSets {
         getByName("main") {
-            java.setSrcDirs(listOf(basefwxJavaOutputDir.get().asFile))
-            resources.setSrcDirs(listOf(basefwxJavaResourcesOutputDir.get().asFile))
+            java.directories.apply {
+                clear()
+                add(basefwxJavaOutputDir.get().asFile.absolutePath)
+            }
+            resources.directories.apply {
+                clear()
+                add(basefwxJavaResourcesOutputDir.get().asFile.absolutePath)
+            }
         }
+    }
+
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 }
 
