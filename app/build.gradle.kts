@@ -37,6 +37,19 @@ val syncBasefwxJava by tasks.registering(Sync::class) {
         include("com/fixcraft/basefwx/Constants.java")
         include("com/fixcraft/basefwx/Format.java")
         include("com/fixcraft/basefwx/VersionInfo.java")
+        // basefwx 3.6.4 introduced an optional native AES-GCM dispatch in
+        // Crypto.aesGcm{Encrypt,Decrypt}WithIvInto that references the
+        // CryptoBackend abstraction. Pull those helper classes in so the
+        // app compiles. At runtime, NativeCryptoBackend.tryCreate() returns
+        // null because libbasefwxcrypto.so isn't shipped with the APK, so
+        // the JCA path runs exactly like it did pre-3.6.4 — no behavior
+        // change on Android.
+        include("com/fixcraft/basefwx/CryptoBackend.java")
+        include("com/fixcraft/basefwx/CryptoBackends.java")
+        include("com/fixcraft/basefwx/JavaCryptoBackend.java")
+        include("com/fixcraft/basefwx/NativeCryptoBackend.java")
+        include("com/fixcraft/basefwx/NativeLibraryLoader.java")
+        include("com/fixcraft/basefwx/RuntimeLog.java")
     }
     into(basefwxJavaOutputDir)
 }
