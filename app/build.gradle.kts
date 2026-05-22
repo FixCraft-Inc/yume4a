@@ -50,6 +50,28 @@ val syncBasefwxJava by tasks.registering(Sync::class) {
         include("com/fixcraft/basefwx/NativeCryptoBackend.java")
         include("com/fixcraft/basefwx/NativeLibraryLoader.java")
         include("com/fixcraft/basefwx/RuntimeLog.java")
+        // 3.7.x sync expansion: BaseFwx.java became syncable after the
+        // image-carrier API was split out into BaseFwxImage.java (which
+        // pulls in java.awt — desktop-only). With BaseFwx now AWT-clean,
+        // we can stop duplicating its crypto logic inside the Android
+        // BaseFwxCompat.kt shadow class and route directly to the synced
+        // classes. The transitively-reachable dependencies of BaseFwx are
+        // included below.
+        //
+        // What stays desktop-only and is NOT synced:
+        //   BaseFwxImage.java       (java.awt for PNG carrier codec)
+        //   MediaCipher.java        (java.awt for jmg image cipher)
+        //   FwxAESJNI.java          (JNI bridge to a .so not in the APK)
+        //   FwxAESBenchmark.java    (CLI bench tool)
+        //   cli/* (CLI entry points; java.awt + filesystem deps)
+        include("com/fixcraft/basefwx/BaseFwx.java")
+        include("com/fixcraft/basefwx/FwxAES.java")
+        include("com/fixcraft/basefwx/FwxAESPureJava.java")
+        include("com/fixcraft/basefwx/KeyWrap.java")
+        include("com/fixcraft/basefwx/PQ.java")
+        include("com/fixcraft/basefwx/EcKeys.java")
+        include("com/fixcraft/basefwx/LiveCipher.java")
+        include("com/fixcraft/basefwx/UnsupportedKdfException.java")
     }
     into(basefwxJavaOutputDir)
 }
