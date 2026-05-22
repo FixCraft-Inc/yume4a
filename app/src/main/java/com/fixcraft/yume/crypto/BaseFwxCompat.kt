@@ -1,6 +1,7 @@
 package com.fixcraft.yume.crypto
 
 import com.fixcraft.basefwx.Base64Codec
+import com.fixcraft.basefwx.BaseFwx
 import com.fixcraft.basefwx.Codec
 import com.fixcraft.basefwx.Constants
 import com.fixcraft.basefwx.Crypto
@@ -16,90 +17,24 @@ internal object BaseFwxCompat {
         val extension: String,
     )
 
-    private data class MaskKeyPackage(
-        val maskKey: ByteArray,
-        val userBlob: ByteArray,
-    )
+    // 3.7.x: delegate to the synced BaseFwx Java codec instead of
+    // re-implementing the AEAD pipeline. The wire format and constants
+    // are identical (both go through Crypto.aesGcm*WithIvInto + PBKDF2
+    // with Constants.FWXAES_*), so existing blobs decrypt unchanged
+    // and newly-produced blobs are bit-compatible with everything that
+    // already understands fwxAES on the wire.
+    fun fwxAesEncryptRaw(plaintext: ByteArray, password: String): ByteArray =
+        BaseFwx.fwxAesEncryptRaw(plaintext, password, false)
 
-    fun fwxAesEncryptRaw(plaintext: ByteArray, password: String): ByteArray {
-        val passwordBytes = passwordBytes(password, required = true)
-        val iv = Crypto.randomBytes(Constants.FWXAES_IV_LEN)
-        val salt = Crypto.randomBytes(Constants.FWXAES_SALT_LEN)
-        val iterations = fwxAesIterations(passwordBytes)
-        val key = Crypto.pbkdf2HmacSha256(passwordBytes, salt, iterations, Constants.FWXAES_KEY_LEN)
-        val ciphertextLength = plaintext.size + Constants.AEAD_TAG_LEN
-        val output = ByteArray(16 + salt.size + iv.size + ciphertextLength)
-        System.arraycopy(Constants.FWXAES_MAGIC, 0, output, 0, Constants.FWXAES_MAGIC.size)
-        output[4] = Constants.FWXAES_ALGO.toByte()
-        output[5] = Constants.FWXAES_KDF_PBKDF2.toByte()
-        output[6] = Constants.FWXAES_SALT_LEN.toByte()
-        output[7] = Constants.FWXAES_IV_LEN.toByte()
-        writeU32(output, 8, iterations)
-        writeU32(output, 12, ciphertextLength)
-        var offset = 16
-        System.arraycopy(salt, 0, output, offset, salt.size)
-        offset += salt.size
-        System.arraycopy(iv, 0, output, offset, iv.size)
-        offset += iv.size
-        val written = Crypto.aesGcmEncryptWithIvInto(
-            key,
-            iv,
-            plaintext,
-            0,
-            plaintext.size,
-            output,
-            offset,
-            Constants.FWXAES_AAD,
-        )
-        check(written == ciphertextLength) { "fwxAES encrypt length mismatch" }
-        return output
-    }
+    fun fwxAesDecryptRaw(blob: ByteArray, password: String): ByteArray =
+        BaseFwx.fwxAesDecryptRaw(blob, password, false)
 
+    // Small structural check, no BaseFwx equivalent — keep as a local
+    // utility so callers (AuthKeyImportResolver) can probe a blob's
+    // shape without paying the cost of a decrypt attempt.
     fun looksLikeRawFwxAes(blob: ByteArray): Boolean {
         return blob.size >= Constants.FWXAES_MAGIC.size &&
             blob.copyOfRange(0, Constants.FWXAES_MAGIC.size).contentEquals(Constants.FWXAES_MAGIC)
-    }
-
-    fun fwxAesDecryptRaw(blob: ByteArray, password: String): ByteArray {
-        val passwordBytes = passwordBytes(password, required = true)
-        require(blob.size >= 16) { "fwxAES blob too short" }
-        require(looksLikeRawFwxAes(blob)) {
-            "fwxAES bad magic"
-        }
-        val algorithm = blob[4].toInt() and 0xFF
-        val kdf = blob[5].toInt() and 0xFF
-        val saltLength = blob[6].toInt() and 0xFF
-        val ivLength = blob[7].toInt() and 0xFF
-        require(algorithm == Constants.FWXAES_ALGO && kdf == Constants.FWXAES_KDF_PBKDF2) {
-            "fwxAES unsupported algo"
-        }
-        val iterations = readU32(blob, 8)
-        val ciphertextLength = readU32(blob, 12)
-        val expectedLength = 16 + saltLength + ivLength + ciphertextLength
-        require(blob.size >= expectedLength) { "fwxAES blob truncated" }
-        var offset = 16
-        val salt = blob.copyOfRange(offset, offset + saltLength)
-        offset += saltLength
-        val iv = blob.copyOfRange(offset, offset + ivLength)
-        offset += ivLength
-        val key = Crypto.pbkdf2HmacSha256(
-            passwordBytes,
-            salt,
-            hardenPbkdf2Iterations(passwordBytes, iterations),
-            Constants.FWXAES_KEY_LEN,
-        )
-        val plaintext = ByteArray(max(0, ciphertextLength - Constants.AEAD_TAG_LEN))
-        val written = Crypto.aesGcmDecryptWithIvInto(
-            key,
-            iv,
-            blob,
-            offset,
-            ciphertextLength,
-            plaintext,
-            0,
-            Constants.FWXAES_AAD,
-        )
-        return if (written == plaintext.size) plaintext else plaintext.copyOf(max(0, written))
     }
 
     fun fwxAesEncryptText(input: String, password: String): String {
@@ -136,57 +71,22 @@ internal object BaseFwxCompat {
         return String(decryptAesPayloadBytes(blob, password), StandardCharsets.UTF_8)
     }
 
-    fun b512Encode(input: String, password: String): String {
-        val packageData = prepareMaskKeyPackage(
-            passwordBytes = passwordBytes(password, required = true),
-            aad = Constants.MASK_AAD_B512,
-            defaultIterations = Constants.USER_KDF_ITERATIONS,
-        )
-        val blob = encodeMaskedPayloadBytes(
-            maskKey = packageData.maskKey,
-            userBlob = packageData.userBlob,
-            plain = input.toByteArray(StandardCharsets.UTF_8),
-            streamInfo = Constants.B512_STREAM_INFO,
-        )
-        return encodePayloadString(blob)
-    }
+    // 3.7.x: delegate to BaseFwx.{b,pb}512{En,De}code instead of
+    // re-implementing the mask-key derivation pipeline locally. The
+    // synced BaseFwx Java codec uses the same Constants.* labels
+    // (basefwx.{b,pb}512.{mask,stream}.v1) so blobs round-trip
+    // bit-identically between the Compat path and the canonical path.
+    fun b512Encode(input: String, password: String): String =
+        BaseFwx.b512Encode(input, password, false)
 
-    fun b512Decode(input: String, password: String): String {
-        val plaintext = decodeMaskedPayloadBytesFromString(
-            input = input,
-            passwordBytes = passwordBytes(password, required = false),
-            maskInfo = Constants.B512_MASK_INFO,
-            aad = Constants.MASK_AAD_B512,
-            streamInfo = Constants.B512_STREAM_INFO,
-        )
-        return String(plaintext, StandardCharsets.UTF_8)
-    }
+    fun b512Decode(input: String, password: String): String =
+        BaseFwx.b512Decode(input, password, false)
 
-    fun pb512Encode(input: String, password: String): String {
-        val packageData = prepareMaskKeyPackage(
-            passwordBytes = passwordBytes(password, required = true),
-            aad = Constants.MASK_AAD_PB512,
-            defaultIterations = Constants.USER_KDF_ITERATIONS,
-        )
-        val blob = encodeMaskedPayloadBytes(
-            maskKey = packageData.maskKey,
-            userBlob = packageData.userBlob,
-            plain = input.toByteArray(StandardCharsets.UTF_8),
-            streamInfo = Constants.PB512_STREAM_INFO,
-        )
-        return encodePayloadString(blob)
-    }
+    fun pb512Encode(input: String, password: String): String =
+        BaseFwx.pb512Encode(input, password, false)
 
-    fun pb512Decode(input: String, password: String): String {
-        val plaintext = decodeMaskedPayloadBytesFromString(
-            input = input,
-            passwordBytes = passwordBytes(password, required = true),
-            maskInfo = Constants.PB512_MASK_INFO,
-            aad = Constants.MASK_AAD_PB512,
-            streamInfo = Constants.PB512_STREAM_INFO,
-        )
-        return String(plaintext, StandardCharsets.UTF_8)
-    }
+    fun pb512Decode(input: String, password: String): String =
+        BaseFwx.pb512Decode(input, password, false)
 
     fun b512FileDecodeBytes(blob: ByteArray, password: String): DecodedFile {
         val passwordBytes = passwordBytes(password, required = false)
@@ -271,44 +171,6 @@ internal object BaseFwxCompat {
         return plaintext
     }
 
-    private fun prepareMaskKeyPackage(
-        passwordBytes: ByteArray,
-        aad: ByteArray,
-        defaultIterations: Int,
-    ): MaskKeyPackage {
-        require(passwordBytes.isNotEmpty()) { "Password required" }
-        val maskKey = Crypto.randomBytes(32)
-        val labelBytes = "pbkdf2".toByteArray(StandardCharsets.US_ASCII)
-        val salt = Crypto.randomBytes(Constants.USER_KDF_SALT_SIZE)
-        val userKey = Crypto.pbkdf2HmacSha256(
-            passwordBytes,
-            salt,
-            hardenPbkdf2Iterations(passwordBytes, defaultIterations),
-            32,
-        )
-        val wrapped = Crypto.aesGcmEncrypt(userKey, maskKey, aad)
-        val userBlob = ByteArray(1 + labelBytes.size + salt.size + wrapped.size)
-        userBlob[0] = labelBytes.size.toByte()
-        System.arraycopy(labelBytes, 0, userBlob, 1, labelBytes.size)
-        System.arraycopy(salt, 0, userBlob, 1 + labelBytes.size, salt.size)
-        System.arraycopy(wrapped, 0, userBlob, 1 + labelBytes.size + salt.size, wrapped.size)
-        return MaskKeyPackage(maskKey = maskKey, userBlob = userBlob)
-    }
-
-    private fun encodeMaskedPayloadBytes(
-        maskKey: ByteArray,
-        userBlob: ByteArray,
-        plain: ByteArray,
-        streamInfo: ByteArray,
-    ): ByteArray {
-        val masked = maskPayload(maskKey, plain, 0, plain.size, streamInfo)
-        val payload = ByteArray(1 + 4 + masked.size)
-        payload[0] = 0x02
-        writeU32(payload, 1, plain.size)
-        System.arraycopy(masked, 0, payload, 5, masked.size)
-        return Format.packLengthPrefixed(listOf(userBlob, ByteArray(0), payload))
-    }
-
     private fun encryptAesPayloadBytes(
         payloadBytes: ByteArray,
         password: String,
@@ -363,30 +225,6 @@ internal object BaseFwxCompat {
         return Base64Codec.encode(metadata.toString().toByteArray(StandardCharsets.UTF_8))
     }
 
-    private fun decodeMaskedPayloadBytesFromString(
-        input: String,
-        passwordBytes: ByteArray,
-        maskInfo: ByteArray,
-        aad: ByteArray,
-        streamInfo: ByteArray,
-    ): ByteArray {
-        val primary = if (Base64Codec.looksLikeBase64(input)) input else Codec.decode(input)
-        val firstAttempt = runCatching { decodeMaskedPayloadBytes(Base64Codec.decode(primary), passwordBytes, maskInfo, aad, streamInfo) }
-        if (firstAttempt.isSuccess) {
-            return firstAttempt.getOrThrow()
-        }
-        val secondary = if (primary == input) Codec.decode(input) else input
-        if (secondary != primary) {
-            val secondAttempt = runCatching {
-                decodeMaskedPayloadBytes(Base64Codec.decode(secondary), passwordBytes, maskInfo, aad, streamInfo)
-            }
-            if (secondAttempt.isSuccess) {
-                return secondAttempt.getOrThrow()
-            }
-        }
-        throw IllegalArgumentException("Invalid payload encoding", firstAttempt.exceptionOrNull())
-    }
-
     private fun encodePayloadString(blob: ByteArray): String {
         return Codec.code(Base64Codec.encode(blob))
     }
@@ -398,29 +236,6 @@ internal object BaseFwxCompat {
         val deobfuscated = runCatching { Codec.decode(trimmed) }.getOrNull()
             ?: throw IllegalArgumentException("Invalid payload encoding")
         return Base64Codec.decode(deobfuscated)
-    }
-
-    private fun decodeMaskedPayloadBytes(
-        blob: ByteArray,
-        passwordBytes: ByteArray,
-        maskInfo: ByteArray,
-        aad: ByteArray,
-        streamInfo: ByteArray,
-    ): ByteArray {
-        val parts = Format.unpackLengthPrefixed(blob, 3)
-        val masterBlob = parts[1]
-        require(masterBlob.isEmpty()) { "Master-wrapped payloads are not supported on Android" }
-        val maskKey = recoverMaskKey(
-            userBlob = parts[0],
-            passwordBytes = passwordBytes,
-            aad = aad,
-            defaultIterations = Constants.USER_KDF_ITERATIONS,
-        )
-        val payload = parts[2]
-        require(payload.size >= 5 && payload[0] == 0x02.toByte()) { "Unsupported payload format" }
-        val expectedLength = readU32(payload, 1)
-        require(expectedLength == payload.size - 5) { "Payload length mismatch" }
-        return maskPayload(maskKey, payload, 5, expectedLength, streamInfo)
     }
 
     private fun recoverMaskKey(
@@ -471,29 +286,6 @@ internal object BaseFwxCompat {
             32,
         )
         return Crypto.aesGcmDecrypt(userKey, wrapped, aad)
-    }
-
-    private fun maskPayload(
-        maskKey: ByteArray,
-        payload: ByteArray,
-        offset: Int,
-        length: Int,
-        info: ByteArray,
-    ): ByteArray {
-        if (length <= 0) {
-            return ByteArray(0)
-        }
-        val output = ByteArray(length)
-        if (length <= Constants.HKDF_MAX_LEN) {
-            val stream = Crypto.hkdfSha256(maskKey, info, length)
-            for (index in 0 until length) {
-                output[index] = (payload[offset + index].toInt() xor stream[index].toInt()).toByte()
-            }
-            return output
-        }
-        val prk = Crypto.hmacSha256(ByteArray(32), maskKey)
-        Crypto.xorHmacStream(prk, info, payload, offset, output, 0, length, 1)
-        return output
     }
 
     private fun obfuscateBytes(data: ByteArray, key: ByteArray, fast: Boolean): ByteArray {
@@ -684,17 +476,6 @@ internal object BaseFwxCompat {
         val normalized = password.trim()
         require(!required || normalized.isNotEmpty()) { "Password required" }
         return normalized.toByteArray(StandardCharsets.UTF_8)
-    }
-
-    private fun fwxAesIterations(passwordBytes: ByteArray): Int {
-        if (Constants.TEST_KDF_OVERRIDE) {
-            return Constants.FWXAES_PBKDF2_ITERS
-        }
-        return if (passwordBytes.isNotEmpty() && passwordBytes.size < Constants.SHORT_PASSWORD_MIN) {
-            max(Constants.FWXAES_PBKDF2_ITERS, Constants.SHORT_PBKDF2_ITERS)
-        } else {
-            Constants.FWXAES_PBKDF2_ITERS
-        }
     }
 
     private fun hardenPbkdf2Iterations(passwordBytes: ByteArray, iterations: Int): Int {
