@@ -22,3 +22,10 @@ local.properties
 .release-signing.env
 .tools-cache/
 .kotlin/
+
+# AI tools — per-machine state, not for the repo
+.claude/
+.codex/
+.aider*
+.cursor/
+.copilot/
