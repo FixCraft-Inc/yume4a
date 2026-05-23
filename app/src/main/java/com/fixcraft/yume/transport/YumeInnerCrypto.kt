@@ -3,8 +3,11 @@ package com.fixcraft.yume.transport
 import android.os.SystemClock
 import com.fixcraft.basefwx.Crypto
 import org.bouncycastle.crypto.SecretWithEncapsulation
-import org.bouncycastle.crypto.generators.Argon2BytesGenerator
-import org.bouncycastle.crypto.params.Argon2Parameters
+// 1.0.x: direct BouncyCastle Argon2 imports removed when argon2idRaw()
+// switched to Crypto.argon2idHashRaw, the documented single dispatch
+// point per crypto-conventions Rule 6. Crypto manages the JNI-vs-BC
+// fallback internally; calling Argon2BytesGenerator here re-routed
+// past that helper and bypassed the JNI-first dispatch.
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.bouncycastle.pqc.crypto.crystals.kyber.KyberKEMGenerator
 import org.bouncycastle.pqc.crypto.crystals.kyber.KyberParameters
@@ -160,7 +163,17 @@ internal object YumeInnerCrypto {
                         key = argon2idRaw(shared, salt, params.argon2Time, params.argon2Memory, params.argon2Parallelism, 32),
                         params = params,
                     )
-                } catch (_: Throwable) {
+                } catch (exc: Throwable) {
+                    // 1.0.x: narrow the catch from bare-Throwable to
+                    // OOM-only. Previously any exception silently
+                    // downgraded Argon2 → PBKDF2, which hid configuration
+                    // errors (BC class missing, invalid params, etc.)
+                    // behind a working-but-weaker code path. Mirror the
+                    // C++ inner_crypto.cpp::is_oom predicate so the
+                    // fallback behavior is symmetric across runtimes.
+                    if (!isOomError(exc)) {
+                        throw exc
+                    }
                     DerivedInnerKey(
                         key = Crypto.pbkdf2HmacSha256(shared, salt, HEAVY_PBKDF2_ITERATIONS, 32),
                         params = YumeInnerKdfParams(
@@ -257,6 +270,36 @@ internal object YumeInnerCrypto {
 
     private fun randomBytes(length: Int): ByteArray = Crypto.randomBytes(length)
 
+    // Mirror of yume's C++ inner_crypto.cpp::is_oom predicate. Returns
+    // true only for failures that look like Argon2 ran out of memory —
+    // the only case where downgrading to PBKDF2 is acceptable. Anything
+    // else (BC class missing, invalid params, etc.) should propagate so
+    // the caller sees the real error instead of a silently-weaker key.
+    private fun isOomError(exc: Throwable): Boolean {
+        // Walk the cause chain because BouncyCastle wraps allocation
+        // failures inside IllegalStateException / IllegalArgumentException.
+        var cur: Throwable? = exc
+        while (cur != null) {
+            if (cur is OutOfMemoryError) return true
+            val msg = cur.message?.lowercase() ?: ""
+            if ("out of memory" in msg
+                || "insufficient memory" in msg
+                || "allocation" in msg
+                || "memory cost is too large" in msg
+            ) {
+                return true
+            }
+            cur = cur.cause
+        }
+        return false
+    }
+
+    // 1.0.x: delegate to the synced Crypto.argon2idHashRaw, the project's
+    // documented single dispatch point per crypto-conventions Rule 6.
+    // Crypto handles the JNI-libargon2-then-BouncyCastle-fallback chain
+    // internally; calling Argon2BytesGenerator directly here bypassed
+    // the JNI-first path and meant the Android code took the slow route
+    // even when libargon2 was loadable.
     private fun argon2idRaw(
         password: ByteArray,
         salt: ByteArray,
@@ -264,19 +307,7 @@ internal object YumeInnerCrypto {
         memoryKiB: Int,
         parallelism: Int,
         length: Int,
-    ): ByteArray {
-        val builder = Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
-            .withVersion(Argon2Parameters.ARGON2_VERSION_13)
-            .withSalt(salt)
-            .withIterations(iterations)
-            .withMemoryAsKB(memoryKiB)
-            .withParallelism(parallelism)
-        val generator = Argon2BytesGenerator()
-        generator.init(builder.build())
-        return ByteArray(length).also { output ->
-            generator.generateBytes(password, output)
-        }
-    }
+    ): ByteArray = Crypto.argon2idHashRaw(password, salt, iterations, memoryKiB, parallelism, length)
 
     private data class KemResult(
         val ciphertext: ByteArray,
