@@ -61,11 +61,19 @@ val syncBasefwxJava by tasks.registering(Sync::class) {
         // What stays desktop-only and is NOT synced:
         //   BaseFwxImage.java       (java.awt for PNG carrier codec)
         //   MediaCipher.java        (java.awt for jmg image cipher)
-        //   FwxAESJNI.java          (JNI bridge to a .so not in the APK)
         //   FwxAESBenchmark.java    (CLI bench tool)
         //   cli/* (CLI entry points; java.awt + filesystem deps)
+        //
+        // FwxAESJNI.java is synced for COMPILE only: FwxAES.java
+        // references `new FwxAESJNI(...)` from two branches gated on
+        // `native_ != null`. The native_ backend comes from
+        // NativeCryptoBackend.tryCreate(), which returns null on
+        // Android (libbasefwxcrypto.so is not in the APK), so the
+        // FwxAESJNI class is never loaded at runtime — but javac still
+        // needs the symbol to resolve the new-expression.
         include("com/fixcraft/basefwx/BaseFwx.java")
         include("com/fixcraft/basefwx/FwxAES.java")
+        include("com/fixcraft/basefwx/FwxAESJNI.java")
         include("com/fixcraft/basefwx/FwxAESPureJava.java")
         include("com/fixcraft/basefwx/KeyWrap.java")
         include("com/fixcraft/basefwx/PQ.java")
