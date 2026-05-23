@@ -399,6 +399,11 @@ class SecureMaterialStore private constructor(context: Context) {
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(256)
+            // Auth-key PEMs are decrypted while the device is already
+            // unlocked so VPN reconnects can run without a per-connect
+            // biometric prompt. Treat the device unlock state as the local
+            // auth signal; changing this to true requires a UX flow that can
+            // surface biometric confirmation before background decrypts.
             .setUserAuthenticationRequired(false)
             .setRandomizedEncryptionRequired(true)
             .build()

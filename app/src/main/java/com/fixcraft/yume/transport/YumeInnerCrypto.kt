@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets
 import java.security.GeneralSecurityException
 import java.security.SecureRandom
 import java.security.Security
+import java.util.Arrays
 import kotlin.math.floor
 
 internal enum class YumeInnerKdf {
@@ -98,24 +99,28 @@ internal object YumeInnerCrypto {
             throw YumeBootstrapException("Inner crypto requested without a trusted PQ public key")
         }
         val kemResult = kemEncrypt(pqPublicKey)
-        val salt = randomBytes(USER_KDF_SALT_SIZE)
-        val mode = if (preference.heavy) "heavy" else "light"
-        val derived = if (preference.heavy) {
-            deriveHeavyKey(kemResult.shared, salt, preference.kdf)
-        } else {
-            DerivedInnerKey(
-                key = Crypto.hkdfSha256(kemResult.shared, HKDF_INFO, 32),
-                params = YumeInnerKdfParams(name = "hkdf"),
+        try {
+            val salt = randomBytes(USER_KDF_SALT_SIZE)
+            val mode = if (preference.heavy) "heavy" else "light"
+            val derived = if (preference.heavy) {
+                deriveHeavyKey(kemResult.shared, salt, preference.kdf)
+            } else {
+                DerivedInnerKey(
+                    key = Crypto.hkdfSha256(kemResult.shared, HKDF_INFO, 32),
+                    params = YumeInnerKdfParams(name = "hkdf"),
+                )
+            }
+            return YumeInnerPrepared(
+                pqCiphertext = kemResult.ciphertext,
+                salt = salt,
+                key = derived.key,
+                mode = mode,
+                hopRequested = preference.hopRequested,
+                kdfParams = derived.params,
             )
+        } finally {
+            Arrays.fill(kemResult.shared, 0.toByte())
         }
-        return YumeInnerPrepared(
-            pqCiphertext = kemResult.ciphertext,
-            salt = salt,
-            key = derived.key,
-            mode = mode,
-            hopRequested = preference.hopRequested,
-            kdfParams = derived.params,
-        )
     }
 
     fun encrypt(state: YumeInnerSessionState, frameType: YumeFrameType, streamId: Int, plaintext: ByteArray): ByteArray {
@@ -138,7 +143,7 @@ internal object YumeInnerCrypto {
             try {
                 return Crypto.aesGcmDecrypt(key, payload, aad)
             } catch (throwable: Exception) {
-                lastError = throwable as? Exception ?: Exception(throwable)
+                lastError = throwable
             }
         }
         throw YumeBootstrapException("Failed to decrypt the Yume inner payload", lastError)
@@ -284,7 +289,7 @@ internal object YumeInnerCrypto {
             val msg = cur.message?.lowercase() ?: ""
             if ("out of memory" in msg
                 || "insufficient memory" in msg
-                || "allocation" in msg
+                || "memory allocation" in msg
                 || "memory cost is too large" in msg
             ) {
                 return true
