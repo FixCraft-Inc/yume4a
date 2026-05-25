@@ -548,11 +548,13 @@ class AppStrings private constructor(
     fun connectionTechniqueName(technique: ConnectionTechnique): String = when (technique) {
         ConnectionTechnique.Tun2SocksStable -> technique.canonicalLabel()
         ConnectionTechnique.NativeDirectBeta -> technique.canonicalLabel()
+        ConnectionTechnique.Socks5ProxyOnly -> technique.canonicalLabel()
     }
 
     fun connectionTechniqueDescription(technique: ConnectionTechnique): String = when (technique) {
         ConnectionTechnique.Tun2SocksStable -> t("Stable Android path through tun2socks with TCP and UDP support.")
         ConnectionTechnique.NativeDirectBeta -> t("Direct Yume TCP and UDP path. Fixed tuning. IPv6 stays fail-closed.")
+        ConnectionTechnique.Socks5ProxyOnly -> t("Local SOCKS5 proxy only — no system-wide VPN. Configure your browser or apps to point at the listed port.")
     }
 
     val nativeDirectFixedTuningName = t("Fixed native tuning")

@@ -30,6 +30,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fixcraft.yume.data.AppLanguage
 import com.fixcraft.yume.data.AppVaultManager
 import com.fixcraft.yume.data.SecureMaterialType
+import com.fixcraft.yume.data.isVpnService
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AppLocaleManager
 import com.fixcraft.yume.i18n.AutoTranslationRuntime
@@ -191,6 +192,8 @@ class MainActivity : ComponentActivity() {
                     onDeleteMaterial = viewModel::deleteMaterial,
                     onSelectTechnique = viewModel::updateConnectionTechnique,
                     onSelectPerformanceProfile = viewModel::updatePerformanceProfile,
+                    onSelectSocks5BindMode = viewModel::updateSocks5BindMode,
+                    onUpdateSocks5Port = viewModel::updateSocks5ProxyPort,
                     onSelectThemeColorMode = viewModel::updateThemeColorMode,
                     onSetAmoledDarkTheme = viewModel::updateAmoledDarkTheme,
                     isDarkTheme = darkTheme,
@@ -378,6 +381,14 @@ class MainActivity : ComponentActivity() {
     private fun requestVpnPermissionAndConnect() {
         val selectedProfileId = viewModel.uiState.value.selectedProfileId ?: run {
             pendingConnectAuthKeyPassword = null
+            return
+        }
+        val technique = viewModel.uiState.value.appSettings.connectionTechnique
+        if (!technique.isVpnService()) {
+            // SOCKS5-only mode does not own a TUN interface, so the
+            // platform VPN permission dialog is irrelevant. Skip it.
+            YumeVpnRuntime.appendLog(VpnLogLevel.Info, "SOCKS5-only mode selected; skipping VPN permission step.")
+            connectSelectedProfileWithPendingPassword()
             return
         }
         val permissionIntent = runCatching {

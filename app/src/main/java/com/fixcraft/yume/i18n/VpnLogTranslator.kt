@@ -110,6 +110,7 @@ object VpnLogTranslator {
         return when (value) {
             ConnectionTechnique.Tun2SocksStable.canonicalLabel() -> strings.connectionTechniqueName(ConnectionTechnique.Tun2SocksStable)
             ConnectionTechnique.NativeDirectBeta.canonicalLabel() -> strings.connectionTechniqueName(ConnectionTechnique.NativeDirectBeta)
+            ConnectionTechnique.Socks5ProxyOnly.canonicalLabel() -> strings.connectionTechniqueName(ConnectionTechnique.Socks5ProxyOnly)
             else -> value
         }
     }

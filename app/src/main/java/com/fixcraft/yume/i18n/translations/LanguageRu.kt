@@ -408,6 +408,7 @@ internal object LanguageRu : LanguageBundle {
         "\"Building on open source is one of the most empowering experiences in software development. You do not have to wait for someone else to fix an issue or add a feature — you can build the solution yourself.\"" to "\"Разработка на основе open source — один из самых вдохновляющих опытов в создании программного обеспечения. Вам не нужно ждать, пока кто-то исправит проблему или добавит новую функцию — вы можете создать решение самостоятельно.\"",
         "Stable Android path through tun2socks with TCP and UDP support." to "Стабильный Android-маршрут через tun2socks с поддержкой TCP и UDP.",
         "Direct Yume TCP and UDP path. Fixed tuning. IPv6 stays fail-closed." to "Прямой Yume TCP- и UDP-путь. Фиксированная нативная настройка. IPv6 остается в режиме fail-closed.",
+        "Local SOCKS5 proxy only — no system-wide VPN. Configure your browser or apps to point at the listed port." to "Только локальный SOCKS5-прокси — без общесистемного VPN. Настройте браузер или приложения на указанный порт.",
         "Fixed native tuning" to "Фиксированная нативная настройка",
         "Native direct uses fixed tuning. Performance profiles apply only to Tun2Socks stable." to "Native direct использует фиксированную настройку. Профили производительности применяются только к Tun2Socks stable.",
         "Lower queueing for interactive traffic." to "Меньше очередей для интерактивного трафика.",

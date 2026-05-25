@@ -82,9 +82,13 @@ class YumeSocks5Proxy(
         }
     }
 
-    suspend fun start(preferredPort: Int = DEFAULT_PROXY_PORT): InetSocketAddress {
+    suspend fun start(
+        preferredPort: Int = DEFAULT_PROXY_PORT,
+        bindHost: String = LOOPBACK_HOST,
+        portFallback: Boolean = true,
+    ): InetSocketAddress {
         listenAddress?.let { return it }
-        val boundSocket = bindLoopback(preferredPort)
+        val boundSocket = bindServer(bindHost, preferredPort, portFallback)
         serverSocket = boundSocket
         val bound = boundSocket.localSocketAddress as InetSocketAddress
         log(
@@ -1367,13 +1371,14 @@ class YumeSocks5Proxy(
         output.flush()
     }
 
-    private fun bindLoopback(preferredPort: Int): ServerSocket {
+    private fun bindServer(bindHost: String, preferredPort: Int, portFallback: Boolean): ServerSocket {
         var lastError: IOException? = null
-        for (port in listOf(preferredPort, 0).distinct()) {
+        val ports = if (portFallback) listOf(preferredPort, 0).distinct() else listOf(preferredPort)
+        for (port in ports) {
             try {
                 return ServerSocket().apply {
                     reuseAddress = true
-                    bind(InetSocketAddress(InetAddress.getByName(LOOPBACK_HOST), port))
+                    bind(InetSocketAddress(InetAddress.getByName(bindHost), port))
                 }
             } catch (throwable: IOException) {
                 lastError = throwable
@@ -1855,6 +1860,9 @@ class YumeSocks5Proxy(
     ) : IOException(message)
 
     companion object {
+        const val LOOPBACK_BIND_HOST = "127.0.0.1"
+        const val WILDCARD_BIND_HOST = "0.0.0.0"
+
         private const val DEFAULT_PROXY_PORT = 1088
         private const val HANDSHAKE_TIMEOUT_MS = 10_000
         private const val MAX_UDP_PACKET_BYTES = 65_535

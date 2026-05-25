@@ -378,6 +378,7 @@ internal object LanguageUk : LanguageBundle {
         "\"Building on open source is one of the most empowering experiences in software development. You do not have to wait for someone else to fix an issue or add a feature — you can build the solution yourself.\"" to "\"Розробка на основі open source — один із найсильніших досвідів у програмуванні. Не потрібно чекати, поки хтось виправить проблему чи додасть функцію — ви можете створити рішення самі.\"",
         "Stable Android path through tun2socks with TCP and UDP support." to "Стабільний Android-шлях через tun2socks із підтримкою TCP та UDP.",
         "Direct Yume TCP and UDP path. Fixed tuning. IPv6 stays fail-closed." to "Прямий Yume TCP- та UDP-шлях. Фіксоване налаштування. IPv6 залишається у режимі fail-closed.",
+        "Local SOCKS5 proxy only — no system-wide VPN. Configure your browser or apps to point at the listed port." to "Лише локальний SOCKS5-проксі — без загальносистемного VPN. Налаштуйте браузер або застосунки на вказаний порт.",
         "Fixed native tuning" to "Фіксоване нативне налаштування",
         "Native direct uses fixed tuning. Performance profiles apply only to Tun2Socks stable." to "Native direct використовує фіксоване налаштування. Профілі продуктивності застосовуються лише до Tun2Socks stable.",
         "Lower queueing for interactive traffic." to "Менше черг для інтерактивного трафіку.",

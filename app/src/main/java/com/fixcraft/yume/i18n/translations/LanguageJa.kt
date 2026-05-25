@@ -406,6 +406,7 @@ internal object LanguageJa : LanguageBundle {
         "\"Building on open source is one of the most empowering experiences in software development. You do not have to wait for someone else to fix an issue or add a feature — you can build the solution yourself.\"" to "\"オープンソースの上に開発することは、ソフトウェア開発において最も力を与えてくれる体験の一つです。問題の修正や機能の追加を誰かに待つ必要はなく、自分で解決策を作ることができます。\"",
         "Stable Android path through tun2socks with TCP and UDP support." to "TCP と UDP をサポートする、tun2socks ベースの安定した Android 経路です。",
         "Direct Yume TCP and UDP path. Fixed tuning. IPv6 stays fail-closed." to "Yume の TCP / UDP を直接使う経路です。調整は固定で、IPv6 は引き続きフェイルクローズです。",
+        "Local SOCKS5 proxy only — no system-wide VPN. Configure your browser or apps to point at the listed port." to "ローカルの SOCKS5 プロキシのみ — システム全体の VPN は使用しません。ブラウザやアプリを表示されたポートに向けて設定してください。",
         "Fixed native tuning" to "固定ネイティブ調整",
         "Native direct uses fixed tuning. Performance profiles apply only to Tun2Socks stable." to "Native direct は固定チューニングです。パフォーマンスプロファイルは Tun2Socks stable にのみ適用されます。",
         "Lower queueing for interactive traffic." to "対話的な通信向けにキューを短くします。",

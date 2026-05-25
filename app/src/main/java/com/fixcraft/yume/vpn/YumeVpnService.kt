@@ -424,6 +424,7 @@ class YumeVpnService : VpnService() {
             markTrafficFlowing(profile, bootstrap, verifiedExitIpResult, initialVerification, proxyAddress)
             updateForeground(profile, strings().protectedNotification)
             var nextPingAtMs = System.currentTimeMillis() + KEEPALIVE_PING_INTERVAL_MS
+            var consecutivePingFailures = 0
             var nextNotificationRefreshAtMs = SystemClock.elapsedRealtime() + NOTIFICATION_REFRESH_INTERVAL_MS
             var nextRouteStatsLogAtMs = SystemClock.elapsedRealtime() + ROUTE_STATS_LOG_INTERVAL_MS
 
@@ -483,11 +484,22 @@ class YumeVpnService : VpnService() {
                 if (System.currentTimeMillis() >= nextPingAtMs) {
                     try {
                         liveSession.ping(timeoutMs = PRE_ROUTING_PING_TIMEOUT_MS)
+                        consecutivePingFailures = 0
                     } catch (ex: Exception) {
+                        consecutivePingFailures += 1
                         val pingDetail = ex.message ?: "connection lost"
+                        if (consecutivePingFailures < KEEPALIVE_PING_FAILURES_BEFORE_RECONNECT) {
+                            YumeVpnRuntime.appendLog(
+                                VpnLogLevel.Warn,
+                                "Yume PING failed ($consecutivePingFailures/$KEEPALIVE_PING_FAILURES_BEFORE_RECONNECT): " +
+                                    "$pingDetail. Will retry before re-authenticating.",
+                            )
+                            nextPingAtMs = System.currentTimeMillis() + KEEPALIVE_PING_INTERVAL_MS
+                            continue
+                        }
                         YumeVpnRuntime.appendLog(
                             VpnLogLevel.Warn,
-                            "Yume PING failed: $pingDetail. Re-authenticating.",
+                            "Yume PING failed $consecutivePingFailures times in a row: $pingDetail. Re-authenticating.",
                         )
                         setTechniqueVerificationMode(true)
                         bootstrapSession = reconnectBootstrapSession(
@@ -502,6 +514,7 @@ class YumeVpnService : VpnService() {
                         bootstrap = session.bootstrap
                         val relayExitIp = requireVerifiedRelayCanary(session, bootstrap, probeExitIp())
                         handoffToTraffic(profile, bootstrap, session, relayExitIp, generation)
+                        consecutivePingFailures = 0
                     }
                     nextPingAtMs = System.currentTimeMillis() + KEEPALIVE_PING_INTERVAL_MS
                 }
@@ -2065,6 +2078,12 @@ class YumeVpnService : VpnService() {
                     Tun2SocksTechniqueEngine
                 }
             }
+            // SOCKS5-only is routed to YumeSocks5ProxyService at the
+            // MainViewModel dispatch layer. If it ever lands here (e.g.
+            // because a system-restart re-invokes this service after a
+            // crash), fall back to the stable VPN technique rather than
+            // crashing on a non-exhaustive `when`.
+            ConnectionTechnique.Socks5ProxyOnly -> Tun2SocksTechniqueEngine
         }
     }
 
@@ -2072,6 +2091,7 @@ class YumeVpnService : VpnService() {
         return when (runtimeConfig) {
             is Tun2SocksRuntimeConfig -> runtimeConfig
             is NativeDirectRuntimeConfig -> runtimeConfig.bridgeTuning
+            is Socks5ProxyRuntimeConfig -> runtimeConfig.bridgeTuning
         }
     }
 
@@ -2270,6 +2290,15 @@ class YumeVpnService : VpnService() {
         private const val VPN_IPV4_PREFIX_LENGTH = 24
         private const val KEEPALIVE_PING_INTERVAL_MS = 15_000L
         private const val PRE_ROUTING_PING_TIMEOUT_MS = 6_000
+        // How many consecutive PING failures we tolerate before we
+        // consider the session dead and re-auth. One stuck PING under
+        // upload backpressure (TCP send buffer full → writer blocked
+        // in output.write) used to nuke the session mid-speed-test;
+        // re-auth then dropped active SOCKS streams and surfaced as
+        // "server sort error" / 0.3 Mbps stalls. Two consecutive misses
+        // (~36 s of silence) is still well below any sane idle limit
+        // and gives the writer time to drain the kernel buffer.
+        private const val KEEPALIVE_PING_FAILURES_BEFORE_RECONNECT = 2
         private const val TUN2SOCKS_STARTUP_DELAY_MS = 200L
         private const val TUNNEL_BACKEND_START_GRACE_MS = 80L
         private const val TUNNEL_BACKEND_START_MAX_ATTEMPTS = 4

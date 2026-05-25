@@ -16,7 +16,11 @@ import com.fixcraft.yume.data.ServerProfileStore
 import com.fixcraft.yume.data.SecureMaterialStore
 import com.fixcraft.yume.data.SecureMaterialSummary
 import com.fixcraft.yume.data.SecureMaterialType
+import com.fixcraft.yume.data.Socks5BindMode
+import com.fixcraft.yume.data.Socks5ProxySettings
 import com.fixcraft.yume.data.ThemeColorMode
+import com.fixcraft.yume.data.canonicalLabel
+import com.fixcraft.yume.data.isVpnService
 import com.fixcraft.yume.data.supportsUserSelectablePerformanceProfiles
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AutoTranslationRuntime
@@ -27,8 +31,10 @@ import com.fixcraft.yume.vpn.VpnConnectionState
 import com.fixcraft.yume.vpn.VpnLogLevel
 import com.fixcraft.yume.vpn.VpnPhase
 import com.fixcraft.yume.vpn.NativeDirectTechniqueEngine
+import com.fixcraft.yume.vpn.Socks5ProxyTechniqueEngine
 import com.fixcraft.yume.vpn.Tun2SocksTechniqueEngine
 import com.fixcraft.yume.vpn.TunnelRuntimeConfig
+import com.fixcraft.yume.vpn.YumeSocks5ProxyService
 import com.fixcraft.yume.vpn.YumeVpnRuntime
 import com.fixcraft.yume.vpn.YumeVpnService
 import kotlinx.coroutines.CoroutineDispatcher
@@ -591,8 +597,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             when (preflight) {
                 ConnectPreflightResult.Ready -> {
-                    YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Local CA and auth key are ready. Starting the Android VPN service.")
-                    YumeVpnService.startConnect(getApplication(), selectedProfile.id, authKeyPassword)
+                    val settings = uiState.value.appSettings
+                    if (settings.connectionTechnique.isVpnService()) {
+                        YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Local CA and auth key are ready. Starting the Android VPN service.")
+                        YumeVpnService.startConnect(getApplication(), selectedProfile.id, authKeyPassword)
+                    } else {
+                        YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Local CA and auth key are ready. Starting the Yume SOCKS5 proxy service.")
+                        YumeSocks5ProxyService.startConnect(getApplication(), selectedProfile.id, authKeyPassword)
+                    }
                 }
 
                 is ConnectPreflightResult.Error -> {
@@ -611,7 +623,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun disconnect() {
+        // The active service is whichever one was started for the
+        // current technique; dispatch to both so we don't need to track
+        // it explicitly. Each service short-circuits when it has no
+        // active session.
         YumeVpnService.startDisconnect(getApplication())
+        YumeSocks5ProxyService.startDisconnect(getApplication())
+    }
+
+    fun updateSocks5ProxySettings(settings: Socks5ProxySettings) {
+        appSettingsStore.updateSocks5ProxySettings(settings)
+    }
+
+    fun updateSocks5ProxyPort(port: Int) {
+        val current = uiState.value.appSettings.socks5ProxySettings
+        appSettingsStore.updateSocks5ProxySettings(current.copy(port = port))
+    }
+
+    fun updateSocks5BindMode(mode: Socks5BindMode) {
+        val current = uiState.value.appSettings.socks5ProxySettings
+        appSettingsStore.updateSocks5ProxySettings(current.copy(bindMode = mode))
     }
 
     private fun connectPreflight(
@@ -770,6 +801,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     Tun2SocksTechniqueEngine.runtimeConfig(settings.performanceProfile)
                 }
             }
+            ConnectionTechnique.Socks5ProxyOnly ->
+                Socks5ProxyTechniqueEngine.runtimeConfig(settings.performanceProfile, settings.socks5ProxySettings)
         }
     }
 
@@ -803,6 +836,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val lines = when (runtimeConfig) {
             is com.fixcraft.yume.vpn.Tun2SocksRuntimeConfig -> buildBridgeLines(runtimeConfig)
+            is com.fixcraft.yume.vpn.Socks5ProxyRuntimeConfig -> buildList {
+                add("${strings.techniqueLabel}: ${strings.connectionTechniqueName(runtimeConfig.technique)}")
+                add("${strings.profileLabel}: ${strings.performanceProfileName(runtimeConfig.performanceProfile)}")
+                add("Listen port: ${runtimeConfig.proxySettings.normalizedPort}")
+                add("Bind: ${runtimeConfig.proxySettings.bindMode.canonicalLabel()}")
+                add("No system-wide VPN — only apps configured with the SOCKS5 proxy are tunneled.")
+                add("")
+                add(strings.runtimeAppliedBridgeTuningTitle)
+                addAll(buildBridgeLines(runtimeConfig.bridgeTuning).drop(2))
+            }
             is com.fixcraft.yume.vpn.NativeDirectRuntimeConfig -> buildList {
                 add("${strings.techniqueLabel}: ${strings.connectionTechniqueName(runtimeConfig.technique)}")
                 add("${strings.profileLabel}: ${strings.nativeDirectFixedTuningName}")

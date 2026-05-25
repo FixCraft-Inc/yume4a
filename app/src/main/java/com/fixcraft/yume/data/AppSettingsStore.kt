@@ -16,6 +16,9 @@ enum class ConnectionTechnique(
     ),
     NativeDirectBeta(
         wireValue = "native_direct_beta",
+    ),
+    Socks5ProxyOnly(
+        wireValue = "socks5_proxy_only",
     );
 
     companion object {
@@ -31,10 +34,52 @@ enum class ConnectionTechnique(
 fun ConnectionTechnique.canonicalLabel(): String = when (this) {
     ConnectionTechnique.Tun2SocksStable -> "Tun2Socks stable"
     ConnectionTechnique.NativeDirectBeta -> "Native direct beta"
+    ConnectionTechnique.Socks5ProxyOnly -> "SOCKS5 proxy only"
 }
 
 fun ConnectionTechnique.supportsUserSelectablePerformanceProfiles(): Boolean {
     return this == ConnectionTechnique.Tun2SocksStable
+}
+
+fun ConnectionTechnique.isVpnService(): Boolean = when (this) {
+    ConnectionTechnique.Tun2SocksStable,
+    ConnectionTechnique.NativeDirectBeta -> true
+    ConnectionTechnique.Socks5ProxyOnly -> false
+}
+
+enum class Socks5BindMode(
+    val wireValue: String,
+) {
+    Loopback(wireValue = "loopback"),
+    Wifi(wireValue = "wifi"),
+    Wildcard(wireValue = "wildcard");
+
+    companion object {
+        fun fromWireValue(value: String?): Socks5BindMode? {
+            if (value == null) return null
+            return entries.firstOrNull { it.wireValue == value }
+        }
+    }
+}
+
+fun Socks5BindMode.canonicalLabel(): String = when (this) {
+    Socks5BindMode.Loopback -> "Loopback (127.0.0.1)"
+    Socks5BindMode.Wifi -> "Wi-Fi interface"
+    Socks5BindMode.Wildcard -> "All interfaces (0.0.0.0)"
+}
+
+data class Socks5ProxySettings(
+    val port: Int = DEFAULT_SOCKS5_PORT,
+    val bindMode: Socks5BindMode = Socks5BindMode.Loopback,
+) {
+    val normalizedPort: Int
+        get() = port.coerceIn(MIN_SOCKS5_PORT, MAX_SOCKS5_PORT)
+
+    companion object {
+        const val DEFAULT_SOCKS5_PORT = 1088
+        const val MIN_SOCKS5_PORT = 1024
+        const val MAX_SOCKS5_PORT = 65535
+    }
 }
 
 enum class PerformanceProfile(
@@ -218,6 +263,7 @@ data class AppSettings(
     val language: AppLanguage = AppLanguage.SystemDefault,
     val logLanguage: LogLanguage = LogLanguage.FollowApp,
     val advancedMode: Boolean = false,
+    val socks5ProxySettings: Socks5ProxySettings = Socks5ProxySettings(),
 ) {
     fun effectiveLogLanguage(): LogLanguage =
         if (advancedMode) logLanguage else LogLanguage.FollowApp
@@ -260,6 +306,11 @@ class AppSettingsStore private constructor(context: Context) {
         persist(_settings.value.copy(advancedMode = enabled))
     }
 
+    fun updateSocks5ProxySettings(settings: Socks5ProxySettings) {
+        val sanitized = settings.copy(port = settings.normalizedPort)
+        persist(_settings.value.copy(socks5ProxySettings = sanitized))
+    }
+
     private fun loadSettings(): AppSettings {
         migrateLegacyPrefsIfNeeded()
         val storedTechnique = vaultStore.getString(KEY_CONNECTION_TECHNIQUE)
@@ -277,6 +328,10 @@ class AppSettingsStore private constructor(context: Context) {
         val storedLanguage = AppLanguage.fromWireValue(vaultStore.getString(KEY_LANGUAGE))
         val storedLogLanguage = LogLanguage.fromWireValue(vaultStore.getString(KEY_LOG_LANGUAGE))
         val storedAdvancedMode = vaultStore.getString(KEY_ADVANCED_MODE)?.toBooleanStrictOrNull() ?: false
+        val storedSocks5Port = vaultStore.getString(KEY_SOCKS5_PORT)?.toIntOrNull()
+            ?: Socks5ProxySettings.DEFAULT_SOCKS5_PORT
+        val storedSocks5BindMode = Socks5BindMode.fromWireValue(vaultStore.getString(KEY_SOCKS5_BIND_MODE))
+            ?: Socks5BindMode.Loopback
         return AppSettings(
             connectionTechnique = sanitizeTechnique(storedTechnique),
             performanceProfile = storedProfile,
@@ -285,6 +340,10 @@ class AppSettingsStore private constructor(context: Context) {
             language = storedLanguage,
             logLanguage = storedLogLanguage,
             advancedMode = storedAdvancedMode,
+            socks5ProxySettings = Socks5ProxySettings(
+                port = storedSocks5Port,
+                bindMode = storedSocks5BindMode,
+            ),
         )
     }
 
@@ -296,6 +355,8 @@ class AppSettingsStore private constructor(context: Context) {
         vaultStore.putString(KEY_LANGUAGE, settings.language.wireValue)
         vaultStore.putString(KEY_LOG_LANGUAGE, settings.logLanguage.wireValue)
         vaultStore.putString(KEY_ADVANCED_MODE, settings.advancedMode.toString())
+        vaultStore.putString(KEY_SOCKS5_PORT, settings.socks5ProxySettings.normalizedPort.toString())
+        vaultStore.putString(KEY_SOCKS5_BIND_MODE, settings.socks5ProxySettings.bindMode.wireValue)
         _settings.value = settings
     }
 
@@ -344,6 +405,8 @@ class AppSettingsStore private constructor(context: Context) {
         private const val KEY_LANGUAGE = "language"
         private const val KEY_LOG_LANGUAGE = "log_language"
         private const val KEY_ADVANCED_MODE = "advanced_mode"
+        private const val KEY_SOCKS5_PORT = "socks5_port"
+        private const val KEY_SOCKS5_BIND_MODE = "socks5_bind_mode"
         private const val LEGACY_THEME_MODE_AMOLED = "amoled"
         private const val VAULT_NAME = "app_settings"
 

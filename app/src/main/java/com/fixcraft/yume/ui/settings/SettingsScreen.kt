@@ -52,7 +52,10 @@ import com.fixcraft.yume.data.AppLanguage
 import com.fixcraft.yume.data.ConnectionTechnique
 import com.fixcraft.yume.data.LogLanguage
 import com.fixcraft.yume.data.PerformanceProfile
+import com.fixcraft.yume.data.Socks5BindMode
+import com.fixcraft.yume.data.Socks5ProxySettings
 import com.fixcraft.yume.data.ThemeColorMode
+import com.fixcraft.yume.data.canonicalLabel
 import com.fixcraft.yume.data.supportsUserSelectablePerformanceProfiles
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AppLanguageGroup
@@ -67,6 +70,8 @@ fun SettingsScreen(
     uiState: MainUiState,
     onSelectTechnique: (ConnectionTechnique) -> Unit,
     onSelectPerformanceProfile: (PerformanceProfile) -> Unit,
+    onSelectSocks5BindMode: (Socks5BindMode) -> Unit,
+    onUpdateSocks5Port: (Int) -> Unit,
     onSelectThemeColorMode: (ThemeColorMode) -> Unit,
     onSetAmoledDarkTheme: (Boolean) -> Unit,
     isDarkTheme: Boolean,
@@ -270,6 +275,7 @@ fun SettingsScreen(
                     val enabled = when (technique) {
                         ConnectionTechnique.Tun2SocksStable -> true
                         ConnectionTechnique.NativeDirectBeta -> BuildConfig.ENABLE_NATIVE_DIRECT_BETA
+                        ConnectionTechnique.Socks5ProxyOnly -> true
                     }
                     SettingChoiceCard(
                         title = strings.connectionTechniqueName(technique),
@@ -283,6 +289,16 @@ fun SettingsScreen(
                         onClick = { onSelectTechnique(technique) },
                     )
                 }
+            }
+        }
+
+        if (uiState.appSettings.connectionTechnique == ConnectionTechnique.Socks5ProxyOnly) {
+            item {
+                Socks5ProxySettingsSection(
+                    settings = uiState.appSettings.socks5ProxySettings,
+                    onSelectBindMode = onSelectSocks5BindMode,
+                    onUpdatePort = onUpdateSocks5Port,
+                )
             }
         }
 
@@ -820,5 +836,60 @@ private fun SettingFact(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+@Composable
+private fun Socks5ProxySettingsSection(
+    settings: Socks5ProxySettings,
+    onSelectBindMode: (Socks5BindMode) -> Unit,
+    onUpdatePort: (Int) -> Unit,
+) {
+    SettingGroupCard(
+        title = "SOCKS5 proxy",
+        subtitle = "Configure your browser or apps to point at this address; only those apps go through Yume.",
+    ) {
+        var portText by remember(settings.port) { mutableStateOf(settings.port.toString()) }
+        var portError by remember { mutableStateOf<String?>(null) }
+
+        OutlinedTextField(
+            value = portText,
+            onValueChange = { raw ->
+                val digits = raw.filter { it.isDigit() }.take(5)
+                portText = digits
+                val parsed = digits.toIntOrNull()
+                if (parsed == null || parsed !in Socks5ProxySettings.MIN_SOCKS5_PORT..Socks5ProxySettings.MAX_SOCKS5_PORT) {
+                    portError = "Port must be between ${Socks5ProxySettings.MIN_SOCKS5_PORT} and ${Socks5ProxySettings.MAX_SOCKS5_PORT}"
+                } else {
+                    portError = null
+                    if (parsed != settings.port) {
+                        onUpdatePort(parsed)
+                    }
+                }
+            },
+            label = { Text("Listen port") },
+            singleLine = true,
+            isError = portError != null,
+            supportingText = portError?.let { { Text(it) } },
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Socks5BindMode.entries.forEach { mode ->
+            val (title, description) = when (mode) {
+                Socks5BindMode.Loopback ->
+                    mode.canonicalLabel() to "Only apps on this device can connect to the proxy."
+                Socks5BindMode.Wifi ->
+                    mode.canonicalLabel() to "Other devices on the same Wi-Fi can use the proxy. Useful for testing on a desktop/laptop."
+                Socks5BindMode.Wildcard ->
+                    mode.canonicalLabel() to "Listens on every interface. Expose with care — anyone reachable on this device's network can use the proxy."
+            }
+            SettingChoiceCard(
+                title = title,
+                description = description,
+                selected = settings.bindMode == mode,
+                enabled = true,
+                onClick = { onSelectBindMode(mode) },
+            )
+        }
     }
 }

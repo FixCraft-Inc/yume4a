@@ -3,6 +3,8 @@ package com.fixcraft.yume.vpn
 import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.data.ConnectionTechnique
 import com.fixcraft.yume.data.PerformanceProfile
+import com.fixcraft.yume.data.Socks5BindMode
+import com.fixcraft.yume.data.Socks5ProxySettings
 import com.fixcraft.yume.data.canonicalLabel
 import com.fixcraft.yume.transport.YumeTransportTuning
 
@@ -89,6 +91,11 @@ data class Tun2SocksRuntimeConfig(
             tcpStreamMaxBufferedBytes = tcpStreamBufferBytes,
             udpStreamMaxBufferedBytes = udpStreamBufferBytes,
             outboundFrameQueueCapacity = outboundFrameQueueCapacity,
+            // Wired to the Diagnostics screen's "Native transport (beta)"
+            // toggle (see [com.fixcraft.yume.transport.YumeNativeTransportDebug]).
+            // Read here at the moment the bootstrap is built, which is
+            // also the moment connect() decides which TLS backend to use.
+            useNativeTransport = com.fixcraft.yume.transport.YumeNativeTransportDebug.enabled,
         )
     }
 }
@@ -128,6 +135,27 @@ data class NativeDirectRuntimeConfig(
         appendLine("Applied tunnel tuning")
         append(bridgeTuning.bridgeDiagnosticsSummary(includeTechnique = false))
     }
+}
+
+data class Socks5ProxyRuntimeConfig(
+    override val performanceProfile: PerformanceProfile,
+    val bridgeTuning: Tun2SocksRuntimeConfig,
+    val proxySettings: Socks5ProxySettings,
+) : TunnelRuntimeConfig {
+    override val technique: ConnectionTechnique = ConnectionTechnique.Socks5ProxyOnly
+    override val summary: String = "${technique.canonicalLabel()} :${proxySettings.normalizedPort}"
+    override val diagnosticsSummary: String = buildString {
+        appendLine("Technique: ${technique.canonicalLabel()}")
+        appendLine("Profile: ${performanceProfile.canonicalLabel()}")
+        appendLine("Listen port: ${proxySettings.normalizedPort}")
+        appendLine("Bind: ${proxySettings.bindMode.canonicalLabel()}")
+        appendLine("No system-wide VPN: only apps configured with the SOCKS5 proxy will route through Yume.")
+        appendLine()
+        appendLine("Applied tunnel tuning")
+        append(bridgeTuning.bridgeDiagnosticsSummary(includeTechnique = false))
+    }
+
+    fun toBootstrapTuning(): YumeTransportTuning = bridgeTuning.toBootstrapTuning()
 }
 
 interface TunnelTechniqueEngine {
@@ -235,6 +263,56 @@ object NativeDirectTechniqueEngine : TunnelTechniqueEngine {
     }
 }
 
+object Socks5ProxyTechniqueEngine : TunnelTechniqueEngine {
+    override val technique: ConnectionTechnique = ConnectionTechnique.Socks5ProxyOnly
+    override val isAvailable: Boolean = true
+
+    override fun runtimeConfig(profile: PerformanceProfile): TunnelRuntimeConfig {
+        return runtimeConfig(profile, Socks5ProxySettings())
+    }
+
+    fun runtimeConfig(profile: PerformanceProfile, proxySettings: Socks5ProxySettings): Socks5ProxyRuntimeConfig {
+        val effectiveProfile = if (profile == PerformanceProfile.Latency) PerformanceProfile.Balanced else profile
+        val bridgeTuning = socks5BridgeTuning(effectiveProfile)
+        return Socks5ProxyRuntimeConfig(
+            performanceProfile = effectiveProfile,
+            bridgeTuning = bridgeTuning,
+            proxySettings = proxySettings,
+        )
+    }
+
+    override fun createDataPlane(
+        runtimeConfig: TunnelRuntimeConfig,
+        start: suspend () -> Unit,
+        stop: () -> Unit,
+        setVerificationMode: (Boolean) -> Unit,
+        stats: () -> TechniqueStats?,
+    ): TechniqueDataPlane {
+        require(runtimeConfig is Socks5ProxyRuntimeConfig)
+        return LambdaTechniqueDataPlane(
+            technique = technique,
+            summary = runtimeConfig.summary,
+            diagnostics = runtimeConfig.diagnosticsSummary,
+            starter = start,
+            stopper = stop,
+            verificationModeSetter = setVerificationMode,
+            statsReader = stats,
+        )
+    }
+}
+
+private fun socks5BridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeConfig {
+    val base = stableBridgeTuning(profile)
+    return base.copy(
+        // Without a TUN, the SOCKS5-only mode has no lwIP layer in the
+        // bridge; the relay counts and timeouts inherited from the
+        // tun2socks profile are still fine, but the DNS/UDP-association
+        // headroom can be trimmed since system DNS works directly here.
+        maxDnsUdpAssociations = 16,
+        maxUdpAssociations = 32,
+    )
+}
+
 private const val NATIVE_DIRECT_FIXED_TUNING_LABEL = "Fixed native tuning"
 
 private fun stableBridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeConfig {
@@ -270,9 +348,28 @@ private fun stableBridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeCon
             idleTcpEvictionMs = 15_000L,
             tcpEvictionGraceMs = 5_000L,
             tcpEvictionBatchSize = 8,
-            bridgeChunkBytes = 16 * 1024,
-            routeTcpBufferBytes = 192 * 1024,
-            tcpStreamBufferBytes = 1024 * 1024,
+            // bridgeChunkBytes is the read-size in the SOCKS5 splice
+            // loop (YumeSocks5Proxy.bridgeClient). At 16 KiB and high
+            // throughput the per-read syscall + JNI overhead becomes
+            // a measurable fraction of CPU; 64 KiB cuts that by 4×
+            // without meaningfully hurting latency.
+            bridgeChunkBytes = 64 * 1024,
+            // routeTcpBufferBytes sizes the local TCP socket buffer
+            // between the SOCKS5 splice and the lwIP layer. 1 MiB
+            // matches lwIP's new TCP_WND so we don't bottleneck the
+            // handover.
+            routeTcpBufferBytes = 1024 * 1024,
+            // tcpStreamBufferBytes is the cap on the per-stream
+            // BufferedChunkQueue used to absorb bursts between the
+            // Yume tunnel and the SOCKS5 splice. 4 MiB gives ~500 ms
+            // of slack at 64 Mbps per stream — comfortably above the
+            // RTT of mobile networks. Previously 1 MiB triggered the
+            // "incoming Yume stream overflow" stream-kill path on
+            // every speedtest download (see YumeBootstrapClient
+            // runReadLoop, which no longer kills the stream but
+            // silently drops; this larger buffer keeps that drop
+            // rare).
+            tcpStreamBufferBytes = 4 * 1024 * 1024,
             udpStreamBufferBytes = 256 * 1024,
             outboundFrameQueueCapacity = 192,
             tun2SocksConnectTimeoutMs = 5_000,
@@ -336,5 +433,5 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
 }
 
 private fun nativeDirectTcpOpenConcurrency(maxActiveTcpRelays: Int): Int {
-    return (maxActiveTcpRelays.coerceAtLeast(1) / 6).coerceIn(12, 24)
+    return (maxActiveTcpRelays.coerceAtLeast(1) / 3).coerceIn(24, 48)
 }
