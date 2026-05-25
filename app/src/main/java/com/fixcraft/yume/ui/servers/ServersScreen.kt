@@ -40,7 +40,7 @@ fun ServersScreen(
     uiState: MainUiState,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String, String) -> String?,
 ) {
     val strings = appStrings()
     val context = LocalContext.current
@@ -147,6 +147,7 @@ fun ServersScreen(
                     updated.anonymCaMaterialId,
                     updated.authKeyMaterialId,
                     updated.notes,
+                    updated.tlsStealthProfile,
                 )
             },
         )
@@ -176,6 +177,7 @@ fun ServersScreen(
                 profile = profile,
                 caCertPem = caPem,
                 authKeySummary = authKeySummary,
+                tlsStealthProfile = profile.tlsStealthProfile,
                 resolveAuthKeyPem = { password ->
                     runCatching {
                         store.readAuthKeyPem(profile.authKeyMaterialId, password)
@@ -240,6 +242,7 @@ fun ServersScreen(
                         caId,
                         authKeyMaterialId,                   // attached if present
                         "Imported from .yss on ${ShareFileNow()}",
+                        bundle.tlsStealthProfile,            // honor exported TLS profile
                     )
                     val msg = when {
                         err != null -> "Imported with errors: $err"

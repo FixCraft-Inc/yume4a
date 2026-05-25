@@ -32,6 +32,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -104,6 +106,7 @@ internal data class ProfileDraft(
     val anonymCaMaterialId: String = SecureMaterialStore.DEFAULT_ANONYM_CA_ID,
     val authKeyMaterialId: String = "",
     val notes: String = "",
+    val tlsStealthProfile: String = ServerProfile.DEFAULT_TLS_STEALTH_PROFILE,
 )
 
 internal enum class MaterialTextKind {
@@ -132,7 +135,7 @@ fun HomeScreen(
     onDisconnect: () -> Unit,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String, String) -> String?,
     onImportCaFile: () -> Unit,
     onImportAuthKeyFile: () -> Unit,
     onSaveCaText: suspend (String, String) -> String?,
@@ -323,6 +326,7 @@ fun HomeScreen(
                     updated.anonymCaMaterialId,
                     updated.authKeyMaterialId,
                     updated.notes,
+                    updated.tlsStealthProfile,
                 )
             },
         )
@@ -1464,6 +1468,38 @@ internal fun ProfileEditorDialog(
                             Text(strings.httpsMaskingSecretHelper)
                         },
                     )
+                    // TLS stealth profile picker. Currently drives only
+                    // the User-Agent the carrier handshake sends; the
+                    // JA3 cipher list / extension ordering is still
+                    // stock-Android (full match needs Conscrypt-level
+                    // tuning that JSSE doesn't expose). Surfaces here
+                    // because it pairs with the HTTPS-masking toggle.
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "TLS stealth profile",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            ServerProfile.TLS_STEALTH_PROFILE_OPTIONS.forEach { option ->
+                                FilterChip(
+                                    selected = localDraft.tlsStealthProfile == option,
+                                    onClick = { localDraft = localDraft.copy(tlsStealthProfile = option) },
+                                    label = { Text(option.replaceFirstChar { it.uppercaseChar() }) },
+                                    colors = FilterChipDefaults.filterChipColors(),
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Sets the User-Agent the carrier handshake sends. " +
+                                "JA3 cipher matching is on the Android roadmap.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 OutlinedTextField(
                     value = localDraft.dnsServers,
@@ -2083,6 +2119,7 @@ internal fun ServerProfile.toDraft(): ProfileDraft {
         anonymCaMaterialId = anonymCaMaterialId,
         authKeyMaterialId = authKeyMaterialId,
         notes = notes,
+        tlsStealthProfile = tlsStealthProfile,
     )
 }
 

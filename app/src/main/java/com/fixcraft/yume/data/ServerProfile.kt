@@ -18,6 +18,14 @@ data class ServerProfile(
     val anonymCaMaterialId: String = SecureMaterialStore.DEFAULT_ANONYM_CA_ID,
     val authKeyMaterialId: String = "",
     val notes: String = "",
+    // TLS stealth profile this client should mimic on the obfs
+    // carrier handshake. Currently affects the User-Agent yume sends
+    // in the carrier HEADERS frame; full JA3-matching cipher list +
+    // extension order is on the post-1.x Android roadmap (requires
+    // Conscrypt-specific socket-level tuning that JSSE doesn't
+    // expose). Valid values: "chrome", "firefox", "safari", "edge".
+    // Empty string = "chrome" (default).
+    val tlsStealthProfile: String = DEFAULT_TLS_STEALTH_PROFILE,
 ) {
     val endpointLabel: String
         get() = if (port == 443) host else "$host:$port"
@@ -42,9 +50,13 @@ data class ServerProfile(
         .put("anonym_ca_material_id", anonymCaMaterialId)
         .put("auth_key_material_id", authKeyMaterialId)
         .put("notes", notes)
+        .put("tls_stealth_profile", tlsStealthProfile)
 
     companion object {
         const val DEFAULT_MTU = 1500
+        const val DEFAULT_TLS_STEALTH_PROFILE = "chrome"
+        val TLS_STEALTH_PROFILE_OPTIONS: List<String> =
+            listOf("chrome", "firefox", "safari", "edge")
         val DEFAULT_DNS_SERVERS: List<String> = listOf("1.1.1.1", "9.9.9.9")
 
         fun fromJson(json: JSONObject): ServerProfile = ServerProfile(
@@ -71,6 +83,10 @@ data class ServerProfile(
             anonymCaMaterialId = json.optString("anonym_ca_material_id").ifBlank { SecureMaterialStore.DEFAULT_ANONYM_CA_ID },
             authKeyMaterialId = json.optString("auth_key_material_id"),
             notes = json.optString("notes"),
+            tlsStealthProfile = json.optString("tls_stealth_profile")
+                .ifBlank { DEFAULT_TLS_STEALTH_PROFILE }
+                .lowercase()
+                .let { if (it in TLS_STEALTH_PROFILE_OPTIONS) it else DEFAULT_TLS_STEALTH_PROFILE },
         )
     }
 }

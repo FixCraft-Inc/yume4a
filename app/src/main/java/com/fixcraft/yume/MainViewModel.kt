@@ -171,6 +171,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         anonymCaMaterialId: String,
         authKeyMaterialId: String,
         notes: String,
+        tlsStealthProfile: String = ServerProfile.DEFAULT_TLS_STEALTH_PROFILE,
     ): String? {
         val strings = strings()
         val normalizedName = name.trim()
@@ -232,6 +233,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     anonymCaMaterialId = normalizedCaMaterialId,
                     authKeyMaterialId = normalizedAuthKeyMaterialId,
                     notes = notes.trim(),
+                    tlsStealthProfile = tlsStealthProfile.lowercase()
+                        .ifBlank { ServerProfile.DEFAULT_TLS_STEALTH_PROFILE }
+                        .let { if (it in ServerProfile.TLS_STEALTH_PROFILE_OPTIONS) it
+                               else ServerProfile.DEFAULT_TLS_STEALTH_PROFILE },
                 )
             )
             store.selectProfile(targetId)

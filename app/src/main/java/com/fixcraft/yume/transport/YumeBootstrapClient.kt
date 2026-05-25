@@ -1986,8 +1986,24 @@ object YumeBootstrapClient {
         val token = YumeObfsH2.derivePathToken(signal, authorityHost, hour)
         val nonce = YumeObfsH2.randomNonceHex()
         val path = YumeObfsH2.buildPath(token, nonce)
-        val userAgent = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36"
+        // Honour the per-profile TLS-stealth selection. The actual
+        // TLS handshake (cipher list / extension order) is still
+        // stock Android JSSE — full JA3 match would need Conscrypt-
+        // specific tuning that isn't exposed at this layer — but
+        // the carrier UA we send in the cleartext HEADERS frame
+        // matches whatever browser the operator picked.
+        val userAgent = when (profile.tlsStealthProfile.lowercase()) {
+            "firefox" -> "Mozilla/5.0 (Android 14; Mobile; rv:133.0) " +
+                "Gecko/133.0 Firefox/133.0"
+            "safari"  -> "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) " +
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 " +
+                "Mobile/15E148 Safari/604.1"
+            "edge"    -> "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 " +
+                "EdgA/131.0.0.0"
+            else      -> "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        }
 
         val handshake = YumeObfsH2.encodeClientHandshake(authorityHost, path, userAgent)
         try {
