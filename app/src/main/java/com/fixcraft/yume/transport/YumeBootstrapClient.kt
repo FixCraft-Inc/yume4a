@@ -179,7 +179,20 @@ class YumeTcpStream internal constructor(
         if (length == 0) {
             return
         }
-        session.sendData(streamId, data, offset, length)
+        // Use the *queued* send so callers don't serialize on each
+        // TLS write completion. Pre-fix, every chunk awaited
+        // pending.completion (sendData -> sendEncodedFrame
+        // waitForWrite=true), which made the SOCKS bridge effectively
+        // one-frame-per-RTT and capped Android downloads to ~1-8 Mbps
+        // on Wi-Fi regardless of CPU. With the queued send, the
+        // outbound channel (capacity outboundFrameQueueCapacity)
+        // provides backpressure but lets runWriteLoop coalesce up
+        // to MAX_OUTBOUND_COALESCE_FRAMES (16) frames /
+        // MAX_OUTBOUND_COALESCE_BYTES (64 KiB) into a single TLS
+        // write — the actual fast path the writer was already built
+        // for. Desktop CLI was fast because its socket loop is on
+        // gigabit-loopback latency where the difference is invisible.
+        session.sendDataQueued(streamId, data, offset, length)
     }
 
     suspend fun close(reason: String = "") {
@@ -235,7 +248,9 @@ class YumeUdpStream internal constructor(
         if (data.isEmpty()) {
             return
         }
-        session.sendData(streamId, data)
+        // Same reasoning as YumeTcpStream.write — queued send lets
+        // the writer batch multiple UDP frames per TLS write.
+        session.sendDataQueued(streamId, data)
     }
 
     suspend fun close(reason: String = "") {
