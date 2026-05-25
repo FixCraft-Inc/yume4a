@@ -100,11 +100,10 @@ object ShareFile {
         require(password.isNotEmpty()) { "password must not be empty" }
         require(bundle.serverHost.isNotBlank()) { "bundle missing server host" }
         require(bundle.serverPort in 1..65535) { "bundle has invalid server port" }
-        if (bundle.type == TYPE_BACKUP) {
-            require(bundle.authPrivateKeyPem.isNotEmpty()) {
-                "backup bundle requires an auth private key"
-            }
-        }
+        // No auth-key requirement here: an info-only backup (server
+        // endpoint + obfs secret + CA cert, no private key) is valid.
+        // The downstream importer flags "no auth key — you'll need
+        // to add one" in its summary UI.
         val plaintext = bundleToJson(bundle).toString().toByteArray(Charsets.UTF_8)
         val fwx = FwxAES.create()
         val encrypted = fwx.encryptRaw(plaintext, password)
