@@ -160,14 +160,27 @@ fun ServersScreen(
         if (profile == null) {
             exportProfileId = null
         } else {
+            val store = remember(context) { SecureMaterialStore.get(context) }
             val caPem = remember(profile.anonymCaMaterialId) {
                 runCatching {
-                    SecureMaterialStore.get(context).readMaterialText(profile.anonymCaMaterialId)
+                    store.readMaterialText(profile.anonymCaMaterialId)
                 }.getOrDefault("")
+            }
+            // Look up the auth-key summary so the dialog can decide
+            // whether to ask the user for the key's password.
+            val authKeySummary = remember(profile.authKeyMaterialId) {
+                if (profile.authKeyMaterialId.isBlank()) null
+                else store.getSummary(profile.authKeyMaterialId)
             }
             ExportShareDialog(
                 profile = profile,
                 caCertPem = caPem,
+                authKeySummary = authKeySummary,
+                resolveAuthKeyPem = { password ->
+                    runCatching {
+                        store.readAuthKeyPem(profile.authKeyMaterialId, password)
+                    }
+                },
                 onDismiss = { exportProfileId = null },
                 onResult = { ok, msg ->
                     Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
@@ -180,12 +193,9 @@ fun ServersScreen(
         ImportShareDialog(
             onDismiss = { showImport = false },
             onApply = { bundle ->
-                // Persist the imported CA cert if present, then create
-                // a server profile pointing at it. Auth key not yet
-                // wired on the Android import path — recipient picks
-                // an existing auth-key material via the editor.
                 scope.launch {
                     val store = SecureMaterialStore.get(context)
+                    // Persist the imported CA cert if present.
                     val caId = if (bundle.anonymCaCertPem.isNotEmpty()) {
                         runCatching {
                             store.saveMaterialText(
@@ -196,6 +206,25 @@ fun ServersScreen(
                         }.getOrNull() ?: SecureMaterialStore.DEFAULT_ANONYM_CA_ID
                     } else {
                         SecureMaterialStore.DEFAULT_ANONYM_CA_ID
+                    }
+                    // If the bundle carried an auth private key (full-fidelity
+                    // backup from desktop CLI / GUI or from another Android
+                    // where the operator unlocked it during export), import
+                    // it as a plaintext-stored auth key. The user can
+                    // subsequently re-encrypt it via the existing
+                    // material-management UI if they want at-rest password
+                    // protection on this device.
+                    val authKeyMaterialId = if (bundle.authPrivateKeyPem.isNotEmpty()) {
+                        runCatching {
+                            store.saveImportedAuthKeyText(
+                                displayName = "Imported key (${bundle.serverHost})",
+                                rawText = bundle.authPrivateKeyPem,
+                                encrypted = false,
+                                password = "",
+                            ).id
+                        }.getOrNull() ?: ""
+                    } else {
+                        ""
                     }
                     val err = onSaveProfile(
                         null,                                // new profile
@@ -209,13 +238,13 @@ fun ServersScreen(
                         "",                                  // mtu (use default)
                         true,                                // require anonym proof
                         caId,
-                        "",                                  // auth_key_material_id — recipient adds later
+                        authKeyMaterialId,                   // attached if present
                         "Imported from yume-share file on ${ShareFileNow()}",
                     )
-                    val msg = if (err == null) {
-                        "Imported. Open the new profile in the editor to attach an auth key before connecting."
-                    } else {
-                        "Imported with errors: $err"
+                    val msg = when {
+                        err != null -> "Imported with errors: $err"
+                        authKeyMaterialId.isNotEmpty() -> "Imported (server + auth key). Ready to connect."
+                        else -> "Imported (info only). Attach an auth key via the profile editor before connecting."
                     }
                     Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
                 }

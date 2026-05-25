@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.fixcraft.yume.data.SecureMaterialSummary
 import com.fixcraft.yume.data.ServerProfile
 import com.fixcraft.yume.share.ShareFile
 import kotlinx.coroutines.Dispatchers
@@ -39,22 +40,26 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Export-flow dialog. Caller passes a profile and we walk the user
- * through:
- *   1. Pick a password (8+ chars, confirmed) → encrypt → SAF
- *      CreateDocument picker → write blob.
+ * Export-flow dialog. Walks the user through:
+ *   1. (Only when authKeySummary != null) Show whether the key is
+ *      encrypted at rest. If it is, ask for the key's password so
+ *      we can decrypt and include the PEM in the bundle. If the
+ *      user leaves the field blank for an encrypted key, the bundle
+ *      ships without the auth key (info-only) — the recipient will
+ *      need to attach their own.
+ *   2. Set a new password (8+ chars, confirmed) for the output file.
+ *   3. SAF CreateDocument picker → write the encrypted blob.
  *
- * Android-side caveat: the auth key isn't included in the bundle on
- * this platform yet because reading it out of SecureMaterialStore
- * requires the user's app-vault password, which would mean a third
- * prompt. Bundle still carries everything else useful (server,
- * obfs_secret, CA cert PEM, recommended settings). The Android UI
- * spells this out so the user isn't surprised on the import side.
+ * The caller provides `resolveAuthKeyPem(password)` so this dialog
+ * doesn't have to know how SecureMaterialStore works. Pass null for
+ * authKeySummary if the profile has no auth-key material to include.
  */
 @Composable
 fun ExportShareDialog(
     profile: ServerProfile,
     caCertPem: String,
+    authKeySummary: SecureMaterialSummary? = null,
+    resolveAuthKeyPem: suspend (password: String?) -> Result<String> = { Result.failure(IllegalStateException("no resolver")) },
     obfsPadMultiple: Int = 0,
     obfsJitterMs: Int = 0,
     tlsPinSha256: String = "",
@@ -64,10 +69,13 @@ fun ExportShareDialog(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    var authKeyPassword by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var pendingBytes by remember { mutableStateOf<ByteArray?>(null) }
+    val authKeyEncrypted = authKeySummary?.importedEncrypted == true
+    val authKeyAvailable = authKeySummary != null
 
     val saveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
@@ -95,26 +103,52 @@ fun ExportShareDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Export profile to a .yume-share file") },
+        title = { Text("Export profile to a .yss file") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "Encrypts the server connection info, the anonym CA cert, and the obfs secret " +
-                        "into a single password-protected file. Anyone with the file AND the password " +
-                        "gets your server settings.",
+                    "Encrypts the server connection info, the anonym CA cert, the obfs secret, " +
+                        "and (optionally) your auth private key into a single password-protected file. " +
+                        "Anyone with the file AND the password becomes you on this server — pick a strong " +
+                        "password.",
                     style = MaterialTheme.typography.bodySmall,
                 )
-                Text(
-                    "Note: the auth private key is NOT included in this version of the Android export. " +
-                        "The recipient will need to add their own key (or you can transfer it separately).",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
+                if (authKeyAvailable) {
+                    if (authKeyEncrypted) {
+                        Text(
+                            "Your auth key is encrypted at rest. Enter the password you set when you " +
+                                "imported it to include the key in the export. Leave blank to export " +
+                                "WITHOUT the key (info-only).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        OutlinedTextField(
+                            value = authKeyPassword,
+                            onValueChange = { authKeyPassword = it },
+                            label = { Text("Auth-key password (optional)") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    } else {
+                        Text(
+                            "Auth key is unencrypted — it'll be included in the export automatically.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    Text(
+                        "Note: this profile has no auth key attached — exporting info only.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Spacer(Modifier.height(4.dp))
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
-                    label = { Text("Password (8+ chars)") },
+                    label = { Text("New file password (8+ chars)") },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
@@ -122,7 +156,7 @@ fun ExportShareDialog(
                 OutlinedTextField(
                     value = confirm,
                     onValueChange = { confirm = it },
-                    label = { Text("Confirm password") },
+                    label = { Text("Confirm new file password") },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
@@ -135,6 +169,30 @@ fun ExportShareDialog(
                 enabled = password.length >= 8 && password == confirm,
                 onClick = {
                     scope.launch {
+                        // Step 1: resolve the auth key PEM (if any).
+                        // Unencrypted → null password; encrypted with
+                        // a typed password → use it; encrypted with
+                        // blank password → produce info-only bundle.
+                        val authPem: String = if (!authKeyAvailable) {
+                            ""
+                        } else {
+                            val pwd = if (authKeyEncrypted) authKeyPassword.trim() else ""
+                            if (authKeyEncrypted && pwd.isEmpty()) {
+                                // User opted out of including the key.
+                                ""
+                            } else {
+                                val resolved = withContext(Dispatchers.IO) {
+                                    resolveAuthKeyPem(if (pwd.isEmpty()) null else pwd)
+                                }
+                                if (resolved.isFailure) {
+                                    status = "Auth-key unlock failed: " +
+                                        (resolved.exceptionOrNull()?.message ?: "wrong password")
+                                    return@launch
+                                }
+                                resolved.getOrThrow()
+                            }
+                        }
+                        // Step 2: encrypt the bundle.
                         val (bytes, err) = withContext(Dispatchers.Default) {
                             try {
                                 val bundle = ShareFile.Bundle(
@@ -145,8 +203,7 @@ fun ExportShareDialog(
                                             else "${profile.host}:${profile.port}",
                                     serverHost = profile.host,
                                     serverPort = profile.port,
-                                    // No auth key on Android (yet).
-                                    authPrivateKeyPem = "",
+                                    authPrivateKeyPem = authPem,
                                     obfuscation = profile.obfuscation,
                                     obfsSecret = profile.obfsSecret,
                                     obfsPadMultiple = obfsPadMultiple,
@@ -164,14 +221,10 @@ fun ExportShareDialog(
                             status = "Encrypt failed: $err"
                             return@launch
                         }
-                        // Android refuses TYPE_BACKUP without an auth key; switch the bundle
-                        // type bit at the header level so the recipient knows.
-                        // (Codec already enforced the require — bypass by sending an
-                        //  empty-auth backup is fine because the recipient's UI handles it.)
                         pendingBytes = bytes
                         val defaultName = (profile.host
                             .replace('/', '_').replace(':', '_'))
-                            .ifBlank { "yume-backup" } + ".yume-share"
+                            .ifBlank { "yume-backup" } + ".yss"
                         saveLauncher.launch(defaultName)
                     }
                 },
@@ -229,13 +282,13 @@ fun ImportShareDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Import a .yume-share file") },
+        title = { Text("Import a .yss / .yume-share file") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (fileBytes == null) {
                     Text(
-                        "Pick a .yume-share file you exported from another yume install " +
-                            "(or that someone shared with you).",
+                        "Pick a .yss (or older .yume-share) file you exported from another " +
+                            "yume install, or that someone shared with you.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Button(
