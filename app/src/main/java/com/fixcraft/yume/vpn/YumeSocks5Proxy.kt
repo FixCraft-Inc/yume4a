@@ -262,13 +262,22 @@ class YumeSocks5Proxy(
                         return
                     }
 
-                    sendSocksReply(output, REPLY_SUCCESS)
-                    client.soTimeout = 0
                     log(
                         VpnLogLevel.Info,
                         "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} accepted locally; opening Yume stream.",
                     )
 
+                    // RFC 1928 §6: REP must be sent AFTER the upstream
+                    // connection either succeeds or fails. Pre-fix, REPLY_SUCCESS
+                    // was sent immediately on local accept and then the SOCKS
+                    // socket was closed via finally on failure — from the app
+                    // POV that looked like a connection that succeeded then
+                    // died mid-request. Some apps respond by retrying via
+                    // their default route (an IP leak — though Android VPN
+                    // TUN catches it), others by spinning until timeout
+                    // (the "won't load" symptom). Now we send REP after the
+                    // openTcpStream resolves, mapping failure to the right
+                    // class via mapOpenFailureToReply (previously dead code).
                     stream = try {
                         session.openTcpStream(
                             effectiveRequest.host,
@@ -282,13 +291,17 @@ class YumeSocks5Proxy(
                             .distinct()
                             .joinToString(" <- ")
                             .ifEmpty { throwable.javaClass.simpleName }
+                        val replyCode = mapOpenFailureToReply(throwable)
+                        sendSocksReply(output, replyCode)
                         log(
                             VpnLogLevel.Warn,
-                            "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} failed after local accept: $chain.",
+                            "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} failed: $chain (REP=0x${replyCode.toString(16)}).",
                         )
                         return
                     }
 
+                    sendSocksReply(output, REPLY_SUCCESS)
+                    client.soTimeout = 0
                     registerActiveTcpRelay(client, stream, effectiveRequest)
                     log(VpnLogLevel.Info, "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} via Yume stream ${stream.streamId}.")
                     bridgeClient(client, input, output, stream, effectiveRequest)
