@@ -6,6 +6,8 @@ import android.os.SystemClock
 import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.data.ServerProfile
 import com.fixcraft.yume.data.VaultJsonMapStore
+import com.fixcraft.yume.vpn.VpnLogLevel
+import com.fixcraft.yume.vpn.YumeVpnRuntime
 import org.conscrypt.Conscrypt
 import org.bouncycastle.asn1.edec.EdECObjectIdentifiers
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo
@@ -302,6 +304,23 @@ class YumeBootstrapSession internal constructor(
     @Volatile
     private var closeState = CloseState.Open
 
+    // Per-second throughput counters. The reporter coroutine logs a
+    // one-line summary every PERF_REPORT_INTERVAL_MS so we can see
+    // WHERE bandwidth is going on a slow connection. Enabled when
+    // System.getProperty("yume.perf") == "1" OR YUME_PERF=1 env, OR
+    // when the static debug flag is set. Lightweight: just atomic
+    // counters, ~zero overhead when not logged.
+    private val perfBytesEncrypted = java.util.concurrent.atomic.AtomicLong(0)
+    private val perfBytesDecrypted = java.util.concurrent.atomic.AtomicLong(0)
+    private val perfFramesSent     = java.util.concurrent.atomic.AtomicLong(0)
+    private val perfFramesRecv     = java.util.concurrent.atomic.AtomicLong(0)
+    private val perfTlsBytesWritten = java.util.concurrent.atomic.AtomicLong(0)
+    private val perfTlsBytesRead    = java.util.concurrent.atomic.AtomicLong(0)
+    private val perfEncryptNanos   = java.util.concurrent.atomic.AtomicLong(0)
+    private val perfDecryptNanos   = java.util.concurrent.atomic.AtomicLong(0)
+    private val perfWriteWaitNanos = java.util.concurrent.atomic.AtomicLong(0)
+    private val perfTlsWriteNanos  = java.util.concurrent.atomic.AtomicLong(0)
+
     init {
         sslSocket.soTimeout = 0
         sessionScope.launch {
@@ -310,6 +329,71 @@ class YumeBootstrapSession internal constructor(
         sessionScope.launch {
             runReadLoop()
         }
+        if (perfEnabled()) {
+            sessionScope.launch {
+                runPerfReporter()
+            }
+        }
+    }
+
+    private fun perfEnabled(): Boolean {
+        return System.getProperty("yume.perf") == "1" ||
+            System.getenv("YUME_PERF") == "1" ||
+            YumePerfDebug.enabled
+    }
+
+    private suspend fun runPerfReporter() {
+        var lastWallMs = System.currentTimeMillis()
+        var lastEnc = 0L
+        var lastDec = 0L
+        var lastFs  = 0L
+        var lastFr  = 0L
+        var lastTw  = 0L
+        var lastTr  = 0L
+        var lastEncN = 0L
+        var lastDecN = 0L
+        var lastWwN  = 0L
+        var lastTwN  = 0L
+        while (true) {
+            kotlinx.coroutines.delay(PERF_REPORT_INTERVAL_MS)
+            if (closeState != CloseState.Open) return
+            val now = System.currentTimeMillis()
+            val dt = (now - lastWallMs).coerceAtLeast(1L)
+            lastWallMs = now
+            val enc = perfBytesEncrypted.get(); val dEnc = enc - lastEnc; lastEnc = enc
+            val dec = perfBytesDecrypted.get(); val dDec = dec - lastDec; lastDec = dec
+            val fs  = perfFramesSent.get();     val dFs  = fs  - lastFs;  lastFs  = fs
+            val fr  = perfFramesRecv.get();     val dFr  = fr  - lastFr;  lastFr  = fr
+            val tw  = perfTlsBytesWritten.get();val dTw  = tw  - lastTw;  lastTw  = tw
+            val tr  = perfTlsBytesRead.get();   val dTr  = tr  - lastTr;  lastTr  = tr
+            val encN = perfEncryptNanos.get();  val dEncN = encN - lastEncN; lastEncN = encN
+            val decN = perfDecryptNanos.get();  val dDecN = decN - lastDecN; lastDecN = decN
+            val wwN  = perfWriteWaitNanos.get();val dWwN  = wwN  - lastWwN;  lastWwN  = wwN
+            val twN  = perfTlsWriteNanos.get(); val dTwN  = twN  - lastTwN;  lastTwN  = twN
+            val mbpsEnc = (dEnc * 8.0 / 1_000_000.0) * 1000.0 / dt
+            val mbpsDec = (dDec * 8.0 / 1_000_000.0) * 1000.0 / dt
+            val mbpsTw  = (dTw  * 8.0 / 1_000_000.0) * 1000.0 / dt
+            val mbpsTr  = (dTr  * 8.0 / 1_000_000.0) * 1000.0 / dt
+            val msg = String.format(
+                "[yume-perf] tls-out=%.1fMbps tls-in=%.1fMbps enc=%.1fMbps dec=%.1fMbps " +
+                "frames-sent=%d/s frames-recv=%d/s outQ=%d enc-cpu=%.1fms/s dec-cpu=%.1fms/s " +
+                "tls-write-cpu=%.1fms/s write-wait=%.1fms/s",
+                mbpsTw, mbpsTr, mbpsEnc, mbpsDec, dFs, dFr,
+                outboundFramesDepthApproximation(),
+                dEncN / 1_000_000.0, dDecN / 1_000_000.0,
+                dTwN / 1_000_000.0,  dWwN / 1_000_000.0,
+            )
+            android.util.Log.i("YumePerf", msg)
+            YumeVpnRuntime.appendLog(VpnLogLevel.Info, msg)
+        }
+    }
+
+    private fun outboundFramesDepthApproximation(): Int {
+        // Channel doesn't expose size publicly. Best-effort estimate
+        // via Channel.empty() check; non-trivial introspection would
+        // require reflection so we just return -1 to mean "unknown"
+        // for now. Producers and consumers race anyway.
+        return -1
     }
 
     val isAlive: Boolean
@@ -649,7 +733,10 @@ class YumeBootstrapSession internal constructor(
     private suspend fun runReadLoop() {
         try {
             while (true) {
-                val frame = decodeIncomingFrame(YumeFrameCodec.readFrame(input))
+                val rawFrame = YumeFrameCodec.readFrame(input)
+                perfTlsBytesRead.addAndGet((8L + rawFrame.payload.size))
+                perfFramesRecv.incrementAndGet()
+                val frame = decodeIncomingFrame(rawFrame)
                 when (frame.type) {
                     YumeFrameType.PING -> {
                         sendFrame(YumeFrame(type = YumeFrameType.PONG))
@@ -769,7 +856,11 @@ class YumeBootstrapSession internal constructor(
                 val encodedBatch = encodeWriteBatch(activeBatch)
                 writeMutex.withLock {
                     ensureOpen()
+                    val twStart = System.nanoTime()
                     output.write(encodedBatch)
+                    perfTlsWriteNanos.addAndGet(System.nanoTime() - twStart)
+                    perfTlsBytesWritten.addAndGet(encodedBatch.size.toLong())
+                    perfFramesSent.addAndGet(activeBatch.size.toLong())
                 }
                 activeBatch.forEach { it.completion?.complete(Unit) }
                 activeBatch = emptyList()
@@ -840,7 +931,9 @@ class YumeBootstrapSession internal constructor(
             completion = if (waitForWrite) CompletableDeferred() else null,
         )
         try {
+            val sendStart = System.nanoTime()
             outboundFrames.send(pending)
+            perfWriteWaitNanos.addAndGet(System.nanoTime() - sendStart)
             pending.completion?.await()
         } catch (throwable: Exception) {
             if (throwable is YumeBootstrapException) {
@@ -879,11 +972,15 @@ class YumeBootstrapSession internal constructor(
         } else {
             data.copyOfRange(offset, offset + length)
         }
+        val encStart = System.nanoTime()
+        val encrypted = YumeInnerCrypto.encrypt(state, YumeFrameType.DATA, streamId, payload)
+        perfEncryptNanos.addAndGet(System.nanoTime() - encStart)
+        perfBytesEncrypted.addAndGet(payload.size.toLong())
         return YumeFrameCodec.encodeFrame(
             type = YumeFrameType.DATA,
             streamId = streamId,
             flags = INNER_ENCRYPTED_FLAG,
-            payload = YumeInnerCrypto.encrypt(state, YumeFrameType.DATA, streamId, payload),
+            payload = encrypted,
         )
     }
 
@@ -906,8 +1003,12 @@ class YumeBootstrapSession internal constructor(
         if ((frame.flags and INNER_ENCRYPTED_FLAG) == 0) {
             throw YumeBootstrapException("The Yume server stopped sending required inner-encrypted ${frame.type.name} frames")
         }
+        val decStart = System.nanoTime()
+        val decrypted = YumeInnerCrypto.decrypt(state, frame.type, frame.streamId, frame.payload)
+        perfDecryptNanos.addAndGet(System.nanoTime() - decStart)
+        perfBytesDecrypted.addAndGet(decrypted.size.toLong())
         return frame.copy(
-            payload = YumeInnerCrypto.decrypt(state, frame.type, frame.streamId, frame.payload),
+            payload = decrypted,
             flags = frame.flags and INNER_ENCRYPTED_FLAG.inv(),
         )
     }
@@ -980,6 +1081,7 @@ class YumeBootstrapSession internal constructor(
         private const val MAX_OUTBOUND_COALESCE_FRAMES = 16
         private const val MAX_OUTBOUND_COALESCE_BYTES = 64 * 1024
         private const val INNER_ENCRYPTED_FLAG = 0x8000
+        private const val PERF_REPORT_INTERVAL_MS = 2_000L
 
         private fun parseHttpBody(response: String): String {
             val trimmed = response.trim()
