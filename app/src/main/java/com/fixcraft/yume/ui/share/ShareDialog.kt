@@ -270,7 +270,7 @@ fun ImportShareDialog(
             }
             val header = ShareFile.peekHeader(bytes)
             if (header == null) {
-                status = "Not a yume-share file (bad magic or unsupported version)."
+                status = "Not a .yss file (bad magic or unsupported version)."
                 return@launch
             }
             fileBytes = bytes
@@ -282,13 +282,13 @@ fun ImportShareDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Import a .yss / .yume-share file") },
+        title = { Text("Import a .yss file") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (fileBytes == null) {
                     Text(
-                        "Pick a .yss (or older .yume-share) file you exported from another " +
-                            "yume install, or that someone shared with you.",
+                        "Pick a .yss file you exported from another yume install, " +
+                            "or that someone shared with you.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Button(

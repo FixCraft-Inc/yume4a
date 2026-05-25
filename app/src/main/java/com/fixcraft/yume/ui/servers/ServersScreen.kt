@@ -239,7 +239,7 @@ fun ServersScreen(
                         true,                                // require anonym proof
                         caId,
                         authKeyMaterialId,                   // attached if present
-                        "Imported from yume-share file on ${ShareFileNow()}",
+                        "Imported from .yss on ${ShareFileNow()}",
                     )
                     val msg = when {
                         err != null -> "Imported with errors: $err"

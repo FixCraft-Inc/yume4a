@@ -14,9 +14,10 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * Kotlin codec for the .yume-share file format. Byte-compatible with
- * the C++ implementation in [src/client/share_file.cpp] — a file
- * exported on desktop can be imported on Android and vice versa.
+ * Kotlin codec for the .yss ("yume secure store") file format.
+ * Byte-compatible with the C++ implementation in
+ * [src/client/share_file.cpp] — a file exported on desktop can be
+ * imported on Android and vice versa.
  *
  * Wire format:
  *   [ 8 bytes ] "YUMESHRE"                    magic
@@ -73,8 +74,8 @@ object ShareFile {
 
     /**
      * Peek the unencrypted header. Returns null if the blob isn't a
-     * yume-share file or the version is unsupported — caller should
-     * surface a "not a yume-share file" message before prompting for
+     * .yss file or the version is unsupported — caller should
+     * surface a "not a .yss file" message before prompting for
      * a password.
      */
     fun peekHeader(blob: ByteArray): Header? {
@@ -127,10 +128,10 @@ object ShareFile {
     @Throws(DecryptException::class)
     fun decode(blob: ByteArray, password: String): Bundle {
         if (blob.size < HEADER_LEN) {
-            throw DecryptException("file too small to be a yume-share blob")
+            throw DecryptException("file too small to be a .yss blob")
         }
         if (peekHeader(blob) == null) {
-            throw DecryptException("not a yume-share file (bad magic or unsupported version)")
+            throw DecryptException("not a .yss file (bad magic or unsupported version)")
         }
         if (password.isEmpty()) {
             throw DecryptException("password must not be empty")
