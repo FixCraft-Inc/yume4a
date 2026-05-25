@@ -501,6 +501,13 @@ class YumeBootstrapSession internal constructor(
     val closeReason: String?
         get() = closingCause?.message
 
+    // Snapshot of currently-open streams. Consumed by
+    // YumeBootstrapSessionPool to pick the least-loaded session for a
+    // new SOCKS stream. Atomically-read map access; the value is a
+    // best-effort hint, not a hard contract.
+    val activeStreamCount: Int
+        get() = synchronized(stateLock) { streams.size }
+
     suspend fun ping(timeoutMs: Int = DEFAULT_PING_TIMEOUT_MS) {
         val waiter = CompletableDeferred<Unit>()
         synchronized(stateLock) {

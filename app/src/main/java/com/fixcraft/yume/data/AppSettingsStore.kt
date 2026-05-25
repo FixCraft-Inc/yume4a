@@ -71,14 +71,27 @@ fun Socks5BindMode.canonicalLabel(): String = when (this) {
 data class Socks5ProxySettings(
     val port: Int = DEFAULT_SOCKS5_PORT,
     val bindMode: Socks5BindMode = Socks5BindMode.Loopback,
+    val tunnelCount: Int = DEFAULT_TUNNEL_COUNT,
 ) {
     val normalizedPort: Int
         get() = port.coerceIn(MIN_SOCKS5_PORT, MAX_SOCKS5_PORT)
+
+    val normalizedTunnelCount: Int
+        get() = tunnelCount.coerceIn(MIN_TUNNEL_COUNT, MAX_TUNNEL_COUNT)
 
     companion object {
         const val DEFAULT_SOCKS5_PORT = 1088
         const val MIN_SOCKS5_PORT = 1024
         const val MAX_SOCKS5_PORT = 65535
+        const val DEFAULT_TUNNEL_COUNT = 4
+        const val MIN_TUNNEL_COUNT = 1
+        // Per-session memory/CPU isn't free — every additional tunnel
+        // means another TLS state, another auth handshake, another
+        // keepalive ticker, and another hop-key timer. 8 is the
+        // pragmatic ceiling for a mobile device; beyond that we hit
+        // the server's accept rate limit and the marginal gain on the
+        // client falls off as the TLS-encrypt path saturates the CPU.
+        const val MAX_TUNNEL_COUNT = 8
     }
 }
 
@@ -332,6 +345,8 @@ class AppSettingsStore private constructor(context: Context) {
             ?: Socks5ProxySettings.DEFAULT_SOCKS5_PORT
         val storedSocks5BindMode = Socks5BindMode.fromWireValue(vaultStore.getString(KEY_SOCKS5_BIND_MODE))
             ?: Socks5BindMode.Loopback
+        val storedSocks5TunnelCount = vaultStore.getString(KEY_SOCKS5_TUNNEL_COUNT)?.toIntOrNull()
+            ?: Socks5ProxySettings.DEFAULT_TUNNEL_COUNT
         return AppSettings(
             connectionTechnique = sanitizeTechnique(storedTechnique),
             performanceProfile = storedProfile,
@@ -343,6 +358,7 @@ class AppSettingsStore private constructor(context: Context) {
             socks5ProxySettings = Socks5ProxySettings(
                 port = storedSocks5Port,
                 bindMode = storedSocks5BindMode,
+                tunnelCount = storedSocks5TunnelCount,
             ),
         )
     }
@@ -357,6 +373,7 @@ class AppSettingsStore private constructor(context: Context) {
         vaultStore.putString(KEY_ADVANCED_MODE, settings.advancedMode.toString())
         vaultStore.putString(KEY_SOCKS5_PORT, settings.socks5ProxySettings.normalizedPort.toString())
         vaultStore.putString(KEY_SOCKS5_BIND_MODE, settings.socks5ProxySettings.bindMode.wireValue)
+        vaultStore.putString(KEY_SOCKS5_TUNNEL_COUNT, settings.socks5ProxySettings.normalizedTunnelCount.toString())
         _settings.value = settings
     }
 
@@ -407,6 +424,7 @@ class AppSettingsStore private constructor(context: Context) {
         private const val KEY_ADVANCED_MODE = "advanced_mode"
         private const val KEY_SOCKS5_PORT = "socks5_port"
         private const val KEY_SOCKS5_BIND_MODE = "socks5_bind_mode"
+        private const val KEY_SOCKS5_TUNNEL_COUNT = "socks5_tunnel_count"
         private const val LEGACY_THEME_MODE_AMOLED = "amoled"
         private const val VAULT_NAME = "app_settings"
 

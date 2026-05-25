@@ -28,13 +28,17 @@ import com.fixcraft.yume.i18n.AppLocaleManager
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.transport.YumeBootstrapClient
 import com.fixcraft.yume.transport.YumeBootstrapSession
+import com.fixcraft.yume.transport.YumeBootstrapSessionPool
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -65,6 +69,7 @@ class YumeSocks5ProxyService : Service() {
     private var connectJob: Job? = null
     private var disconnectJob: Job? = null
     private var bootstrapSession: YumeBootstrapSession? = null
+    private var bootstrapSessionPool: YumeBootstrapSessionPool? = null
     private var socksProxy: YumeSocks5Proxy? = null
     private var activeProfile: ServerProfile? = null
     @Volatile
@@ -185,15 +190,35 @@ class YumeSocks5ProxyService : Service() {
 
         try {
             ensureSessionActive(generation)
+            val tunnelCount = proxySettings.normalizedTunnelCount
             bootstrapSession = openBootstrapSession(
                 profile = profile,
                 anonymCaPem = anonymCaPem,
                 authKeyPem = authKeyPem,
-                reason = "Opening authenticated Yume control path",
+                reason = "Opening authenticated Yume control path (primary 1/$tunnelCount)",
                 runtimeConfig = runtimeConfig,
                 generation = generation,
             )
             ensureSessionActive(generation)
+
+            val pool = YumeBootstrapSessionPool()
+            pool.add(bootstrapSession!!)
+            if (tunnelCount > 1) {
+                openAdditionalTunnels(
+                    pool = pool,
+                    profile = profile,
+                    anonymCaPem = anonymCaPem,
+                    authKeyPem = authKeyPem,
+                    runtimeConfig = runtimeConfig,
+                    tunnelCount = tunnelCount,
+                    generation = generation,
+                )
+            }
+            bootstrapSessionPool = pool
+            YumeVpnRuntime.appendLog(
+                VpnLogLevel.Info,
+                "SOCKS5 tunnel pool ready: ${pool.liveCount}/${pool.size} live tunnels.",
+            )
 
             val proxyAddress = startSocksProxy(runtimeConfig)
             localProxyAddress = proxyAddress
@@ -219,14 +244,15 @@ class YumeSocks5ProxyService : Service() {
                     val closeDetail = liveSession?.closeReason?.takeIf { it.isNotBlank() } ?: "unknown reason"
                     YumeVpnRuntime.appendLog(
                         VpnLogLevel.Warn,
-                        "Authenticated Yume control path lost ($closeDetail). Re-authenticating.",
+                        "Authenticated Yume control path lost ($closeDetail). Rebuilding the tunnel pool.",
                     )
-                    bootstrapSession = openBootstrapSession(
+                    rebuildPool(
                         profile = profile,
                         anonymCaPem = anonymCaPem,
                         authKeyPem = authKeyPem,
-                        reason = "Authenticated Yume control path lost ($closeDetail)",
                         runtimeConfig = runtimeConfig,
+                        tunnelCount = proxySettings.normalizedTunnelCount,
+                        reason = "primary lost ($closeDetail)",
                         generation = generation,
                     )
                     ensureSessionActive(generation)
@@ -252,14 +278,15 @@ class YumeSocks5ProxyService : Service() {
                         }
                         YumeVpnRuntime.appendLog(
                             VpnLogLevel.Warn,
-                            "Yume PING failed $consecutivePingFailures times in a row: $pingDetail. Re-authenticating.",
+                            "Yume PING failed $consecutivePingFailures times in a row: $pingDetail. Rebuilding the tunnel pool.",
                         )
-                        bootstrapSession = openBootstrapSession(
+                        rebuildPool(
                             profile = profile,
                             anonymCaPem = anonymCaPem,
                             authKeyPem = authKeyPem,
-                            reason = "Yume keepalive failed",
                             runtimeConfig = runtimeConfig,
+                            tunnelCount = proxySettings.normalizedTunnelCount,
+                            reason = "keepalive failed",
                             generation = generation,
                         )
                         ensureSessionActive(generation)
@@ -332,11 +359,116 @@ class YumeSocks5ProxyService : Service() {
         return session
     }
 
+    private suspend fun rebuildPool(
+        profile: ServerProfile,
+        anonymCaPem: String,
+        authKeyPem: String,
+        runtimeConfig: Socks5ProxyRuntimeConfig,
+        tunnelCount: Int,
+        reason: String,
+        generation: Long,
+    ) {
+        // Tear down whatever's still alive, then rebuild the whole pool
+        // from scratch. The keepalive sits on the primary, so when
+        // it falls over we expect the secondaries are also dead or
+        // drifting — pinging each individually would double the
+        // round-trip cost without changing the outcome.
+        val oldPool = bootstrapSessionPool
+        bootstrapSessionPool = null
+        bootstrapSession = null
+        runCatching { oldPool?.closeAll() }
+        val primary = openBootstrapSession(
+            profile = profile,
+            anonymCaPem = anonymCaPem,
+            authKeyPem = authKeyPem,
+            reason = "Rebuilding tunnel pool ($reason) — primary 1/$tunnelCount",
+            runtimeConfig = runtimeConfig,
+            generation = generation,
+        )
+        bootstrapSession = primary
+        val pool = YumeBootstrapSessionPool()
+        pool.add(primary)
+        if (tunnelCount > 1) {
+            openAdditionalTunnels(
+                pool = pool,
+                profile = profile,
+                anonymCaPem = anonymCaPem,
+                authKeyPem = authKeyPem,
+                runtimeConfig = runtimeConfig,
+                tunnelCount = tunnelCount,
+                generation = generation,
+            )
+        }
+        bootstrapSessionPool = pool
+        YumeVpnRuntime.appendLog(
+            VpnLogLevel.Info,
+            "SOCKS5 tunnel pool rebuilt: ${pool.liveCount}/${pool.size} live tunnels.",
+        )
+    }
+
+    private suspend fun openAdditionalTunnels(
+        pool: YumeBootstrapSessionPool,
+        profile: ServerProfile,
+        anonymCaPem: String,
+        authKeyPem: String,
+        runtimeConfig: Socks5ProxyRuntimeConfig,
+        tunnelCount: Int,
+        generation: Long,
+    ) {
+        // Open the secondaries in parallel — each TLS handshake takes
+        // ~200-500 ms; serialising them would stall connect by N*RTT.
+        // We tolerate individual failures: a partial pool (e.g. 3/4
+        // live) still gives a multi-tunnel win over the single-tunnel
+        // baseline. The primary, already in the pool, is the
+        // backstop.
+        coroutineScope {
+            val tasks = (2..tunnelCount).map { index ->
+                async {
+                    ensureSessionActive(generation)
+                    runCatching {
+                        openBootstrapSession(
+                            profile = profile,
+                            anonymCaPem = anonymCaPem,
+                            authKeyPem = authKeyPem,
+                            reason = "Opening additional Yume tunnel ($index/$tunnelCount)",
+                            runtimeConfig = runtimeConfig,
+                            generation = generation,
+                        )
+                    }
+                }
+            }
+            val results = tasks.awaitAll()
+            for ((idx, result) in results.withIndex()) {
+                val tunnelLabel = "tunnel ${idx + 2}/$tunnelCount"
+                result.fold(
+                    onSuccess = { session ->
+                        pool.add(session)
+                        YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Added $tunnelLabel to the pool.")
+                    },
+                    onFailure = { throwable ->
+                        YumeVpnRuntime.appendLog(
+                            VpnLogLevel.Warn,
+                            "Failed to open $tunnelLabel: ${throwable.message ?: throwable.javaClass.simpleName}. " +
+                                "Continuing with whatever tunnels did come up.",
+                        )
+                    },
+                )
+            }
+        }
+    }
+
     private suspend fun startSocksProxy(runtimeConfig: Socks5ProxyRuntimeConfig): String {
         val proxy = socksProxy ?: YumeSocks5Proxy(
             scope = serviceScope,
             runtimeConfig = runtimeConfig.bridgeTuning,
-            sessionProvider = { bootstrapSession },
+            // Per-stream pool pick: every CONNECT / UDP-ASSOC pulls a
+            // fresh least-loaded session, spreading the SOCKS load
+            // across N parallel TLS tunnels. Falls back to the
+            // primary if the pool is empty (e.g. very early during
+            // connect, before pool is wired).
+            sessionProvider = {
+                bootstrapSessionPool?.pickForStream() ?: bootstrapSession
+            },
             dnsServersProvider = { activeProfile?.dnsServers.orEmpty() },
             ipv4OnlyMode = true,
             forceTcpFallbackUdp443Provider = { true },
@@ -428,8 +560,16 @@ class YumeSocks5ProxyService : Service() {
 
     private fun disconnectResources() {
         val session = bootstrapSession
+        val pool = bootstrapSessionPool
         bootstrapSession = null
+        bootstrapSessionPool = null
         runCatching { socksProxy?.stop() }
+        // closeAll() iterates every session in the pool, including the
+        // primary that bootstrapSession aliased. Closing twice is
+        // safe (close is idempotent on YumeBootstrapSession), so the
+        // belt-and-braces session?.close() below covers the case
+        // where the pool was never built (early failure).
+        runCatching { pool?.closeAll() }
         runCatching { session?.close() }
         runCatching { inFlightSocket?.close() }
         inFlightSocket = null

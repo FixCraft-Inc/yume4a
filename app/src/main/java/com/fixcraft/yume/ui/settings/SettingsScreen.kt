@@ -72,6 +72,7 @@ fun SettingsScreen(
     onSelectPerformanceProfile: (PerformanceProfile) -> Unit,
     onSelectSocks5BindMode: (Socks5BindMode) -> Unit,
     onUpdateSocks5Port: (Int) -> Unit,
+    onUpdateSocks5TunnelCount: (Int) -> Unit,
     onSelectThemeColorMode: (ThemeColorMode) -> Unit,
     onSetAmoledDarkTheme: (Boolean) -> Unit,
     isDarkTheme: Boolean,
@@ -298,6 +299,7 @@ fun SettingsScreen(
                     settings = uiState.appSettings.socks5ProxySettings,
                     onSelectBindMode = onSelectSocks5BindMode,
                     onUpdatePort = onUpdateSocks5Port,
+                    onUpdateTunnelCount = onUpdateSocks5TunnelCount,
                 )
             }
         }
@@ -844,6 +846,7 @@ private fun Socks5ProxySettingsSection(
     settings: Socks5ProxySettings,
     onSelectBindMode: (Socks5BindMode) -> Unit,
     onUpdatePort: (Int) -> Unit,
+    onUpdateTunnelCount: (Int) -> Unit,
 ) {
     SettingGroupCard(
         title = "SOCKS5 proxy",
@@ -891,5 +894,30 @@ private fun Socks5ProxySettingsSection(
                 onClick = { onSelectBindMode(mode) },
             )
         }
+
+        var tunnelText by remember(settings.tunnelCount) { mutableStateOf(settings.tunnelCount.toString()) }
+        var tunnelError by remember { mutableStateOf<String?>(null) }
+        OutlinedTextField(
+            value = tunnelText,
+            onValueChange = { raw ->
+                val digits = raw.filter { it.isDigit() }.take(2)
+                tunnelText = digits
+                val parsed = digits.toIntOrNull()
+                if (parsed == null || parsed !in Socks5ProxySettings.MIN_TUNNEL_COUNT..Socks5ProxySettings.MAX_TUNNEL_COUNT) {
+                    tunnelError = "Tunnels must be between ${Socks5ProxySettings.MIN_TUNNEL_COUNT} and ${Socks5ProxySettings.MAX_TUNNEL_COUNT}"
+                } else {
+                    tunnelError = null
+                    if (parsed != settings.tunnelCount) {
+                        onUpdateTunnelCount(parsed)
+                    }
+                }
+            },
+            label = { Text("Parallel tunnels") },
+            singleLine = true,
+            isError = tunnelError != null,
+            supportingText = tunnelError?.let { { Text(it) } }
+                ?: { Text("More tunnels = more throughput but more handshakes during connect; 4 is the sweet spot for mobile.") },
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }

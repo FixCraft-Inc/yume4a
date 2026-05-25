@@ -194,6 +194,7 @@ class MainActivity : ComponentActivity() {
                     onSelectPerformanceProfile = viewModel::updatePerformanceProfile,
                     onSelectSocks5BindMode = viewModel::updateSocks5BindMode,
                     onUpdateSocks5Port = viewModel::updateSocks5ProxyPort,
+                    onUpdateSocks5TunnelCount = viewModel::updateSocks5TunnelCount,
                     onSelectThemeColorMode = viewModel::updateThemeColorMode,
                     onSetAmoledDarkTheme = viewModel::updateAmoledDarkTheme,
                     isDarkTheme = darkTheme,

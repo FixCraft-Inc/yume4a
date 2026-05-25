@@ -645,6 +645,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         appSettingsStore.updateSocks5ProxySettings(current.copy(bindMode = mode))
     }
 
+    fun updateSocks5TunnelCount(count: Int) {
+        val current = uiState.value.appSettings.socks5ProxySettings
+        appSettingsStore.updateSocks5ProxySettings(current.copy(tunnelCount = count))
+    }
+
     private fun connectPreflight(
         selectedProfile: ServerProfile,
         strings: com.fixcraft.yume.i18n.AppStrings,
