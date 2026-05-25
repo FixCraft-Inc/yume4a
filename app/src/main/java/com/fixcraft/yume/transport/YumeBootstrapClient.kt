@@ -1152,6 +1152,28 @@ object YumeBootstrapClient {
                 runCatching {
                     rawSocket.tcpNoDelay = true
                     rawSocket.keepAlive = true
+                    // Lift the bandwidth-delay-product cap. Android's
+                    // default TCP receive window is ~64 KiB on many
+                    // builds, which over 50 ms RTT puts a single
+                    // tunnel TCP connection at ~10 Mbps regardless
+                    // of CPU. The yume tunnel multiplexes every app
+                    // stream through ONE TCP flow, so that BDP cap
+                    // becomes the total throughput cap — exactly the
+                    // "9 Mbps down / 1.1 up, native shows spikes
+                    // then 0" symptom the user reported. Setting
+                    // explicit large buffers lets the kernel scale
+                    // the window upward via auto-tuning instead of
+                    // staying at the conservative default. Linux
+                    // desktop already auto-tunes to MBs by default
+                    // (which is why the desktop CLI hits 100-200 Mbps
+                    // on the same network).
+                    //
+                    // 2 MiB is enough headroom for ~300 Mbps at 50 ms
+                    // RTT (BDP = 2 MiB / 0.05s = 320 Mbps). The
+                    // kernel may cap below this — we ask for what we
+                    // want and accept what we get.
+                    rawSocket.receiveBufferSize = 2 * 1024 * 1024
+                    rawSocket.sendBufferSize    = 2 * 1024 * 1024
                 }
                 if (attempt > 1) {
                     log?.invoke("Retry attempt $attempt/$MAX_CONNECT_ATTEMPTS with a fresh protected socket.")
@@ -1168,6 +1190,14 @@ object YumeBootstrapClient {
                     runCatching {
                         tcpNoDelay = true
                         keepAlive = true
+                        // Same BDP rationale as the raw socket — some
+                        // Android SSLSocket implementations wrap the
+                        // underlying TCP socket and re-apply socket
+                        // options, so re-set the large buffers here
+                        // too. No-op when the underlying socket
+                        // already has them.
+                        receiveBufferSize = 2 * 1024 * 1024
+                        sendBufferSize    = 2 * 1024 * 1024
                     }
                     val supportedProtocols = supportedProtocols.toSet()
                     if ("TLSv1.3" !in supportedProtocols) {
