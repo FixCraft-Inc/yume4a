@@ -1,4 +1,7 @@
+import java.io.File
+import java.lang.ProcessBuilder
 import java.time.Instant
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -222,6 +225,120 @@ android {
 
 tasks.named("preBuild") {
     dependsOn(syncBasefwxJava, syncBasefwxJavaResources)
+}
+
+// libyumetransport.so (the non-blocking TLS pipe) statically links a
+// pre-built OpenSSL 3.0.x. Building OpenSSL inside ndk-build is awkward
+// (Configure scripts, perl, autoconf), so we build it outside via
+// app/src/main/cpp/build-openssl.sh, ONCE per ABI, cached under
+// app/build/openssl/<abi>/. The Android.mk file imports the resulting
+// libssl.a + libcrypto.a as PREBUILT_STATIC_LIBRARY targets.
+//
+// This task is wired into the externalNativeBuild lifecycle below so
+// AGP runs it before ndk-build. First build per ABI takes ~3-5 min on
+// remote-builder; subsequent builds skip (idempotent).
+val openSslOutputDir = layout.buildDirectory.dir("openssl")
+val openSslBuildScript = rootProject.file("app/src/main/cpp/build-openssl.sh")
+
+val configuredAbis: List<String> = (project.findProperty("yumeAbi") as? String)
+    ?.split(',')
+    ?.map { it.trim() }
+    ?.filter { it.isNotEmpty() }
+    ?.takeIf { it.isNotEmpty() }
+    ?: listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+val configuredMinSdk: String = (android.defaultConfig.minSdk ?: 28).toString()
+
+fun resolveNdkRoot(): String? {
+    // Env vars first (CI, CLI invocations). Then local.properties'
+    // ndk.dir, then sdk.dir + ndk/<largest version>. We deliberately
+    // do NOT depend on AGP's android.ndkDirectory because that
+    // property's API has churned across AGP versions and isn't
+    // available in Kotlin DSL strict mode on this project's AGP.
+    val envCandidate: String? = System.getenv("ANDROID_NDK_HOME")
+        ?: System.getenv("ANDROID_NDK_ROOT")
+    if (envCandidate != null) {
+        val envDir: File = File(envCandidate)
+        if (envDir.isDirectory) return envCandidate
+    }
+
+    val localProps: File = rootProject.file("local.properties")
+    if (!localProps.isFile) return null
+    val props = Properties()
+    val stream = localProps.inputStream()
+    try {
+        props.load(stream)
+    } finally {
+        stream.close()
+    }
+
+    val ndkDir: String? = props.getProperty("ndk.dir")
+    if (!ndkDir.isNullOrBlank()) {
+        val ndkDirFile: File = File(ndkDir)
+        if (ndkDirFile.isDirectory) return ndkDir
+    }
+
+    val sdkDir: String? = props.getProperty("sdk.dir")
+    if (sdkDir.isNullOrBlank()) return null
+    val ndkRoot: File = File(sdkDir).resolve("ndk")
+    if (!ndkRoot.isDirectory) return null
+    val candidates: Array<File>? = ndkRoot.listFiles()
+    val newest: File? = candidates
+        ?.filter { entry: File -> entry.isDirectory }
+        ?.maxByOrNull { entry: File -> entry.name }
+    return newest?.absolutePath
+}
+
+val buildOpenSslPerAbi by tasks.registering {
+    description = "Builds OpenSSL 3.0.x static libs for each Android ABI used by libyumetransport.so."
+    group = "yume native"
+    inputs.file(openSslBuildScript)
+    outputs.dir(openSslOutputDir)
+    doLast {
+        val ndkPath = resolveNdkRoot()
+            ?: error(
+                "libyumetransport.so requires the Android NDK. Install via Android Studio " +
+                "(SDK Manager → SDK Tools → NDK) or set ANDROID_NDK_HOME."
+            )
+        val outRoot = openSslOutputDir.get().asFile.absolutePath
+        for (abi in configuredAbis) {
+            logger.lifecycle("Building OpenSSL for $abi (cached under $outRoot/$abi if already present)...")
+            val proc = ProcessBuilder(
+                "bash",
+                openSslBuildScript.absolutePath,
+                abi,
+                ndkPath,
+                configuredMinSdk,
+                outRoot,
+            )
+                .redirectErrorStream(true)
+                .redirectOutput(ProcessBuilder.Redirect.INHERIT)
+                .start()
+            val rc = proc.waitFor()
+            if (rc != 0) {
+                error("OpenSSL build for $abi failed with exit code $rc")
+            }
+        }
+    }
+}
+
+// Hook into the externalNativeBuild lifecycle ONLY. AGP creates
+// per-variant per-ABI tasks named like "externalNativeBuildDebug",
+// "configureNdkBuildDebug[Arm64-v8a]" etc.; we attach to all of them
+// so each ABI's Android.mk sees the pre-built OpenSSL libs ready.
+//
+// Deliberately NOT hooked into preBuild — unit tests (compileDebugKotlin
+// and friends) reach preBuild, and forcing OpenSSL compilation on every
+// local `./gradlew :app:testDebugUnitTest` invocation would brick the
+// laptop. The native build is only triggered by ./gradlew assemble*
+// or by Android Studio's run/debug flow.
+afterEvaluate {
+    tasks.matching {
+        it.name.startsWith("externalNativeBuild") ||
+            it.name.startsWith("configureNdkBuild") ||
+            it.name.startsWith("generateJsonModelNdkBuild")
+    }.configureEach {
+        dependsOn(buildOpenSslPerAbi)
+    }
 }
 
 tasks.matching { it.name == "mergeDexRelease" || it.name == "mergeDexDebug" }.configureEach {

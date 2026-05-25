@@ -2,6 +2,7 @@ package com.fixcraft.yume.transport
 
 import android.content.Context
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.data.ServerProfile
@@ -27,6 +28,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -73,6 +75,14 @@ data class YumeTransportTuning(
     val tcpStreamMaxBufferedBytes: Int = 256 * 1024,
     val udpStreamMaxBufferedBytes: Int = 128 * 1024,
     val outboundFrameQueueCapacity: Int = 64,
+    // When true AND libyumetransport.so loads successfully, the TLS
+    // pipe is driven by a native non-blocking OpenSSL loop instead of
+    // SSLSocket. Off by default for release-channel safety. The toggle
+    // is wired to the Diagnostics screen ("Native transport (beta)")
+    // and to AppSettings so operators can A/B compare in the field.
+    // When the native lib is unavailable for the current ABI, the
+    // bootstrap silently falls back to the Java SSLSocket path.
+    val useNativeTransport: Boolean = false,
 )
 
 private class BufferedChunkQueue(
@@ -282,18 +292,29 @@ class YumeUdpStream internal constructor(
 }
 
 class YumeBootstrapSession internal constructor(
-    private val sslSocket: SSLSocket,
+    private val transport: YumeTransportSocket,
     val bootstrap: YumeServerBootstrap,
     private val innerState: YumeInnerSessionState? = null,
     private val transportTuning: YumeTransportTuning = YumeTransportTuning(),
 ) {
-    private val input = sslSocket.inputStream
-    private val output = sslSocket.outputStream
+    private val input = transport.inputStream
+    private val output = transport.outputStream
+
+    // Cheap accessor for the perf reporter: "native-tls" vs "java-sslsocket".
+    val transportBackendLabel: String get() = transport.backendLabel
     private val writeMutex = Mutex()
     private val stateLock = Any()
     private val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val closeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val outboundFrames = Channel<PendingWrite>(transportTuning.outboundFrameQueueCapacity)
+    // Priority channel for control frames (PING, PONG, CLOSE, CONTROL,
+    // OPEN). The write loop drains this BEFORE outboundFrames. Without
+    // this, a saturated upload (DATA frames filling outboundFrames +
+    // writer blocked on output.write because the kernel TCP send
+    // buffer is full) starves the keepalive PING — server times the
+    // session out and the VPN re-auths mid-test. 32 slots is plenty:
+    // we usually have at most a few in-flight control frames.
+    private val controlFrames = Channel<PendingWrite>(32)
     private val pendingOpen = mutableMapOf<Int, CompletableDeferred<Unit>>()
     private val pendingPongs = ArrayDeque<CompletableDeferred<Unit>>()
     private val pendingControl = mutableMapOf<String, CompletableDeferred<JSONObject>>()
@@ -322,7 +343,7 @@ class YumeBootstrapSession internal constructor(
     private val perfTlsWriteNanos  = java.util.concurrent.atomic.AtomicLong(0)
 
     init {
-        sslSocket.soTimeout = 0
+        transport.soTimeout = 0
         sessionScope.launch {
             runWriteLoop()
         }
@@ -332,6 +353,9 @@ class YumeBootstrapSession internal constructor(
         if (perfEnabled()) {
             sessionScope.launch {
                 runPerfReporter()
+            }
+            sessionScope.launch {
+                runSubSecondFlowReporter()
             }
         }
     }
@@ -370,21 +394,96 @@ class YumeBootstrapSession internal constructor(
             val decN = perfDecryptNanos.get();  val dDecN = decN - lastDecN; lastDecN = decN
             val wwN  = perfWriteWaitNanos.get();val dWwN  = wwN  - lastWwN;  lastWwN  = wwN
             val twN  = perfTlsWriteNanos.get(); val dTwN  = twN  - lastTwN;  lastTwN  = twN
+            // All `/s` figures below are normalized to per-second by
+            // `* 1000 / dt`. Without this, a 2000 ms window would
+            // report "2176ms/s" when the writer was 100% pegged —
+            // misleading. cpu/wait values can still exceed 1000ms/s
+            // because multiple producer coroutines can accumulate wait
+            // time concurrently (e.g. several streams blocked on the
+            // outbound channel at once).
             val mbpsEnc = (dEnc * 8.0 / 1_000_000.0) * 1000.0 / dt
             val mbpsDec = (dDec * 8.0 / 1_000_000.0) * 1000.0 / dt
             val mbpsTw  = (dTw  * 8.0 / 1_000_000.0) * 1000.0 / dt
             val mbpsTr  = (dTr  * 8.0 / 1_000_000.0) * 1000.0 / dt
+            val fsPerSec = dFs * 1000.0 / dt
+            val frPerSec = dFr * 1000.0 / dt
+            val encMsPerSec = (dEncN / 1_000_000.0) * 1000.0 / dt
+            val decMsPerSec = (dDecN / 1_000_000.0) * 1000.0 / dt
+            val twMsPerSec  = (dTwN  / 1_000_000.0) * 1000.0 / dt
+            val wwMsPerSec  = (dWwN  / 1_000_000.0) * 1000.0 / dt
             val msg = String.format(
-                "[yume-perf] tls-out=%.1fMbps tls-in=%.1fMbps enc=%.1fMbps dec=%.1fMbps " +
-                "frames-sent=%d/s frames-recv=%d/s outQ=%d enc-cpu=%.1fms/s dec-cpu=%.1fms/s " +
-                "tls-write-cpu=%.1fms/s write-wait=%.1fms/s",
-                mbpsTw, mbpsTr, mbpsEnc, mbpsDec, dFs, dFr,
+                "[yume-perf] transport=%s tls-out=%.1fMbps tls-in=%.1fMbps " +
+                "enc=%.1fMbps dec=%.1fMbps " +
+                "frames-sent=%.0f/s frames-recv=%.0f/s outQ=%d enc-cpu=%.0fms/s dec-cpu=%.0fms/s " +
+                "tls-write-cpu=%.0fms/s write-wait=%.0fms/s",
+                transport.backendLabel,
+                mbpsTw, mbpsTr, mbpsEnc, mbpsDec, fsPerSec, frPerSec,
                 outboundFramesDepthApproximation(),
-                dEncN / 1_000_000.0, dDecN / 1_000_000.0,
-                dTwN / 1_000_000.0,  dWwN / 1_000_000.0,
+                encMsPerSec, decMsPerSec, twMsPerSec, wwMsPerSec,
             )
             android.util.Log.i("YumePerf", msg)
             YumeVpnRuntime.appendLog(VpnLogLevel.Info, msg)
+        }
+    }
+
+    // Sub-second flow reporter. Samples perfTlsBytesWritten every 100ms
+    // into a 50-slot ring (5 s window) and prints the buckets once per
+    // second. This is what visually proves "live flowing" vs sawtooth:
+    // an SSLSocket bottleneck shows long 0 gaps followed by big spikes
+    // when ACKs arrive; the native pipe shows smooth, similar values
+    // across all 50 buckets.
+    //
+    // Output format:
+    //   [yume-flow] transport=native window=5.0s (KB/100ms): 124 130 ...
+    //               min=110 max=150 med=128
+    //
+    // Costs ~10 atomic reads per second + one log line. Negligible.
+    private suspend fun runSubSecondFlowReporter() {
+        val bucketMs = 100L
+        val windowSlots = 50               // 5 s sliding window
+        val printIntervalSlots = 10        // print once per 1000 ms
+        val outBuckets = LongArray(windowSlots)
+        val inBuckets = LongArray(windowSlots)
+        var idx = 0
+        var lastOut = perfTlsBytesWritten.get()
+        var lastIn  = perfTlsBytesRead.get()
+        var tickCount = 0
+        while (true) {
+            kotlinx.coroutines.delay(bucketMs)
+            if (closeState != CloseState.Open) return
+            val curOut = perfTlsBytesWritten.get()
+            val curIn  = perfTlsBytesRead.get()
+            outBuckets[idx] = (curOut - lastOut).coerceAtLeast(0L)
+            inBuckets[idx]  = (curIn  - lastIn ).coerceAtLeast(0L)
+            lastOut = curOut
+            lastIn  = curIn
+            idx = (idx + 1) % windowSlots
+            tickCount += 1
+            if (tickCount % printIntervalSlots != 0) continue
+
+            // Render in chronological order: oldest first.
+            val orderedOut = LongArray(windowSlots) { i -> outBuckets[(idx + i) % windowSlots] }
+            val orderedIn  = LongArray(windowSlots) { i -> inBuckets [(idx + i) % windowSlots] }
+            val out = String.format(
+                "[yume-flow] transport=%s window=%.1fs out(KB/100ms)=[%s] min=%d max=%d med=%d",
+                transport.backendLabel,
+                windowSlots * bucketMs / 1000.0,
+                orderedOut.joinToString(" ") { (it / 1024).toString() },
+                orderedOut.min() / 1024,
+                orderedOut.max() / 1024,
+                orderedOut.sortedArray()[orderedOut.size / 2] / 1024,
+            )
+            val inb = String.format(
+                "[yume-flow]                in (KB/100ms)=[%s] min=%d max=%d med=%d",
+                orderedIn.joinToString(" ") { (it / 1024).toString() },
+                orderedIn.min() / 1024,
+                orderedIn.max() / 1024,
+                orderedIn.sortedArray()[orderedIn.size / 2] / 1024,
+            )
+            android.util.Log.i("YumePerf", out)
+            android.util.Log.i("YumePerf", inb)
+            YumeVpnRuntime.appendLog(VpnLogLevel.Info, out)
+            YumeVpnRuntime.appendLog(VpnLogLevel.Info, inb)
         }
     }
 
@@ -397,7 +496,7 @@ class YumeBootstrapSession internal constructor(
     }
 
     val isAlive: Boolean
-        get() = closeState == CloseState.Open && sslSocket.isConnected && !sslSocket.isClosed && closingCause == null
+        get() = closeState == CloseState.Open && transport.isConnected && !transport.isClosed && closingCause == null
 
     val closeReason: String?
         get() = closingCause?.message
@@ -552,8 +651,8 @@ class YumeBootstrapSession internal constructor(
                 payload = openPayload,
             )
             if (!waitForOpen) {
-                sendEncodedFrame(
-                    YumeFrameCodec.encodeFrame(encodeOutgoingFrame(openFrame)),
+                enqueueFrame(
+                    encodeOutgoingFrame(openFrame),
                     waitForWrite = false,
                 )
                 scheduleOpenTimeout(
@@ -707,7 +806,7 @@ class YumeBootstrapSession internal constructor(
         offset: Int = 0,
         length: Int = data.size,
     ) {
-        sendEncodedFrame(encodeOutgoingDataFrame(streamId, data, offset, length))
+        enqueueFrame(buildOutgoingDataFrame(streamId, data, offset, length))
     }
 
     internal suspend fun sendDataQueued(
@@ -716,8 +815,8 @@ class YumeBootstrapSession internal constructor(
         offset: Int = 0,
         length: Int = data.size,
     ) {
-        sendEncodedFrame(
-            encodeOutgoingDataFrame(streamId, data, offset, length),
+        enqueueFrame(
+            buildOutgoingDataFrame(streamId, data, offset, length),
             waitForWrite = false,
         )
     }
@@ -777,6 +876,17 @@ class YumeBootstrapSession internal constructor(
                         val stream = synchronized(stateLock) {
                             streams[frame.streamId]
                         }
+                        // Kill the stream on receive-buffer overflow.
+                        // YUME has no per-stream WINDOW_UPDATE frame, so
+                        // there is no way for us to signal "slow down" to
+                        // the server other than closing the stream — the
+                        // close propagates back as TCP FIN through the
+                        // server's outbound socket, which is what
+                        // throttles the remote sender. The previous
+                        // attempt to "silently drop" the excess payload
+                        // instead made things worse: the server kept
+                        // blasting at line-rate while we threw the data
+                        // away, and the connection never recovered.
                         if (stream != null && !stream.offerIncoming(frame.payload)) {
                             synchronized(stateLock) {
                                 streams.remove(frame.streamId)
@@ -850,16 +960,17 @@ class YumeBootstrapSession internal constructor(
     private suspend fun runWriteLoop() {
         var activeBatch: List<PendingWrite> = emptyList()
         try {
-            for (pending in outboundFrames) {
+            while (true) {
                 ensureOpen()
-                activeBatch = collectWriteBatch(pending)
+                val first = takeNextPending() ?: break
+                activeBatch = collectWriteBatch(first)
                 val encodedBatch = encodeWriteBatch(activeBatch)
                 writeMutex.withLock {
                     ensureOpen()
                     val twStart = System.nanoTime()
-                    output.write(encodedBatch)
+                    output.write(encodedBatch.buffer, 0, encodedBatch.length)
                     perfTlsWriteNanos.addAndGet(System.nanoTime() - twStart)
-                    perfTlsBytesWritten.addAndGet(encodedBatch.size.toLong())
+                    perfTlsBytesWritten.addAndGet(encodedBatch.length.toLong())
                     perfFramesSent.addAndGet(activeBatch.size.toLong())
                 }
                 activeBatch.forEach { it.completion?.complete(Unit) }
@@ -888,51 +999,145 @@ class YumeBootstrapSession internal constructor(
                 closingCause ?: YumeBootstrapException("The authenticated Yume session was closed")
             }
             while (true) {
+                val pending = controlFrames.tryReceive().getOrNull() ?: break
+                pending.completion?.completeExceptionally(failure)
+            }
+            while (true) {
                 val pending = outboundFrames.tryReceive().getOrNull() ?: break
                 pending.completion?.completeExceptionally(failure)
             }
         }
     }
 
+    // Pull the next frame to send, draining `controlFrames` first so
+    // PING/PONG/CLOSE/CONTROL never sit behind a wall of DATA frames
+    // while an upload is saturating outboundFrames. When both queues
+    // are empty we suspend in `select` and resume on whichever side
+    // gets a frame. Returns null only after both channels are
+    // closed-and-empty so the write loop can exit cleanly.
+    //
+    // Care: a closed Channel makes `onReceiveCatching` fire IMMEDIATELY
+    // with a closed result on every select iteration. Including a
+    // closed branch in `select` would CPU-spin returning null. We
+    // therefore only register select branches for channels that are
+    // still open (or have buffered items).
+    private suspend fun takeNextPending(): PendingWrite? {
+        while (true) {
+            controlFrames.tryReceive().getOrNull()?.let { return it }
+            outboundFrames.tryReceive().getOrNull()?.let { return it }
+            val controlOpen = !controlFrames.isClosedForReceive
+            val outboundOpen = !outboundFrames.isClosedForReceive
+            if (!controlOpen && !outboundOpen) {
+                return null
+            }
+            val winner = select<PendingWrite?> {
+                if (controlOpen) {
+                    controlFrames.onReceiveCatching { result ->
+                        result.getOrNull()
+                    }
+                }
+                if (outboundOpen) {
+                    outboundFrames.onReceiveCatching { result ->
+                        result.getOrNull()
+                    }
+                }
+            }
+            if (winner != null) return winner
+            // winner==null means the side we picked closed between the
+            // open-check and the select — loop back, the next iteration
+            // will see the closed flag and either drain the still-open
+            // side or exit.
+        }
+    }
+
     private fun collectWriteBatch(first: PendingWrite): List<PendingWrite> {
         val batch = ArrayList<PendingWrite>(4)
         batch += first
-        var totalBytes = first.encodedFrame.size
+        var totalBytes = first.encodedSize
+        // Drain control frames first — cheap, small, and we want them
+        // out NOW to keep keepalive responsive.
+        while (batch.size < MAX_OUTBOUND_COALESCE_FRAMES && totalBytes < MAX_OUTBOUND_COALESCE_BYTES) {
+            val next = controlFrames.tryReceive().getOrNull() ?: break
+            batch += next
+            totalBytes += next.encodedSize
+        }
         while (batch.size < MAX_OUTBOUND_COALESCE_FRAMES && totalBytes < MAX_OUTBOUND_COALESCE_BYTES) {
             val next = outboundFrames.tryReceive().getOrNull() ?: break
             batch += next
-            totalBytes += next.encodedFrame.size
+            totalBytes += next.encodedSize
         }
         return batch
     }
 
-    private fun encodeWriteBatch(batch: List<PendingWrite>): ByteArray {
-        if (batch.size == 1) {
-            return batch[0].encodedFrame
+    // Reusable scratch buffer for batch coalescing. Only written from
+    // runWriteLoop's single coroutine, so no synchronization needed.
+    // Grows monotonically (doubling) up to MAX_OUTBOUND_COALESCE_BYTES
+    // and is never reclaimed for the lifetime of the session — that's
+    // exactly the point: every output.write batch reuses this instead
+    // of allocating a fresh ByteArray of 16-64 KiB. At ~100 batches/sec
+    // during high throughput, eliminating that allocation pressure is
+    // worth ~1-2 MiB/s less garbage for the GC to collect, which
+    // directly buys back the 80-100 ms GC pauses observed in
+    // logg.log 14:18:48.
+    @Volatile
+    private var writeBatchScratch: ByteArray = ByteArray(0)
+
+    private data class EncodedBatch(val buffer: ByteArray, val length: Int)
+
+    private fun encodeWriteBatch(batch: List<PendingWrite>): EncodedBatch {
+        val totalBytes = batch.sumOf { it.encodedSize }
+        var scratch = writeBatchScratch
+        if (scratch.size < totalBytes) {
+            scratch = ByteArray(maxOf(totalBytes, scratch.size * 2, 16 * 1024))
+            writeBatchScratch = scratch
         }
-        val totalBytes = batch.sumOf { it.encodedFrame.size }
-        val merged = ByteArray(totalBytes)
         var offset = 0
         batch.forEach { pending ->
-            pending.encodedFrame.copyInto(merged, destinationOffset = offset)
-            offset += pending.encodedFrame.size
+            val frame = pending.frame
+            val payload = frame.payload
+            val payloadLen = payload.size
+            // 8-byte big-endian header: len(4) / type(1) / streamId(1) / flags(2)
+            scratch[offset]     = ((payloadLen ushr 24) and 0xFF).toByte()
+            scratch[offset + 1] = ((payloadLen ushr 16) and 0xFF).toByte()
+            scratch[offset + 2] = ((payloadLen ushr 8)  and 0xFF).toByte()
+            scratch[offset + 3] = (payloadLen and 0xFF).toByte()
+            scratch[offset + 4] = (frame.type.wireValue and 0xFF).toByte()
+            scratch[offset + 5] = (frame.streamId and 0xFF).toByte()
+            scratch[offset + 6] = ((frame.flags ushr 8) and 0xFF).toByte()
+            scratch[offset + 7] = (frame.flags and 0xFF).toByte()
+            offset += 8
+            if (payloadLen > 0) {
+                payload.copyInto(scratch, destinationOffset = offset)
+                offset += payloadLen
+            }
         }
-        return merged
+        return EncodedBatch(scratch, totalBytes)
     }
 
     private suspend fun sendFrame(frame: YumeFrame) {
-        sendEncodedFrame(YumeFrameCodec.encodeFrame(encodeOutgoingFrame(frame)))
+        enqueueFrame(
+            encodeOutgoingFrame(frame),
+            priority = frame.type != YumeFrameType.DATA,
+        )
     }
 
-    private suspend fun sendEncodedFrame(encodedFrame: ByteArray, waitForWrite: Boolean = true) {
+    private suspend fun enqueueFrame(
+        frame: YumeFrame,
+        waitForWrite: Boolean = true,
+        priority: Boolean = false,
+    ) {
         ensureOpen()
         val pending = PendingWrite(
-            encodedFrame = encodedFrame,
+            frame = frame,
             completion = if (waitForWrite) CompletableDeferred() else null,
         )
         try {
             val sendStart = System.nanoTime()
-            outboundFrames.send(pending)
+            if (priority) {
+                controlFrames.send(pending)
+            } else {
+                outboundFrames.send(pending)
+            }
             perfWriteWaitNanos.addAndGet(System.nanoTime() - sendStart)
             pending.completion?.await()
         } catch (throwable: Exception) {
@@ -946,26 +1151,37 @@ class YumeBootstrapSession internal constructor(
         }
     }
 
-    private fun encodeOutgoingDataFrame(
+    // Returns a YumeFrame ready to be queued — payload is already
+    // inner-encrypted if required. The runWriteLoop scratch buffer
+    // serialises the 8-byte header + payload directly, so no encoded
+    // ByteArray is created here.
+    //
+    // (Earlier revision attempted an exact-size payloadBufferPool to
+    // avoid the per-frame ciphertext allocation, but variable upload
+    // chunk sizes meant pool buckets rarely hit; the ConcurrentHashMap
+    // bookkeeping overhead added more cost than the alloc itself. The
+    // remaining alloc — `length + 28` bytes for ciphertext — is the
+    // smallest LOS allocation in the path and not the dominant GC
+    // pressure source.)
+    private fun buildOutgoingDataFrame(
         streamId: Int,
         data: ByteArray,
         offset: Int,
         length: Int,
-    ): ByteArray {
+    ): YumeFrame {
         require(offset in 0..data.size) { "offset out of range" }
         require(length >= 0 && offset + length <= data.size) { "length out of range" }
         if (length == 0) {
-            return YumeFrameCodec.encodeFrame(type = YumeFrameType.DATA, streamId = streamId)
+            return YumeFrame(type = YumeFrameType.DATA, streamId = streamId)
         }
         val state = innerState
         if (state == null || !requiresInnerEncryption(YumeFrameType.DATA)) {
-            return YumeFrameCodec.encodeFrame(
-                type = YumeFrameType.DATA,
-                streamId = streamId,
-                payload = data,
-                payloadOffset = offset,
-                payloadLength = length,
-            )
+            val payload = if (offset == 0 && length == data.size) {
+                data
+            } else {
+                data.copyOfRange(offset, offset + length)
+            }
+            return YumeFrame(type = YumeFrameType.DATA, streamId = streamId, payload = payload)
         }
         val payload = if (offset == 0 && length == data.size) {
             data
@@ -976,7 +1192,7 @@ class YumeBootstrapSession internal constructor(
         val encrypted = YumeInnerCrypto.encrypt(state, YumeFrameType.DATA, streamId, payload)
         perfEncryptNanos.addAndGet(System.nanoTime() - encStart)
         perfBytesEncrypted.addAndGet(payload.size.toLong())
-        return YumeFrameCodec.encodeFrame(
+        return YumeFrame(
             type = YumeFrameType.DATA,
             streamId = streamId,
             flags = INNER_ENCRYPTED_FLAG,
@@ -1028,7 +1244,7 @@ class YumeBootstrapSession internal constructor(
         if (cause != null) {
             throw if (cause is YumeBootstrapException) cause else YumeBootstrapException(cause.message ?: "Yume session closed", cause)
         }
-        if (sslSocket.isClosed) {
+        if (transport.isClosed) {
             throw YumeBootstrapException("The Yume TLS session is closed")
         }
     }
@@ -1057,10 +1273,11 @@ class YumeBootstrapSession internal constructor(
             pendingPongs.clear()
         }
         outboundFrames.close()
+        controlFrames.close()
         closeScope.launch {
             writeMutex.withLock {
                 runCatching { output.flush() }
-                runCatching { sslSocket.close() }
+                runCatching { transport.close() }
             }
             synchronized(stateLock) {
                 closeState = CloseState.Closed
@@ -1081,6 +1298,11 @@ class YumeBootstrapSession internal constructor(
         private const val MAX_OUTBOUND_COALESCE_FRAMES = 16
         private const val MAX_OUTBOUND_COALESCE_BYTES = 64 * 1024
         private const val INNER_ENCRYPTED_FLAG = 0x8000
+        // AES-GCM wrap overhead: 12-byte IV + 16-byte authentication tag.
+        private const val AEAD_OVERHEAD = 12 + 16
+        // Cap on how many idle ByteArrays each size-bucket of the payload
+        // pool retains. Prevents unbounded growth when stream sizes vary.
+        private const val MAX_POOL_DEPTH = 32
         private const val PERF_REPORT_INTERVAL_MS = 2_000L
 
         private fun parseHttpBody(response: String): String {
@@ -1168,10 +1390,21 @@ class YumeBootstrapSession internal constructor(
         Closed,
     }
 
+    // PendingWrite no longer carries a pre-encoded ByteArray. We hold the
+    // (already inner-encrypted, if applicable) YumeFrame and encode it
+    // straight into the runWriteLoop scratch buffer at batch time. This
+    // removes one ByteArray allocation per frame on the send hot path —
+    // the dominant non-data allocation observed in the GC trace.
     private data class PendingWrite(
-        val encodedFrame: ByteArray,
+        val frame: YumeFrame,
         val completion: CompletableDeferred<Unit>?,
-    )
+    ) {
+        val encodedSize: Int get() = HEADER_SIZE + frame.payload.size
+
+        companion object {
+            const val HEADER_SIZE = 8
+        }
+    }
 
     private fun allocateStreamIdLocked(): Int {
         repeat(255) {
@@ -1246,9 +1479,22 @@ object YumeBootstrapClient {
         }
         var lastFailure: YumeBootstrapException? = null
 
+        // One-shot probe per connect() — if the user toggled the native
+        // transport on but libyumetransport.so isn't shipped for this
+        // ABI, log it once and silently use the SSLSocket path.
+        val nativeRequested = transportTuning.useNativeTransport
+        val nativeAvailable = nativeRequested && YumeNativeTlsPipe.tryLoad()
+        if (nativeRequested && !nativeAvailable) {
+            log?.invoke(
+                "Native transport requested but libyumetransport.so is unavailable" +
+                    (YumeNativeTlsPipe.loadFailureReason?.let { " ($it)" } ?: "") +
+                    "; falling back to SSLSocket.",
+            )
+        }
+
         connectLoop@ for (attempt in 1..MAX_CONNECT_ATTEMPTS) {
             var rawSocket: Socket? = null
-            var sslSocket: SSLSocket? = null
+            var transport: YumeTransportSocket? = null
             try {
                 rawSocket = rawSocketFactory()
                 runCatching {
@@ -1260,79 +1506,29 @@ object YumeBootstrapClient {
                     // tunnel TCP connection at ~10 Mbps regardless
                     // of CPU. The yume tunnel multiplexes every app
                     // stream through ONE TCP flow, so that BDP cap
-                    // becomes the total throughput cap — exactly the
-                    // "9 Mbps down / 1.1 up, native shows spikes
-                    // then 0" symptom the user reported. Setting
-                    // explicit large buffers lets the kernel scale
-                    // the window upward via auto-tuning instead of
-                    // staying at the conservative default. Linux
-                    // desktop already auto-tunes to MBs by default
-                    // (which is why the desktop CLI hits 100-200 Mbps
-                    // on the same network).
-                    //
-                    // 2 MiB is enough headroom for ~300 Mbps at 50 ms
-                    // RTT (BDP = 2 MiB / 0.05s = 320 Mbps). The
-                    // kernel may cap below this — we ask for what we
-                    // want and accept what we get.
+                    // becomes the total throughput cap. 2 MiB is
+                    // enough headroom for ~300 Mbps at 50 ms RTT.
                     rawSocket.receiveBufferSize = 2 * 1024 * 1024
                     rawSocket.sendBufferSize    = 2 * 1024 * 1024
                 }
                 if (attempt > 1) {
                     log?.invoke("Retry attempt $attempt/$MAX_CONNECT_ATTEMPTS with a fresh protected socket.")
                 }
-                val tlsContext = buildTlsContext(anonymCaPem)
-                log?.invoke("Using TLS provider: ${tlsContext.providerLabel}.")
-                sslSocket = (tlsContext.context.socketFactory.createSocket(
-                    rawSocket,
-                    profile.serverName,
-                    profile.port,
-                    true,
-                ) as SSLSocket).apply {
-                    useClientMode = true
-                    runCatching {
-                        tcpNoDelay = true
-                        keepAlive = true
-                        // Same BDP rationale as the raw socket — some
-                        // Android SSLSocket implementations wrap the
-                        // underlying TCP socket and re-apply socket
-                        // options, so re-set the large buffers here
-                        // too. No-op when the underlying socket
-                        // already has them.
-                        receiveBufferSize = 2 * 1024 * 1024
-                        sendBufferSize    = 2 * 1024 * 1024
-                    }
-                    val supportedProtocols = supportedProtocols.toSet()
-                    if ("TLSv1.3" !in supportedProtocols) {
-                        throw YumeBootstrapException(
-                            "This Android TLS stack does not support TLS 1.3, which Yume requires on the control path",
-                        )
-                    }
-                    applyClientTlsParameters(this, profile.serverName, profile.obfuscation)
-                    soTimeout = AUTH_TIMEOUT_MS
-                    try {
-                        startHandshake()
-                    } catch (throwable: Exception) {
-                        val detail = throwable.message?.trim().orEmpty()
-                        if (throwable is SSLHandshakeException || throwable is SSLProtocolException) {
-                            throw YumeBootstrapException(
-                                if (detail.isNotEmpty()) {
-                                    "TLS handshake failed: $detail"
-                                } else {
-                                    "TLS handshake failed on this Android TLS provider"
-                                },
-                                throwable,
-                            )
-                        }
-                        throw throwable
-                    }
+                transport = if (nativeAvailable) {
+                    buildNativeTransport(rawSocket, profile, anonymCaPem, log)
+                } else {
+                    buildJavaTransport(rawSocket, profile, anonymCaPem, log)
                 }
-                log?.invoke("TLS handshake completed: ${sslSocket.session.protocol} ${sslSocket.session.cipherSuite}.")
+                log?.invoke(
+                    "TLS handshake completed via ${transport.backendLabel}: " +
+                        "${transport.tlsProtocol} ${transport.tlsCipherSuite}.",
+                )
                 if (profile.obfuscation) {
-                    performH2CarrierHandshake(sslSocket, profile)
+                    performH2CarrierHandshake(transport, profile)
                     log?.invoke("HTTP/2 carrier handshake established.")
                 }
 
-                val peerCertificate = sslSocket.session.peerCertificates.firstOrNull() as? X509Certificate
+                val peerCertificate = transport.peerCertificates.firstOrNull()
                     ?: throw YumeBootstrapException("The server did not provide a TLS certificate")
                 val peerFingerprintSha256 = sha256Hex(peerCertificate.encoded)
                 cachedProfile?.peerFingerprintSha256
@@ -1347,12 +1543,12 @@ object YumeBootstrapClient {
                     }
                 val envelope = YumeBootstrapEnvelope(
                     json = JSONObject(),
-                    tlsProtocol = sslSocket.session.protocol ?: "TLS",
-                    tlsCipherSuite = sslSocket.session.cipherSuite ?: "Unknown",
+                    tlsProtocol = transport.tlsProtocol,
+                    tlsCipherSuite = transport.tlsCipherSuite,
                     peerCertificate = peerCertificate,
                 )
 
-                val challenge = YumeFrameCodec.readFrame(sslSocket.inputStream)
+                val challenge = YumeFrameCodec.readFrame(transport.inputStream)
                 if (challenge.type != YumeFrameType.AUTH) {
                     throw YumeBootstrapException("This endpoint is not a Yume server (expected AUTH challenge)")
                 }
@@ -1374,7 +1570,7 @@ object YumeBootstrapClient {
                     preparedInner = preparedInner,
                 )
                 YumeFrameCodec.writeFrame(
-                    sslSocket.outputStream,
+                    transport.outputStream,
                     YumeFrame(type = YumeFrameType.AUTH, payload = payload),
                 )
                 log?.invoke(
@@ -1385,8 +1581,8 @@ object YumeBootstrapClient {
                     },
                 )
 
-                sslSocket.soTimeout = serverInfoTimeout(preparedInner)
-                val anonFrame = YumeFrameCodec.readFrame(sslSocket.inputStream)
+                transport.soTimeout = serverInfoTimeout(preparedInner)
+                val anonFrame = YumeFrameCodec.readFrame(transport.inputStream)
                 if (anonFrame.type != YumeFrameType.ANON) {
                     throw YumeBootstrapException("This endpoint is not a Yume server (expected ANON response)")
                 }
@@ -1419,7 +1615,7 @@ object YumeBootstrapClient {
                             peerFingerprintSha256 = peerFingerprintSha256,
                             pqPublicKey = nextPreference.pqPublicKey,
                         )
-                        runCatching { sslSocket.close() }
+                        runCatching { transport.close() }
                         continue@connectLoop
                     }
                     val effectiveError = if (
@@ -1480,7 +1676,7 @@ object YumeBootstrapClient {
                         peerFingerprintSha256 = peerFingerprintSha256,
                         pqPublicKey = pqPublicKey,
                     )
-                    runCatching { sslSocket.close() }
+                    runCatching { transport.close() }
                     continue@connectLoop
                 }
 
@@ -1515,13 +1711,13 @@ object YumeBootstrapClient {
                     clearCachedInnerPreference(applicationContext, profile)
                 }
                 return YumeBootstrapSession(
-                    sslSocket = sslSocket,
+                    transport = transport,
                     bootstrap = serverInfo,
                     innerState = sessionInnerState,
                     transportTuning = transportTuning,
                 )
             } catch (throwable: Exception) {
-                runCatching { sslSocket?.close() ?: rawSocket?.close() }
+                runCatching { transport?.close() ?: rawSocket?.close() }
                 lastFailure = if (throwable is YumeBootstrapException) {
                     throwable
                 } else {
@@ -2068,7 +2264,7 @@ object YumeBootstrapClient {
 
     /**
      * Sends the HTTP/2 carrier client handshake (preface + SETTINGS +
-     * WINDOW_UPDATE + HEADERS) to the cleartext side of {@code sslSocket} and
+     * WINDOW_UPDATE + HEADERS) to the cleartext side of {@code transport} and
      * consumes the server's canned reply (SETTINGS, SETTINGS-ACK, HEADERS
      * :status=200) before returning. Reads are sized exactly so no bytes past
      * the HEADERS frame are consumed; the next reader on the socket gets the
@@ -2078,7 +2274,7 @@ object YumeBootstrapClient {
      * perform_h2_carrier_handshake() byte-for-byte.
      */
     private fun performH2CarrierHandshake(
-        sslSocket: SSLSocket,
+        transport: YumeTransportSocket,
         profile: ServerProfile,
     ) {
         val authorityHost = profile.serverName.ifBlank { profile.host }.trim()
@@ -2109,8 +2305,8 @@ object YumeBootstrapClient {
 
         val handshake = YumeObfsH2.encodeClientHandshake(authorityHost, path, userAgent)
         try {
-            sslSocket.outputStream.write(handshake)
-            sslSocket.outputStream.flush()
+            transport.outputStream.write(handshake)
+            transport.outputStream.flush()
         } catch (throwable: SocketTimeoutException) {
             throw YumeBootstrapException(
                 "This endpoint is not a Yume obfs endpoint ($authority; h2 preface timed out)",
@@ -2126,8 +2322,8 @@ object YumeBootstrapClient {
         // Read frame-by-frame, sizing each read to exactly the frame length so
         // we never accidentally consume the AUTH challenge that the server
         // sends right after the HEADERS frame.
-        val input = sslSocket.inputStream
-        val output = sslSocket.outputStream
+        val input = transport.inputStream
+        val output = transport.outputStream
         var sawHeaders = false
         while (!sawHeaders) {
             val frameHeader = readExact(input, 9, authority, "h2 frame header")
@@ -2400,6 +2596,139 @@ object YumeBootstrapClient {
     private fun sha256Hex(input: ByteArray): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(input)
         return digest.joinToString(separator = "") { byte -> "%02x".format(Locale.US, byte) }
+    }
+
+    private fun buildJavaTransport(
+        rawSocket: Socket,
+        profile: ServerProfile,
+        anonymCaPem: String,
+        log: ((String) -> Unit)?,
+    ): YumeTransportSocket {
+        val tlsContext = buildTlsContext(anonymCaPem)
+        log?.invoke("Using TLS provider: ${tlsContext.providerLabel}.")
+        val sslSocket = (tlsContext.context.socketFactory.createSocket(
+            rawSocket,
+            profile.serverName,
+            profile.port,
+            true,
+        ) as SSLSocket).apply {
+            useClientMode = true
+            runCatching {
+                tcpNoDelay = true
+                keepAlive = true
+                receiveBufferSize = 2 * 1024 * 1024
+                sendBufferSize    = 2 * 1024 * 1024
+            }
+            val supportedProtocols = supportedProtocols.toSet()
+            if ("TLSv1.3" !in supportedProtocols) {
+                throw YumeBootstrapException(
+                    "This Android TLS stack does not support TLS 1.3, which Yume requires on the control path",
+                )
+            }
+            applyClientTlsParameters(this, profile.serverName, profile.obfuscation)
+            soTimeout = AUTH_TIMEOUT_MS
+            try {
+                startHandshake()
+            } catch (throwable: Exception) {
+                val detail = throwable.message?.trim().orEmpty()
+                if (throwable is SSLHandshakeException || throwable is SSLProtocolException) {
+                    throw YumeBootstrapException(
+                        if (detail.isNotEmpty()) {
+                            "TLS handshake failed: $detail"
+                        } else {
+                            "TLS handshake failed on this Android TLS provider"
+                        },
+                        throwable,
+                    )
+                }
+                throw throwable
+            }
+        }
+        return JavaTlsTransportSocket(sslSocket)
+    }
+
+    private fun buildNativeTransport(
+        rawSocket: Socket,
+        profile: ServerProfile,
+        anonymCaPem: String,
+        log: ((String) -> Unit)?,
+    ): YumeTransportSocket {
+        log?.invoke("Using libyumetransport.so (OpenSSL ${YumeNativeTlsPipe.openSslVersion()}).")
+        val alpn = if (profile.obfuscation) "http/1.1" else ""
+        // Combine the system trust store + the anonym CA into a single
+        // PEM bundle. We can't rely on OpenSSL's
+        // SSL_CTX_load_verify_locations("/system/etc/security/cacerts")
+        // on modern Android — the path either isn't readable by app
+        // processes or is in a different layout — so we extract every
+        // accepted root from Java's TrustManagerFactory and base64-PEM
+        // encode them client-side. Matches the CompositeX509TrustManager
+        // (system + anonym) that the SSLSocket path uses.
+        val combinedTrustPem = buildCombinedTrustPem(anonymCaPem)
+        val handle = YumeNativeTlsPipe.create(
+            sniHost = profile.serverName,
+            trustPemConcat = combinedTrustPem,
+            useSystemTrust = false,
+            alpn = alpn,
+        )
+        try {
+            // ParcelFileDescriptor.fromSocket DOES NOT dup; detaching
+            // sets the underlying FileDescriptor's int to -1 inside the
+            // Socket so rawSocket.close() afterwards is a safe no-op.
+            // This is the Android-blessed pattern for handing a Java
+            // Socket's fd to native code without double-close hazards.
+            //
+            // Once detachFd returns, native takes ownership of the fd
+            // unconditionally — nativeStart closes it itself on
+            // error (see TlsPipe::start). All we have to clean up on
+            // failure is the handle.
+            val pfd = ParcelFileDescriptor.fromSocket(rawSocket)
+            val fd = pfd.detachFd()
+            YumeNativeTlsPipe.start(handle, fd, AUTH_TIMEOUT_MS)
+            return NativeTlsTransportSocket(handle)
+        } catch (throwable: Throwable) {
+            runCatching { YumeNativeTlsPipe.close(handle) }
+            runCatching { YumeNativeTlsPipe.destroy(handle) }
+            throw throwable
+        }
+    }
+
+    private fun buildCombinedTrustPem(anonymCaPem: String): String {
+        // Walks every accepted root from Java's TrustManagerFactory and
+        // PEM-encodes it, then appends the user-supplied anonym CA PEM.
+        // This is the EXACT same trust set that the Java SSLSocket path
+        // sees via CompositeX509TrustManager(systemTrust, anonymTrust).
+        //
+        // Why: the native OpenSSL can't read /system/etc/security/cacerts
+        // on modern Android (path layout differs, file permissions
+        // exclude app processes), so we hand it the trust store
+        // pre-extracted from the JCA — which works regardless of
+        // Android version.
+        val sb = StringBuilder()
+        val systemTrust = runCatching { defaultX509TrustManager() }.getOrNull()
+        if (systemTrust != null) {
+            for (issuer in systemTrust.acceptedIssuers) {
+                appendCertAsPem(sb, issuer)
+            }
+        }
+        val trimmedAnonym = anonymCaPem.trim()
+        if (trimmedAnonym.isNotEmpty()) {
+            sb.append(trimmedAnonym)
+            if (!trimmedAnonym.endsWith("\n")) sb.append('\n')
+        }
+        return sb.toString()
+    }
+
+    private fun appendCertAsPem(out: StringBuilder, cert: X509Certificate) {
+        out.append("-----BEGIN CERTIFICATE-----\n")
+        val encoded = Base64.getEncoder().encodeToString(cert.encoded)
+        var i = 0
+        while (i < encoded.length) {
+            val end = (i + 64).coerceAtMost(encoded.length)
+            out.append(encoded, i, end)
+            out.append('\n')
+            i = end
+        }
+        out.append("-----END CERTIFICATE-----\n")
     }
 
     private fun buildTlsContext(anonymCaPem: String): TlsContext {

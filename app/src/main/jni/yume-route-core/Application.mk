@@ -19,3 +19,12 @@ APP_ABI := armeabi-v7a arm64-v8a x86 x86_64
 APP_CFLAGS := -O3
 APP_SUPPORT_FLEXIBLE_PAGE_SIZES := true
 NDK_TOOLCHAIN_VERSION := clang
+# c++_shared was chosen over c++_static after observing that c++_static
+# affected the link of pre-existing yume-route-core (pure C) and caused
+# a SIGABRT in its task system during service shutdown. c++_shared adds
+# libc++_shared.so to the APK (~ 600 KiB on arm64) but keeps each .so
+# self-contained from a STL-symbol perspective. yume-route-core does not
+# use C++ and so does not pull libc++_shared.so as a NEEDED dep.
+# libyumetransport.so (the native TLS pipe — see ../../cpp/yume_tls_pipe.cpp)
+# needs std::thread / std::string etc. and DOES NEED libc++_shared.so.
+APP_STL := c++_shared

@@ -31,6 +31,8 @@ import androidx.compose.ui.unit.dp
 import com.fixcraft.yume.MainUiState
 import com.fixcraft.yume.data.supportsUserSelectablePerformanceProfiles
 import com.fixcraft.yume.i18n.appStrings
+import com.fixcraft.yume.transport.YumeNativeTlsPipe
+import com.fixcraft.yume.transport.YumeNativeTransportDebug
 import com.fixcraft.yume.transport.YumePerfDebug
 
 @Composable
@@ -129,15 +131,11 @@ fun DiagnosticsScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        text = "Throughput logging",
+                        text = strings.throughputLoggingTitle,
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Text(
-                        text = "Logs a one-line throughput summary every 2 s while the " +
-                            "tunnel is up. Covers encrypt/decrypt CPU, SSL write CPU, " +
-                            "frame rates, and channel backpressure. Use to find where " +
-                            "bandwidth is going on a slow connection. Visible in logcat " +
-                            "(tag \"YumePerf\") and in the VPN log feed below.",
+                        text = strings.throughputLoggingDescription,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -146,13 +144,62 @@ fun DiagnosticsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(if (perfOn) "Enabled" else "Disabled",
+                        Text(if (perfOn) strings.toggleEnabled else strings.toggleDisabled,
                              style = MaterialTheme.typography.bodyMedium)
                         Switch(
                             checked = perfOn,
                             onCheckedChange = {
                                 perfOn = it
                                 YumePerfDebug.enabled = it
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            // Native transport (beta). When ON, libyumetransport.so
+            // drives the TLS pipe via non-blocking OpenSSL I/O so the
+            // writer coroutine never blocks on output.write(). Toggle
+            // takes effect on the next reconnect — diagnostic line in
+            // the perf reporter shows `transport=native` vs
+            // `transport=java` so the operator can confirm.
+            var nativeOn by remember { mutableStateOf(YumeNativeTransportDebug.enabled) }
+            val nativeAvailable = remember { YumeNativeTlsPipe.tryLoad() }
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = strings.nativeTransportTitle,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = if (nativeAvailable) {
+                            strings.nativeTransportDescription
+                        } else {
+                            strings.nativeTransportUnavailable
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(if (nativeOn) strings.toggleEnabled else strings.toggleDisabled,
+                             style = MaterialTheme.typography.bodyMedium)
+                        Switch(
+                            checked = nativeOn,
+                            enabled = nativeAvailable,
+                            onCheckedChange = {
+                                nativeOn = it
+                                YumeNativeTransportDebug.enabled = it
                             },
                         )
                     }

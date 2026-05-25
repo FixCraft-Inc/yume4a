@@ -455,9 +455,20 @@ class YumeNativeTransport(
             }
         }
 
-        private fun mergePendingWrites(first: ByteArray): ByteArray {
+        // Per-TcpHandle merge scratch buffer. Grows monotonically up to
+        // MAX_NATIVE_TCP_MERGE_BYTES and is reused across merge calls
+        // for the lifetime of this stream. Previously this was a fresh
+        // ByteArray(total) per merge, which at high upload rates was
+        // ~6 MiB/s of garbage per active stream — the dominant source
+        // of GC pressure on the upload-direction TCP splice.
+        @Volatile
+        private var mergeScratch: ByteArray = ByteArray(0)
+
+        private data class MergedWrite(val buffer: ByteArray, val length: Int)
+
+        private fun mergePendingWrites(first: ByteArray): MergedWrite {
             if (writeQueue.isEmpty()) {
-                return first
+                return MergedWrite(first, first.size)
             }
             val merged = ArrayList<ByteArray>(4)
             merged += first
@@ -468,15 +479,19 @@ class YumeNativeTransport(
                 total += next.size
             }
             if (merged.size == 1) {
-                return first
+                return MergedWrite(first, first.size)
             }
-            val buffer = ByteArray(total)
+            var scratch = mergeScratch
+            if (scratch.size < total) {
+                scratch = ByteArray(maxOf(total, scratch.size * 2, 16 * 1024))
+                mergeScratch = scratch
+            }
             var offset = 0
             for (chunk in merged) {
-                chunk.copyInto(buffer, destinationOffset = offset)
+                chunk.copyInto(scratch, destinationOffset = offset)
                 offset += chunk.size
             }
-            return buffer
+            return MergedWrite(scratch, total)
         }
 
         private fun markClosed() {
@@ -525,14 +540,16 @@ class YumeNativeTransport(
                         continue
                     }
                     val merged = mergePendingWrites(first)
+                    val mergedBuffer = merged.buffer
+                    val mergedLen = merged.length
                     var offset = 0
                     var queuedBytes = 0
                     try {
-                        while (offset < merged.size) {
-                            val chunkSize = (merged.size - offset).coerceAtMost(MAX_NATIVE_TCP_FRAME_BYTES)
+                        while (offset < mergedLen) {
+                            val chunkSize = (mergedLen - offset).coerceAtMost(MAX_NATIVE_TCP_FRAME_BYTES)
                             session.sendDataQueued(
                                 streamId = stream.streamId,
-                                data = merged,
+                                data = mergedBuffer,
                                 offset = offset,
                                 length = chunkSize,
                             )
@@ -542,12 +559,12 @@ class YumeNativeTransport(
                                 writeSpaceAvailable.signalAll()
                             }
                             offset += chunkSize
-                            if (offset < merged.size) {
+                            if (offset < mergedLen) {
                                 yield()
                             }
                         }
                     } finally {
-                        val unsentBytes = merged.size - queuedBytes
+                        val unsentBytes = mergedLen - queuedBytes
                         if (unsentBytes > 0) {
                             writeLock.withLock {
                                 pendingWriteBytes.addAndGet(-unsentBytes)

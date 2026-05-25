@@ -148,6 +148,11 @@ void *yume_calloc (size_t nmemb, size_t size);
 /**
  * MEMP_NUM_TCP_SEG: the number of simultaneously queued TCP segments.
  * (requires the LWIP_TCP option)
+ *
+ * Must be >= TCP_SND_QUEUELEN per the lwIP sanity check. With the
+ * TCP_SND_BUF bump below and the SND_QUEUELEN definition further
+ * down (now `2 * TCP_SND_BUF / TCP_MSS`), TCP_SND_QUEUELEN ≈ 256;
+ * 8192 covers many active PCBs.
  */
 #define MEMP_NUM_TCP_SEG                8192
 
@@ -199,8 +204,17 @@ void *yume_calloc (size_t nmemb, size_t size);
 
 /**
  * PBUF_POOL_SIZE: the number of buffers in the pbuf pool.
+ *
+ * Must be large enough that PBUF_POOL_SIZE * (PBUF_POOL_BUFSIZE -
+ * protocol headers) >= TCP_WND per the lwIP sanity check. With
+ * TCP_WND = 128 * TCP_MSS that minimum is 128 pbufs; we want
+ * comfortable headroom because pbufs are shared across all active
+ * PCBs, and a speedtest can open 8-16 concurrent TCP streams that
+ * each consume up to a window's worth of pbufs. 1024 pbufs ≈ 8 MiB
+ * of memory at PBUF_POOL_BUFSIZE = 8247 bytes — affordable on a
+ * modern Android device.
  */
-#define PBUF_POOL_SIZE                  128
+#define PBUF_POOL_SIZE                  1024
 
 /*
    ---------------------------------
@@ -391,28 +405,50 @@ void *yume_calloc (size_t nmemb, size_t size);
 /**
  * TCP_WND: The size of a TCP window.  This must be at least
  * (2 * TCP_MSS) for things to work well.
- * ATTENTION: when using TCP_RCV_SCALE, TCP_WND is the total size
- * with scaling applied. Maximum window value in the TCP header
- * will be TCP_WND >> TCP_RCV_SCALE
+ *
+ * Previously 16 * TCP_MSS ≈ 131 KiB. At 130 ms RTT that capped each
+ * incoming TCP stream at ~8 Mbps regardless of how fast the Yume
+ * tunnel could deliver bytes — exactly the "speedtest UI shows
+ * 3 Mbps while tls-in=65 Mbps" symptom. 128 * TCP_MSS ≈ 1 MiB lets
+ * a single stream pull ~64 Mbps at the same RTT; with the 8-16
+ * parallel streams a speedtest uses, that comfortably gets to
+ * 200 Mbps aggregate.
+ *
+ * TCP_RCV_SCALE must be raised in step because the advertised
+ * window field is TCP_WND >> TCP_RCV_SCALE and that field is
+ * 16 bits wide (max 65535). Scale 5 → multiplier 32 → max
+ * effective window 2 MiB, which covers TCP_WND = 1 MiB with
+ * headroom.
  */
-#define TCP_WND                         (16 * TCP_MSS)
+#define TCP_WND                         (128 * TCP_MSS)
 
 #define LWIP_WND_SCALE                  1
-#define TCP_RCV_SCALE                   2
+#define TCP_RCV_SCALE                   5
 
 /**
  * TCP_SND_BUF: TCP sender buffer space (bytes).
  * To achieve good performance, this should be at least 2 * TCP_MSS.
+ *
+ * Previously 32 * TCP_MSS ≈ 262 KiB. At 130 ms RTT that capped
+ * per-stream upload at ~16 Mbps — the same BDP-cap story as
+ * TCP_WND. 128 * TCP_MSS ≈ 1 MiB so a single upload stream can
+ * push ~64 Mbps; aggregate scales with concurrent streams.
  */
-#define TCP_SND_BUF                     (32 * TCP_MSS)
+#define TCP_SND_BUF                     (128 * TCP_MSS)
 
 #define TCP_SNDLOWAT                    (2 * TCP_MSS)
 
 /**
  * TCP_SND_QUEUELEN: TCP sender buffer space (pbufs). This must be at least
  * as much as (2 * TCP_SND_BUF/TCP_MSS) for things to work.
+ *
+ * Previously `128 * TCP_SND_BUF / TCP_MSS` = 16384 pbufs per PCB with
+ * the new TCP_SND_BUF — way over the lwIP MEMP_NUM_TCP_SEG sanity
+ * threshold and a much larger send queue than any single TCP stream
+ * needs. The default lwIP formula `2 * TCP_SND_BUF / TCP_MSS` gives
+ * ~256 pbufs per PCB which is correct.
  */
-#define TCP_SND_QUEUELEN                ((128 * (TCP_SND_BUF) + (TCP_MSS - 1))/(TCP_MSS))
+#define TCP_SND_QUEUELEN                ((2 * (TCP_SND_BUF) + (TCP_MSS - 1))/(TCP_MSS))
 
 /*
    ----------------------------------

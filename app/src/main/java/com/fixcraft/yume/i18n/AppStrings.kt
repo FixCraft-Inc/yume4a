@@ -260,6 +260,28 @@ class AppStrings private constructor(
     val shareDiagnosticsSubject = t("Yume Android diagnostics")
     val shareDiagnosticsChooser = t("Share diagnostics")
     val reportTitle = t("Report")
+    val throughputLoggingTitle = t("Throughput logging")
+    val throughputLoggingDescription = t(
+        "Logs a one-line throughput summary every 2 s while the " +
+            "tunnel is up. Covers encrypt/decrypt CPU, SSL write CPU, " +
+            "frame rates, and channel backpressure. Use to find where " +
+            "bandwidth is going on a slow connection. Visible in logcat " +
+            "(tag \"YumePerf\") and in the VPN log feed below."
+    )
+    val toggleEnabled = t("Enabled")
+    val toggleDisabled = t("Disabled")
+    val nativeTransportTitle = t("Native transport (beta)")
+    val nativeTransportDescription = t(
+        "Drives the TLS pipe via libyumetransport.so so the writer no " +
+            "longer blocks on output.write() when the kernel TCP buffer " +
+            "fills. Targets desktop-CLI-grade upload throughput. Takes " +
+            "effect on the next reconnect; the throughput log line shows " +
+            "`transport=native` vs `transport=java` once active."
+    )
+    val nativeTransportUnavailable = t(
+        "libyumetransport.so is not shipped for this device's ABI. The " +
+            "Java SSLSocket path is used regardless of this switch."
+    )
     val yumeStatusTitle = t("Yume status")
     val briefLabel = t("Brief")
     val clientLabel = t("Client")

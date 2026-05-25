@@ -171,6 +171,36 @@ internal object LanguageUk : LanguageBundle {
         "Share diagnostics" to "Поділитися діагностикою",
         "Yume Android diagnostics" to "Діагностика Yume Android",
         "Report" to "Звіт",
+        "Throughput logging" to "Журналювання пропускної здатності",
+        "Logs a one-line throughput summary every 2 s while the " +
+            "tunnel is up. Covers encrypt/decrypt CPU, SSL write CPU, " +
+            "frame rates, and channel backpressure. Use to find where " +
+            "bandwidth is going on a slow connection. Visible in logcat " +
+            "(tag \"YumePerf\") and in the VPN log feed below."
+            to "Раз на 2 с записує підсумок пропускної здатності, поки " +
+                "тунель активний. Враховує CPU шифрування/розшифрування, " +
+                "CPU запису SSL, частоту кадрів і зворотний тиск каналу. " +
+                "Використовуйте, щоб знайти, куди йде смуга на повільному " +
+                "з'єднанні. Видно у logcat (тег «YumePerf») і у журналі " +
+                "VPN нижче.",
+        "Native transport (beta)" to "Нативний транспорт (бета)",
+        "Drives the TLS pipe via libyumetransport.so so the writer no " +
+            "longer blocks on output.write() when the kernel TCP buffer " +
+            "fills. Targets desktop-CLI-grade upload throughput. Takes " +
+            "effect on the next reconnect; the throughput log line shows " +
+            "`transport=native` vs `transport=java` once active."
+            to "Керує TLS-каналом через libyumetransport.so, щоб запис " +
+                "більше не блокувався на output.write(), коли ядро " +
+                "заповнює TCP-буфер. Мета — пропускна здатність " +
+                "відправлення рівня настільного CLI. Набуває чинності при " +
+                "наступному перепідключенні; рядок журналу пропускної " +
+                "здатності показуватиме `transport=native` або " +
+                "`transport=java` після активації.",
+        "libyumetransport.so is not shipped for this device's ABI. The " +
+            "Java SSLSocket path is used regardless of this switch."
+            to "libyumetransport.so не постачається для ABI цього " +
+                "пристрою. Шлях Java SSLSocket використовується незалежно " +
+                "від стану цього перемикача.",
         "Yume status" to "Стан Yume",
         "Brief" to "Коротко",
         "Client" to "Клієнт",

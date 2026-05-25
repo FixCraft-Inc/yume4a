@@ -172,6 +172,34 @@ internal object LanguageJa : LanguageBundle {
         "Share diagnostics" to "診断を共有",
         "Yume Android diagnostics" to "Yume Android 診断",
         "Report" to "レポート",
+        "Throughput logging" to "スループット ログ",
+        "Logs a one-line throughput summary every 2 s while the " +
+            "tunnel is up. Covers encrypt/decrypt CPU, SSL write CPU, " +
+            "frame rates, and channel backpressure. Use to find where " +
+            "bandwidth is going on a slow connection. Visible in logcat " +
+            "(tag \"YumePerf\") and in the VPN log feed below."
+            to "トンネルが起動している間、2 秒ごとに 1 行のスループット " +
+                "サマリをログ出力します。暗号化/復号 CPU、SSL 書き込み CPU、" +
+                "フレーム レート、チャネル バックプレッシャをカバーします。" +
+                "低速接続で帯域がどこに行っているかを特定するのに使用します。" +
+                "logcat（タグ「YumePerf」）と下の VPN ログ フィードで確認できます。",
+        "Native transport (beta)" to "ネイティブ トランスポート (ベータ)",
+        "Drives the TLS pipe via libyumetransport.so so the writer no " +
+            "longer blocks on output.write() when the kernel TCP buffer " +
+            "fills. Targets desktop-CLI-grade upload throughput. Takes " +
+            "effect on the next reconnect; the throughput log line shows " +
+            "`transport=native` vs `transport=java` once active."
+            to "libyumetransport.so 経由で TLS パイプを駆動するため、" +
+                "カーネルの TCP バッファが埋まっても output.write() で " +
+                "ライターがブロックされなくなります。デスクトップ CLI 級の " +
+                "アップロード スループットを目標としています。次回再接続時に " +
+                "有効になり、スループット ログに `transport=native` または " +
+                "`transport=java` と表示されます。",
+        "libyumetransport.so is not shipped for this device's ABI. The " +
+            "Java SSLSocket path is used regardless of this switch."
+            to "このデバイスの ABI 向けに libyumetransport.so は同梱されて " +
+                "いません。このスイッチの状態に関わらず Java SSLSocket の " +
+                "経路が使用されます。",
         "Yume status" to "Yume の状態",
         "Brief" to "概要",
         "Client" to "クライアント",

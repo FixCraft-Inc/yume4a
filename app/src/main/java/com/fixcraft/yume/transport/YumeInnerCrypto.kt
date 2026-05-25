@@ -1,6 +1,7 @@
 package com.fixcraft.yume.transport
 
 import android.os.SystemClock
+import com.fixcraft.basefwx.Constants
 import com.fixcraft.basefwx.Crypto
 import org.bouncycastle.crypto.SecretWithEncapsulation
 // 1.0.x: direct BouncyCastle Argon2 imports removed when argon2idRaw()
@@ -145,6 +146,42 @@ internal object YumeInnerCrypto {
         val aad = buildAad(frameType, streamId)
         return try {
             Crypto.aesGcmEncrypt(key, plaintext, aad)
+        } catch (throwable: IllegalArgumentException) {
+            throw YumeBootstrapException("Failed to encrypt the Yume inner payload", throwable)
+        } catch (throwable: IllegalStateException) {
+            throw YumeBootstrapException("Failed to encrypt the Yume inner payload", throwable)
+        }
+    }
+
+    /**
+     * Encrypts directly into a caller-supplied output buffer. `output`
+     * must be at least `plainLen + 28` bytes (12 IV + plaintext + 16 GCM tag).
+     * Returns the number of bytes written (always `plainLen + 28` on
+     * success). The IV is written into `output[0..12)` and the
+     * ciphertext+tag follows.
+     *
+     * Used by the upload hot path: instead of [encrypt] allocating a
+     * fresh ByteArray per frame, the caller pools a buffer of the
+     * exact target size and reuses it.
+     */
+    fun encryptInto(
+        state: YumeInnerSessionState,
+        frameType: YumeFrameType,
+        streamId: Int,
+        plaintext: ByteArray,
+        plainOff: Int,
+        plainLen: Int,
+        output: ByteArray,
+    ): Int {
+        val key = currentEncryptKey(state)
+        val aad = buildAad(frameType, streamId)
+        val iv = Crypto.randomBytes(Constants.AEAD_NONCE_LEN)
+        return try {
+            System.arraycopy(iv, 0, output, 0, iv.size)
+            val cipherLen = Crypto.aesGcmEncryptWithIvInto(
+                key, iv, plaintext, plainOff, plainLen, output, iv.size, aad,
+            )
+            iv.size + cipherLen
         } catch (throwable: IllegalArgumentException) {
             throw YumeBootstrapException("Failed to encrypt the Yume inner payload", throwable)
         } catch (throwable: IllegalStateException) {
