@@ -10,6 +10,7 @@
  */
 
 #include <errno.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -59,6 +60,9 @@ static size_t stat_tx_packets;
 static size_t stat_rx_packets;
 static size_t stat_tx_bytes;
 static size_t stat_rx_bytes;
+static size_t stat_tun_write_eagain;
+static size_t stat_tun_write_recovered;
+static size_t stat_tun_write_dropped;
 static size_t android_udp_reject_count;
 
 static struct netif netif;
@@ -207,6 +211,89 @@ yume_route_wakeup_task_if_active (YumeTask *task)
     yume_task_wakeup (task);
 }
 
+#ifdef ANDROID
+#define TUN_WRITE_WAIT_SLICE_MS 2
+#define TUN_WRITE_MAX_WAIT_MS 200
+
+static int
+wait_tun_writable (int fd)
+{
+    struct pollfd pfd = { 0 };
+    int res;
+
+    pfd.fd = fd;
+    pfd.events = POLLOUT | POLLERR | POLLHUP | POLLNVAL;
+
+    do {
+        res = poll (&pfd, 1, TUN_WRITE_WAIT_SLICE_MS);
+    } while (res < 0 && errno == EINTR && run);
+
+    if (res <= 0)
+        return res;
+    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
+        return -1;
+
+    return 1;
+}
+
+static ssize_t
+write_tun_with_backpressure (int fd, struct pbuf *p)
+{
+    int waited_ms = 0;
+    int saw_eagain = 0;
+
+    while (run) {
+        ssize_t s = yume_tunnel_write (fd, p);
+
+        if (s > 0) {
+            if (saw_eagain) {
+                stat_tun_write_recovered++;
+                if (stat_tun_write_recovered <= 8 ||
+                    (stat_tun_write_recovered & 0x3F) == 0) {
+                    YUME_RC_LOG ("netif_output_handler: recovered from TUN EAGAIN after %dms (recoveries=%zu)",
+                                 waited_ms, stat_tun_write_recovered);
+                }
+            }
+            return s;
+        }
+
+        if (s == 0)
+            return s;
+        if (errno == EINTR)
+            continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK)
+            return s;
+
+        saw_eagain = 1;
+        stat_tun_write_eagain++;
+        if (waited_ms >= TUN_WRITE_MAX_WAIT_MS) {
+            stat_tun_write_dropped++;
+            if (stat_tun_write_dropped <= 16 ||
+                (stat_tun_write_dropped & 0x3F) == 0) {
+                YUME_RC_LOG ("netif_output_handler: TUN remained backpressured for %dms; dropping packet (eagain=%zu dropped=%zu)",
+                             waited_ms, stat_tun_write_eagain,
+                             stat_tun_write_dropped);
+            }
+            errno = EAGAIN;
+            return -1;
+        }
+
+        if (wait_tun_writable (fd) < 0)
+            return -1;
+        waited_ms += TUN_WRITE_WAIT_SLICE_MS;
+    }
+
+    errno = EINTR;
+    return -1;
+}
+#else
+static ssize_t
+write_tun_with_backpressure (int fd, struct pbuf *p)
+{
+    return yume_tunnel_write (fd, p);
+}
+#endif
+
 static err_t
 netif_output_handler (struct netif *netif, struct pbuf *p)
 {
@@ -219,7 +306,7 @@ netif_output_handler (struct netif *netif, struct pbuf *p)
                      p->tot_len, mtu);
     }
 
-    s = yume_tunnel_write (tun_fd, p);
+    s = write_tun_with_backpressure (tun_fd, p);
     if (s <= 0) {
         if (errno == EAGAIN)
             return ERR_WOULDBLOCK;
@@ -881,6 +968,9 @@ yume_route_fini (void)
     stat_rx_packets = 0;
     stat_tx_bytes = 0;
     stat_rx_bytes = 0;
+    stat_tun_write_eagain = 0;
+    stat_tun_write_recovered = 0;
+    stat_tun_write_dropped = 0;
     android_udp_reject_count = 0;
 }
 

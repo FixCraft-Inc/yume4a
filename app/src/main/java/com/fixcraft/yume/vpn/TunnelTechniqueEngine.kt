@@ -103,7 +103,7 @@ data class Tun2SocksRuntimeConfig(
 data class NativeDirectRuntimeConfig(
     override val performanceProfile: PerformanceProfile,
     val bridgeTuning: Tun2SocksRuntimeConfig,
-    val engineStatus: NativeDirectEngineStatus = NativeDirectEngineStatus.PacketNative,
+    val engineStatus: NativeDirectEngineStatus = NativeDirectEngineStatus.CompatibilityBridgeFallback,
     val nativeQueueCapacity: Int,
     val tcpOpenConcurrency: Int,
     val tcpFlowWindowBytes: Int,
@@ -410,7 +410,10 @@ private fun stableBridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeCon
 private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
     return Tun2SocksRuntimeConfig(
         performanceProfile = PerformanceProfile.Balanced,
-        maxActiveTcpRelays = 96,
+        // Current native-direct is still the route-core/lwIP compatibility
+        // bridge. Keep fan-out below Dispatchers.IO + route-core thread storm
+        // territory; packet-bulk will lift this by removing per-flow relays.
+        maxActiveTcpRelays = 32,
         relayAcquireTimeoutMs = 5_000L,
         relayAcquireSliceMs = 100L,
         idleTcpEvictionMs = 18_000L,
@@ -438,7 +441,7 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
         // pipe and the server were both healthy.
         tcpStreamBufferBytes = 4 * 1024 * 1024,
         udpStreamBufferBytes = 256 * 1024,
-        outboundFrameQueueCapacity = 384,
+        outboundFrameQueueCapacity = 256,
         tun2SocksConnectTimeoutMs = 5_000,
         tun2SocksTcpReadWriteTimeoutMs = 120_000,
         tun2SocksUdpReadWriteTimeoutMs = 10_000,
@@ -451,5 +454,5 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
 }
 
 private fun nativeDirectTcpOpenConcurrency(maxActiveTcpRelays: Int): Int {
-    return (maxActiveTcpRelays.coerceAtLeast(1) / 3).coerceIn(24, 48)
+    return (maxActiveTcpRelays.coerceAtLeast(1) / 4).coerceIn(6, 12)
 }

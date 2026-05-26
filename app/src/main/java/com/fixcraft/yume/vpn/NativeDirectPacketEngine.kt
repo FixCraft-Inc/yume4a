@@ -51,8 +51,8 @@ internal class NativeDirectTunnelPacketEngine(
 
     override fun snapshot(): NativeDirectEngineSnapshot {
         return NativeDirectEngineSnapshot(
-            status = NativeDirectEngineStatus.PacketNative,
-            packetEngineActive = true,
+            status = NativeDirectEngineStatus.CompatibilityBridgeFallback,
+            packetEngineActive = false,
             ipv6FailClosed = true,
             queueCapacity = queueCapacity,
             tcpFlowWindowBytes = tcpFlowWindowBytes,

@@ -34,7 +34,6 @@
 #include <yume-task-io-socket.h>
 #include <yume-task-mutex.h>
 #include <yume-memory-allocator.h>
-#include <yume-memory-allocator-api.h>
 #include <yume-socks5-misc.h>
 
 #include "yume-utils.h"
