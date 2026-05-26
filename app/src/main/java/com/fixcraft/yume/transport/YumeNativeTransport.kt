@@ -5,13 +5,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import java.nio.ByteBuffer
 import java.util.Locale
-import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -39,6 +39,51 @@ class YumeNativeTransport(
         fun abort(reason: String)
     }
 
+    private class NativeByteQueue {
+        private val channel = Channel<ByteArray>(Channel.UNLIMITED)
+        private val queuedChunks = AtomicInteger(0)
+
+        fun offer(chunk: ByteArray): Boolean {
+            queuedChunks.incrementAndGet()
+            val result = channel.trySend(chunk)
+            if (result.isSuccess) {
+                return true
+            }
+            queuedChunks.decrementAndGet()
+            return false
+        }
+
+        fun poll(timeoutMs: Int): ByteArray? {
+            pollNow()?.let { return it }
+            if (timeoutMs <= 0) {
+                return null
+            }
+            return runBlocking {
+                withTimeoutOrNull(timeoutMs.toLong().coerceAtLeast(1L)) {
+                    receive()
+                }
+            }
+        }
+
+        fun pollNow(): ByteArray? {
+            val chunk = channel.tryReceive().getOrNull() ?: return null
+            queuedChunks.decrementAndGet()
+            return chunk
+        }
+
+        suspend fun receive(): ByteArray? {
+            val chunk = channel.receiveCatching().getOrNull() ?: return null
+            queuedChunks.decrementAndGet()
+            return chunk
+        }
+
+        fun isEmpty(): Boolean = queuedChunks.get() == 0
+
+        fun close() {
+            channel.close()
+        }
+    }
+
     private class UdpHandle(
         private val session: YumeBootstrapSession,
         host: String,
@@ -49,8 +94,8 @@ class YumeNativeTransport(
     ) : NativeStreamHandle {
         private val closed = AtomicBoolean(false)
         private val pendingWriteBytes = AtomicInteger(0)
-        private val readQueue = LinkedBlockingQueue<ByteArray>()
-        private val writeQueue = LinkedBlockingQueue<ByteArray>()
+        private val readQueue = NativeByteQueue()
+        private val writeQueue = NativeByteQueue()
         private val workerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private val streamReady = CompletableDeferred<YumeUdpStream>()
         @Volatile
@@ -92,7 +137,7 @@ class YumeNativeTransport(
         }
 
         override fun read(timeoutMs: Int): ByteArray? {
-            val datagram = readQueue.poll(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            val datagram = readQueue.poll(timeoutMs)
             if (datagram != null) {
                 return datagram
             }
@@ -151,12 +196,20 @@ class YumeNativeTransport(
                 }
                 pendingWriteBytes.addAndGet(payload.size)
             }
-            writeQueue.put(payload)
+            if (!writeQueue.offer(payload)) {
+                writeLock.withLock {
+                    pendingWriteBytes.addAndGet(-payload.size)
+                    writeSpaceAvailable.signalAll()
+                }
+                return -1
+            }
             return payload.size
         }
 
         override fun close(reason: String) {
             val shouldClose = closed.compareAndSet(false, true)
+            readQueue.close()
+            writeQueue.close()
             workerScope.cancel()
             writeLock.withLock {
                 writeSpaceAvailable.signalAll()
@@ -178,6 +231,8 @@ class YumeNativeTransport(
 
         override fun abort(reason: String) {
             val shouldClose = closed.compareAndSet(false, true)
+            readQueue.close()
+            writeQueue.close()
             workerScope.cancel()
             writeLock.withLock {
                 writeSpaceAvailable.signalAll()
@@ -194,12 +249,16 @@ class YumeNativeTransport(
 
         private fun markClosed() {
             if (closed.compareAndSet(false, true)) {
+                readQueue.close()
+                writeQueue.close()
                 workerScope.cancel()
                 writeLock.withLock {
                     writeSpaceAvailable.signalAll()
                 }
                 onClosed()
             } else {
+                readQueue.close()
+                writeQueue.close()
                 writeLock.withLock {
                     writeSpaceAvailable.signalAll()
                 }
@@ -211,7 +270,9 @@ class YumeNativeTransport(
                 while (true) {
                     val datagram = stream.readDatagram() ?: break
                     if (datagram.isNotEmpty()) {
-                        readQueue.put(datagram)
+                        if (!readQueue.offer(datagram)) {
+                            break
+                        }
                     }
                 }
             } catch (_: Throwable) {
@@ -223,13 +284,7 @@ class YumeNativeTransport(
         private suspend fun runWriteLoop(stream: YumeUdpStream) {
             try {
                 while (true) {
-                    val datagram = writeQueue.poll(100, TimeUnit.MILLISECONDS)
-                    if (datagram == null) {
-                        if (closed.get()) {
-                            break
-                        }
-                        continue
-                    }
+                    val datagram = writeQueue.receive() ?: break
                     try {
                         session.sendDataQueued(stream.streamId, datagram)
                     } finally {
@@ -258,8 +313,8 @@ class YumeNativeTransport(
         private val closed = AtomicBoolean(false)
         private val openSettled = AtomicBoolean(false)
         private val pendingWriteBytes = AtomicInteger(0)
-        private val readQueue = LinkedBlockingQueue<ByteArray>()
-        private val writeQueue = LinkedBlockingQueue<ByteArray>()
+        private val readQueue = NativeByteQueue()
+        private val writeQueue = NativeByteQueue()
         private val workerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private val streamReady = CompletableDeferred<YumeTcpStream>()
         @Volatile
@@ -320,7 +375,7 @@ class YumeNativeTransport(
                     pending.copyOfRange(offset, pending.size)
                 }
             }
-            val chunk = readQueue.poll(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            val chunk = readQueue.poll(timeoutMs)
             if (chunk != null) {
                 return chunk
             }
@@ -338,10 +393,7 @@ class YumeNativeTransport(
             var copied = 0
             var remainingTimeoutMs = timeoutMs
             while (buffer.hasRemaining()) {
-                val chunk = pendingReadChunk ?: readQueue.poll(
-                    remainingTimeoutMs.toLong(),
-                    TimeUnit.MILLISECONDS,
-                )
+                val chunk = pendingReadChunk ?: readQueue.poll(remainingTimeoutMs)
                 if (chunk == null) {
                     return if (copied > 0) {
                         copied
@@ -412,12 +464,20 @@ class YumeNativeTransport(
                 }
                 pendingWriteBytes.addAndGet(payload.size)
             }
-            writeQueue.put(payload)
+            if (!writeQueue.offer(payload)) {
+                writeLock.withLock {
+                    pendingWriteBytes.addAndGet(-payload.size)
+                    writeSpaceAvailable.signalAll()
+                }
+                return -1
+            }
             return payload.size
         }
 
         override fun close(reason: String) {
             val shouldClose = closed.compareAndSet(false, true)
+            readQueue.close()
+            writeQueue.close()
             workerScope.cancel()
             settleOpen()
             writeLock.withLock {
@@ -440,6 +500,8 @@ class YumeNativeTransport(
 
         override fun abort(reason: String) {
             val shouldClose = closed.compareAndSet(false, true)
+            readQueue.close()
+            writeQueue.close()
             workerScope.cancel()
             settleOpen()
             writeLock.withLock {
@@ -474,7 +536,7 @@ class YumeNativeTransport(
             merged += first
             var total = first.size
             while (total < MAX_NATIVE_TCP_MERGE_BYTES) {
-                val next = writeQueue.poll() ?: break
+                val next = writeQueue.pollNow() ?: break
                 merged += next
                 total += next.size
             }
@@ -497,12 +559,16 @@ class YumeNativeTransport(
         private fun markClosed() {
             settleOpen()
             if (closed.compareAndSet(false, true)) {
+                readQueue.close()
+                writeQueue.close()
                 workerScope.cancel()
                 writeLock.withLock {
                     writeSpaceAvailable.signalAll()
                 }
                 onClosed()
             } else {
+                readQueue.close()
+                writeQueue.close()
                 writeLock.withLock {
                     writeSpaceAvailable.signalAll()
                 }
@@ -520,7 +586,9 @@ class YumeNativeTransport(
                 while (true) {
                     val chunk = stream.readChunk() ?: break
                     if (chunk.isNotEmpty()) {
-                        readQueue.put(chunk)
+                        if (!readQueue.offer(chunk)) {
+                            break
+                        }
                     }
                 }
             } catch (_: Throwable) {
@@ -532,13 +600,7 @@ class YumeNativeTransport(
         private suspend fun runWriteLoop(stream: YumeTcpStream) {
             try {
                 while (true) {
-                    val first = writeQueue.poll(100, TimeUnit.MILLISECONDS)
-                    if (first == null) {
-                        if (closed.get()) {
-                            break
-                        }
-                        continue
-                    }
+                    val first = writeQueue.receive() ?: break
                     val merged = mergePendingWrites(first)
                     val mergedBuffer = merged.buffer
                     val mergedLen = merged.length

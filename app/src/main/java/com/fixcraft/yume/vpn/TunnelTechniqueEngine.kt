@@ -429,7 +429,7 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
         // tcpStreamBufferBytes is the per-stream BufferedChunkQueue
         // cap on the Kotlin side. The route-core / lwIP / TUN
         // consumer chain is the slow link in native-direct mode (the
-        // JNI bridge serializes through a single LinkedBlockingQueue
+        // JNI bridge feeds route-core through coroutine-backed queues
         // and lwIP's single-thread core). 4 MiB matches the
         // tun2socks-stable Balanced profile and gives ~500 ms of
         // slack at 64 Mbps before the "Yume stream overflow"
