@@ -417,8 +417,26 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
         tcpEvictionGraceMs = 6_000L,
         tcpEvictionBatchSize = 8,
         bridgeChunkBytes = 32 * 1024,
-        routeTcpBufferBytes = 256 * 1024,
-        tcpStreamBufferBytes = 2 * 1024 * 1024,
+        // routeTcpBufferBytes sizes the SOCKS5 splice's local TCP
+        // buffer toward the lwIP layer. 1 MiB matches the lwIP
+        // TCP_WND (128×MSS) we configured in lwipopts.h, so we don't
+        // bottleneck the handover between Yume stream and lwIP.
+        // 256 KiB used to mean lwIP could only stage 256 KiB of
+        // inflight bytes before it had to wait for the previous
+        // chunk to drain — a 4× cap on the per-stream rate when
+        // many streams shared the lwIP processing thread.
+        routeTcpBufferBytes = 1024 * 1024,
+        // tcpStreamBufferBytes is the per-stream BufferedChunkQueue
+        // cap on the Kotlin side. The route-core / lwIP / TUN
+        // consumer chain is the slow link in native-direct mode (the
+        // JNI bridge serializes through a single LinkedBlockingQueue
+        // and lwIP's single-thread core). 4 MiB matches the
+        // tun2socks-stable Balanced profile and gives ~500 ms of
+        // slack at 64 Mbps before the "Yume stream overflow"
+        // stream-kill triggers. The 2 MiB previous value was killing
+        // streams during natural download bursts even though the TLS
+        // pipe and the server were both healthy.
+        tcpStreamBufferBytes = 4 * 1024 * 1024,
         udpStreamBufferBytes = 256 * 1024,
         outboundFrameQueueCapacity = 384,
         tun2SocksConnectTimeoutMs = 5_000,

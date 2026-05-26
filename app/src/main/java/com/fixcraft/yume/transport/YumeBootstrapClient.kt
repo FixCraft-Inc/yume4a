@@ -900,6 +900,18 @@ class YumeBootstrapSession internal constructor(
                                 streams.remove(frame.streamId)
                                 pendingOpen.remove(frame.streamId)
                             }
+                            // Visible log: previously this stream-kill
+                            // was silent, making it impossible to tell
+                            // from logcat whether download throughput
+                            // was being capped by buffer overflow.
+                            // Without this signal we were guessing
+                            // whether streams were dying or the wire
+                            // was just slow. Capped at WARN so it's
+                            // visible in default-level captures.
+                            YumeVpnRuntime.appendLog(
+                                VpnLogLevel.Warn,
+                                "Yume stream ${frame.streamId}: receive buffer overflow (${frame.payload.size} bytes incoming); killing stream — consumer can't drain fast enough.",
+                            )
                             stream.fail(YumeBootstrapException("Incoming Yume stream overflow"))
                             sendFrame(YumeFrame(type = YumeFrameType.CLOSE, streamId = frame.streamId, payload = "client receive buffer overflow".toByteArray(StandardCharsets.UTF_8)))
                         }
