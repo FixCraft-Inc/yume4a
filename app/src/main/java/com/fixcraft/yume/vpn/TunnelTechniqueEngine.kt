@@ -91,11 +91,7 @@ data class Tun2SocksRuntimeConfig(
             tcpStreamMaxBufferedBytes = tcpStreamBufferBytes,
             udpStreamMaxBufferedBytes = udpStreamBufferBytes,
             outboundFrameQueueCapacity = outboundFrameQueueCapacity,
-            // Wired to the Diagnostics screen's "Native transport (beta)"
-            // toggle (see [com.fixcraft.yume.transport.YumeNativeTransportDebug]).
-            // Read here at the moment the bootstrap is built, which is
-            // also the moment connect() decides which TLS backend to use.
-            useNativeTransport = com.fixcraft.yume.transport.YumeNativeTransportDebug.enabled,
+            useNativeTransport = false,
         )
     }
 }
