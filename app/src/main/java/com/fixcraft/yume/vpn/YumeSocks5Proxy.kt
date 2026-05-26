@@ -33,6 +33,7 @@ import java.nio.charset.StandardCharsets
 import java.util.ArrayDeque
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 class YumeSocks5Proxy(
     private val scope: CoroutineScope,
@@ -67,11 +68,22 @@ class YumeSocks5Proxy(
     private var dnsFailureWindowStartedAtMs = 0L
     private var dnsFailureCount = 0
     private var dnsFailureSession: YumeBootstrapSession? = null
+    private val txPackets = AtomicLong(0L)
+    private val txBytes = AtomicLong(0L)
+    private val rxPackets = AtomicLong(0L)
+    private val rxBytes = AtomicLong(0L)
     @Volatile
     private var startupWarmupMode = false
 
     val listenAddress: InetSocketAddress?
         get() = serverSocket?.localSocketAddress as? InetSocketAddress
+
+    fun stats(): TechniqueStats = TechniqueStats(
+        txPackets = txPackets.get(),
+        txBytes = txBytes.get(),
+        rxPackets = rxPackets.get(),
+        rxBytes = rxBytes.get(),
+    )
 
     fun setStartupWarmupMode(enabled: Boolean) {
         startupWarmupMode = enabled
@@ -516,6 +528,7 @@ class YumeSocks5Proxy(
                         tcpRequest[1] = (payload.size and 0xFF).toByte()
                         payload.copyInto(tcpRequest, 2)
                         stream.write(tcpRequest)
+                        recordTx(payload.size)
 
                         val dnsResponse = withTimeout(DNS_OVER_TCP_TIMEOUT_MS.toLong()) {
                             readDnsResponseFromTcp(stream)
@@ -528,6 +541,7 @@ class YumeSocks5Proxy(
                             }
                             val udpResponse = buildUdpResponse(host, DNS_PORT, filteredDnsResponse)
                             udpSocket.send(DatagramPacket(udpResponse, udpResponse.size, clientAddress, clientPort))
+                            recordRx(filteredDnsResponse.size)
                         }
                         resetDnsTransportFailures(session)
                         return@withPermit true
@@ -670,6 +684,7 @@ class YumeSocks5Proxy(
                             }
                             val response = buildUdpResponse(host, port, relayPayload)
                             udpSocket.send(DatagramPacket(response, response.size, clientAddress, clientPort))
+                            recordRx(relayPayload.size)
                         }
                     } catch (_: CancellationException) {
                     } catch (throwable: IOException) {
@@ -737,6 +752,7 @@ class YumeSocks5Proxy(
                             )
                         }
                         stream.write(buffer, 0, read)
+                        recordTx(read)
                         touchActiveTcpRelay(stream.streamId)
                     }
                 }
@@ -769,6 +785,7 @@ class YumeSocks5Proxy(
                         )
                     }
                     output.write(chunk)
+                    recordRx(chunk.size)
                     touchActiveTcpRelay(stream.streamId)
                 }
             } catch (throwable: IOException) {
@@ -1020,6 +1037,7 @@ class YumeSocks5Proxy(
                 )
             }
             association.stream.sendDatagram(effectiveDatagram.payload)
+            recordTx(effectiveDatagram.payload.size)
             association.touch()
         } catch (_: CancellationException) {
         } catch (throwable: Exception) {
@@ -1067,6 +1085,7 @@ class YumeSocks5Proxy(
                 )
                 association.touch()
                 association.stream.sendDatagram(payload)
+                recordTx(payload.size)
                 association.touch()
                 resetDnsTransportFailures(session)
                 return
@@ -1691,6 +1710,23 @@ class YumeSocks5Proxy(
 
         val response = buildUdpResponse(resolverHost, DNS_PORT, payload)
         udpSocket.send(DatagramPacket(response, response.size, route.clientAddress, route.clientPort))
+        recordRx(payload.size)
+    }
+
+    private fun recordTx(bytes: Int) {
+        if (bytes <= 0) {
+            return
+        }
+        txPackets.incrementAndGet()
+        txBytes.addAndGet(bytes.toLong())
+    }
+
+    private fun recordRx(bytes: Int) {
+        if (bytes <= 0) {
+            return
+        }
+        rxPackets.incrementAndGet()
+        rxBytes.addAndGet(bytes.toLong())
     }
 
     private fun selectAssociationsToEvictLocked(

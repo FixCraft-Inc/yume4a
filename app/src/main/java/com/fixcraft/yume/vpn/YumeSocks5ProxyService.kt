@@ -71,6 +71,7 @@ class YumeSocks5ProxyService : Service() {
     private var bootstrapSession: YumeBootstrapSession? = null
     private var bootstrapSessionPool: YumeBootstrapSessionPool? = null
     private var socksProxy: YumeSocks5Proxy? = null
+    private var trafficTickerJob: Job? = null
     private var activeProfile: ServerProfile? = null
     @Volatile
     private var localProxyAddress: String? = null
@@ -116,6 +117,7 @@ class YumeSocks5ProxyService : Service() {
         connectJob = null
         disconnectJob?.cancel()
         disconnectJob = null
+        stopTrafficTicker()
         disconnectResources()
         activeProfile = null
         serviceScope.cancel()
@@ -233,6 +235,7 @@ class YumeSocks5ProxyService : Service() {
                 )
             }
             updateForeground(profile, "SOCKS5 proxy ready at $proxyAddress")
+            startTrafficTicker()
             var nextPingAtMs = System.currentTimeMillis() + KEEPALIVE_PING_INTERVAL_MS
             var consecutivePingFailures = 0
             while (true) {
@@ -640,6 +643,7 @@ class YumeSocks5ProxyService : Service() {
     }
 
     private fun disconnectResources() {
+        stopTrafficTicker()
         val session = bootstrapSession
         val pool = bootstrapSessionPool
         bootstrapSession = null
@@ -657,6 +661,26 @@ class YumeSocks5ProxyService : Service() {
         socksProxy = null
         localProxyAddress = null
         activeRuntimeConfig = null
+    }
+
+    private fun startTrafficTicker() {
+        trafficTickerJob?.cancel()
+        YumeVpnRuntime.resetTrafficHistory()
+        trafficTickerJob = serviceScope.launch {
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                socksProxy?.stats()?.let { stats ->
+                    YumeVpnRuntime.pushTrafficSample(stats.rxBytes, stats.txBytes)
+                }
+                delay(1_000)
+            }
+        }
+    }
+
+    private fun stopTrafficTicker() {
+        trafficTickerJob?.cancel()
+        trafficTickerJob = null
+        YumeVpnRuntime.resetTrafficHistory()
     }
 
     private fun fail(message: String, profileId: String? = null) {

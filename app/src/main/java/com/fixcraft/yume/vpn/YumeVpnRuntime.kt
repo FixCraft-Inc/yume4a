@@ -41,8 +41,10 @@ object YumeVpnRuntime {
 
         val dRx = (rxBytes - current.totalRxBytes).coerceAtLeast(0L)
         val dTx = (txBytes - current.totalTxBytes).coerceAtLeast(0L)
-        val rxRate = if (dtSec > 0.0) dRx / dtSec else 0.0
-        val txRate = if (dtSec > 0.0) dTx / dtSec else 0.0
+        val rawRxRate = if (dtSec > 0.0) dRx / dtSec else 0.0
+        val rawTxRate = if (dtSec > 0.0) dTx / dtSec else 0.0
+        val rxRate = smoothTrafficRate(rawRxRate, last?.rxRateBps)
+        val txRate = smoothTrafficRate(rawTxRate, last?.txRateBps)
 
         val sample = TrafficSample(now, rxBytes, txBytes, rxRate, txRate)
         val next = (current.samples + sample).takeLast(MAX_TRAFFIC_SAMPLES)
@@ -51,6 +53,11 @@ object YumeVpnRuntime {
 
     fun resetTrafficHistory() {
         _traffic.value = TrafficHistory()
+    }
+
+    private fun smoothTrafficRate(currentBps: Double, previousBps: Double?): Double {
+        previousBps ?: return currentBps
+        return previousBps * 0.55 + currentBps * 0.45
     }
 
     fun update(newState: VpnConnectionState, preserveLogs: Boolean = true) {
