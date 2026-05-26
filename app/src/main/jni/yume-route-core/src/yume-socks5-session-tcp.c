@@ -48,6 +48,7 @@
 #define TCP_DIRECT_POLL_TIMEOUT_MS 10
 #define TCP_DIRECT_STREAM_READ_TIMEOUT_MS 100
 #define TCP_DIRECT_WRITE_WAIT_MS 10
+#define TCP_DIRECT_UPLOAD_BATCH_BYTES (128 * 1024)
 
 static void yume_socks5_session_tcp_splice (YumeSocks5Session *base);
 
@@ -176,26 +177,41 @@ static int
 tcp_direct_forward_peer_data (YumeSocks5SessionTCP *self, unsigned char *buffer,
                               size_t buffer_len)
 {
+    size_t buffered = 0;
+
     while (!self->direct_stop && !tcp_session_stopping (self)) {
         ssize_t read_len;
 
-        read_len = recv (self->direct_peer_fd, buffer, buffer_len, MSG_DONTWAIT);
+        if (buffered == buffer_len) {
+            if (yume_native_transport_send_direct (self->direct_stream_handle,
+                                                   buffer, buffered) < 0)
+                return -1;
+            buffered = 0;
+        }
+
+        read_len = recv (self->direct_peer_fd, buffer + buffered,
+                         buffer_len - buffered, MSG_DONTWAIT);
         if (read_len < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (buffered > 0 &&
+                    yume_native_transport_send_direct (
+                        self->direct_stream_handle, buffer, buffered) < 0)
+                    return -1;
                 return 0;
+            }
             if (errno == EINTR)
                 continue;
             return -1;
         }
         if (read_len == 0)
             return -1;
-        if (yume_native_transport_send_direct (self->direct_stream_handle,
-                                            buffer, read_len) < 0)
-            return -1;
-        if ((size_t)read_len < buffer_len)
-            return 0;
+        buffered += (size_t)read_len;
     }
 
+    if (buffered > 0 &&
+        yume_native_transport_send_direct (self->direct_stream_handle,
+                                           buffer, buffered) < 0)
+        return -1;
     return 0;
 }
 
@@ -253,7 +269,7 @@ static void *
 tcp_direct_relay_entry (void *data)
 {
     YumeSocks5SessionTCP *self = data;
-    unsigned char send_buf[65536];
+    unsigned char send_buf[TCP_DIRECT_UPLOAD_BATCH_BYTES];
     pthread_t downstream_thread;
     int downstream_started = 0;
 

@@ -77,6 +77,16 @@ class YumeNativeTransport(
             return chunk
         }
 
+        suspend fun receiveWithin(timeoutMs: Long): ByteArray? {
+            pollNow()?.let { return it }
+            if (timeoutMs <= 0L) {
+                return null
+            }
+            return withTimeoutOrNull(timeoutMs) {
+                receive()
+            }
+        }
+
         fun isEmpty(): Boolean = queuedChunks.get() == 0
 
         fun close() {
@@ -528,20 +538,37 @@ class YumeNativeTransport(
 
         private data class MergedWrite(val buffer: ByteArray, val length: Int)
 
-        private fun mergePendingWrites(first: ByteArray): MergedWrite {
+        private suspend fun mergePendingWrites(first: ByteArray): MergedWrite {
             if (writeQueue.isEmpty()) {
-                return MergedWrite(first, first.size)
+                val delayed = if (first.size < NATIVE_TCP_COALESCE_WAIT_BELOW_BYTES) {
+                    writeQueue.receiveWithin(NATIVE_TCP_COALESCE_DELAY_MS)
+                } else {
+                    null
+                }
+                if (delayed == null) {
+                    return MergedWrite(first, first.size)
+                }
+                val merged = ArrayList<ByteArray>(8)
+                merged += first
+                merged += delayed
+                val total = first.size + delayed.size
+                return mergePendingWrites(merged, total)
             }
-            val merged = ArrayList<ByteArray>(4)
+            val merged = ArrayList<ByteArray>(8)
             merged += first
-            var total = first.size
+            return mergePendingWrites(merged, first.size)
+        }
+
+        private fun mergePendingWrites(merged: ArrayList<ByteArray>, initialBytes: Int): MergedWrite {
+            var total = initialBytes
             while (total < MAX_NATIVE_TCP_MERGE_BYTES) {
                 val next = writeQueue.pollNow() ?: break
                 merged += next
                 total += next.size
             }
             if (merged.size == 1) {
-                return MergedWrite(first, first.size)
+                val only = merged[0]
+                return MergedWrite(only, only.size)
             }
             var scratch = mergeScratch
             if (scratch.size < total) {
@@ -609,7 +636,7 @@ class YumeNativeTransport(
                     try {
                         while (offset < mergedLen) {
                             val chunkSize = (mergedLen - offset).coerceAtMost(MAX_NATIVE_TCP_FRAME_BYTES)
-                            session.sendDataQueued(
+                            session.sendData(
                                 streamId = stream.streamId,
                                 data = mergedBuffer,
                                 offset = offset,
@@ -897,8 +924,10 @@ class YumeNativeTransport(
     }
 
     companion object {
-        private const val MAX_NATIVE_TCP_FRAME_BYTES = 64 * 1024
+        private const val MAX_NATIVE_TCP_FRAME_BYTES = 256 * 1024
         private const val MAX_NATIVE_TCP_MERGE_BYTES = 256 * 1024
+        private const val NATIVE_TCP_COALESCE_DELAY_MS = 1L
+        private const val NATIVE_TCP_COALESCE_WAIT_BELOW_BYTES = 32 * 1024
 
         private fun deriveTcpOpenConcurrency(maxConcurrentTcpStreams: Int): Int {
             val capped = maxConcurrentTcpStreams.coerceAtLeast(1)

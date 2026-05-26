@@ -64,6 +64,9 @@ static size_t stat_tun_write_eagain;
 static size_t stat_tun_write_recovered;
 static size_t stat_tun_write_dropped;
 static size_t android_udp_reject_count;
+static size_t android_dns_route_count;
+static size_t android_dns_answer_count;
+static size_t android_tcp_accept_count;
 
 static struct netif netif;
 static struct tcp_pcb *tcp;
@@ -164,7 +167,8 @@ should_drop_android_non_dns_udp (struct pbuf *p)
     }
 
     android_udp_reject_count++;
-    if (android_udp_reject_count <= 32 || (android_udp_reject_count % 128) == 0) {
+    if (android_udp_reject_count <= 8 ||
+        (android_udp_reject_count & 0x3FF) == 0) {
         char src[16];
         char dst[16];
 
@@ -316,9 +320,9 @@ netif_output_handler (struct netif *netif, struct pbuf *p)
 
     stat_rx_packets++;
     stat_rx_bytes += s;
-    if (stat_rx_packets <= 64)
+    if (stat_rx_packets <= 4)
         log_ipv4_packet ("tun write", p, stat_rx_packets);
-    if ((stat_rx_packets & 0x3F) == 0) {
+    if ((stat_rx_packets & 0xFFF) == 0) {
         YUME_RC_LOG ("netif_output_handler: wrote %zu packets to tun so far (last=%zd bytes)",
                      stat_rx_packets, s);
     }
@@ -430,12 +434,16 @@ tcp_accept_handler (void *arg, struct tcp_pcb *pcb, err_t err)
         const char *mapped_name = lookup_mapped_host_for_ip (&pcb->local_ip);
 
         ipaddr_ntoa_r (&pcb->local_ip, dest, sizeof (dest));
-        if (mapped_name) {
-            YUME_RC_LOG ("tcp_accept_handler: lwip accepted TCP SYN -> %s:%u mapped=%s",
-                         dest, pcb->local_port, mapped_name);
-        } else {
-            YUME_RC_LOG ("tcp_accept_handler: lwip accepted TCP SYN -> %s:%u",
-                         dest, pcb->local_port);
+        android_tcp_accept_count++;
+        if (android_tcp_accept_count <= 16 ||
+            (android_tcp_accept_count & 0x1FF) == 0) {
+            if (mapped_name) {
+                YUME_RC_LOG ("tcp_accept_handler: lwip accepted TCP SYN -> %s:%u mapped=%s",
+                             dest, pcb->local_port, mapped_name);
+            } else {
+                YUME_RC_LOG ("tcp_accept_handler: lwip accepted TCP SYN -> %s:%u",
+                             dest, pcb->local_port);
+            }
         }
     }
 
@@ -479,8 +487,12 @@ dns_recv_handler (void *arg, struct udp_pcb *pcb, struct pbuf *p,
 
     b->len = res;
     b->tot_len = res;
-    YUME_RC_LOG ("dns_recv_handler: answered mapped DNS query from local %u with %d bytes",
-                 pcb->local_port, res);
+    android_dns_answer_count++;
+    if (android_dns_answer_count <= 8 ||
+        (android_dns_answer_count & 0x3FF) == 0) {
+        YUME_RC_LOG ("dns_recv_handler: answered mapped DNS query from local %u with %d bytes",
+                     pcb->local_port, res);
+    }
     udp_sendfrom (pcb, b, &pcb->local_ip, pcb->local_port);
 
 free:
@@ -515,9 +527,13 @@ udp_recv_handler (void *arg, struct udp_pcb *pcb, struct pbuf *p,
         if (fport == port && faddr == ip_2_ip4 (addr)->addr) {
             char dest[IPADDR_STRLEN_MAX];
 
-            ipaddr_ntoa_r (addr, dest, sizeof (dest));
-            YUME_RC_LOG ("udp_recv_handler: routed DNS query to mapped DNS %s:%u",
-                         dest, port);
+            android_dns_route_count++;
+            if (android_dns_route_count <= 8 ||
+                (android_dns_route_count & 0x3FF) == 0) {
+                ipaddr_ntoa_r (addr, dest, sizeof (dest));
+                YUME_RC_LOG ("udp_recv_handler: routed DNS query to mapped DNS %s:%u",
+                             dest, port);
+            }
             udp_recv (pcb, dns_recv_handler, dns);
             return;
         }
@@ -600,9 +616,9 @@ lwip_io_task_entry (void *data)
 
         stat_tx_packets++;
         stat_tx_bytes += buf->tot_len;
-        if (stat_tx_packets <= 64)
+        if (stat_tx_packets <= 4)
             log_ipv4_packet ("tun read", buf, stat_tx_packets);
-        if ((++local_pkts & 0x3F) == 0) {
+        if ((++local_pkts & 0xFFF) == 0) {
             YUME_RC_LOG ("lwip_io_task_entry: read %zu packets so far (last=%u bytes)",
                          local_pkts, buf->tot_len);
         }
@@ -972,6 +988,9 @@ yume_route_fini (void)
     stat_tun_write_recovered = 0;
     stat_tun_write_dropped = 0;
     android_udp_reject_count = 0;
+    android_dns_route_count = 0;
+    android_dns_answer_count = 0;
+    android_tcp_accept_count = 0;
 }
 
 int
