@@ -34,6 +34,7 @@
 #include <yume-task-io-socket.h>
 #include <yume-task-mutex.h>
 #include <yume-memory-allocator.h>
+#include <yume-memory-allocator-api.h>
 #include <yume-socks5-misc.h>
 
 #include "yume-utils.h"
@@ -485,23 +486,66 @@ tcp_splice_b (YumeSocks5SessionTCP *self)
     if (self->pcb) {
         iovc = yume_ring_buffer_reading (self->buffer, iov);
         if (iovc) {
-            ssize_t s = 0;
+            size_t s = 0;
             int i;
+
             for (i = 0; i < iovc; i++) {
-                void *ptr = iov[i].iov_base;
+                unsigned char *ptr = iov[i].iov_base;
                 size_t len = iov[i].iov_len;
-                err |= tcp_write (self->pcb, ptr, len, 0);
-                s += len;
+
+                while (len > 0) {
+                    u16_t available = tcp_sndbuf (self->pcb);
+                    u16_t chunk;
+                    u8_t flags = 0;
+
+                    if (available == 0 ||
+                        tcp_sndqueuelen (self->pcb) >= TCP_SND_QUEUELEN)
+                        goto tcp_send_blocked;
+
+                    chunk = available;
+                    if ((size_t)chunk > len)
+                        chunk = (u16_t)len;
+                    if (chunk == 0xffffU && len > 0xffffU)
+                        flags |= TCP_WRITE_FLAG_MORE;
+                    if ((size_t)chunk < len || i + 1 < iovc)
+                        flags |= TCP_WRITE_FLAG_MORE;
+
+                    err = tcp_write (self->pcb, ptr, chunk, flags);
+                    if (err == ERR_MEM)
+                        goto tcp_send_blocked;
+                    if (err != ERR_OK)
+                        goto tcp_send_failed;
+
+                    ptr += chunk;
+                    len -= chunk;
+                    s += chunk;
+                }
             }
-            yume_ring_buffer_read_finish (self->buffer, s);
-            err |= tcp_output (self->pcb);
-            res = 1;
+tcp_send_blocked:
+            if (s > 0) {
+                err_t out_err;
+
+                yume_ring_buffer_read_finish (self->buffer, s);
+                out_err = tcp_output (self->pcb);
+                if (out_err != ERR_OK && out_err != ERR_MEM)
+                    err = out_err;
+                res = err == ERR_OK || err == ERR_MEM ? 1 : -1;
+            } else {
+                res = 0;
+            }
+            goto tcp_send_done;
+
+tcp_send_failed:
+            res = -1;
+
+tcp_send_done:
+            ;
         } else if (res < 0) {
             tcp_shutdown (self->pcb, 0, 1);
         }
     }
     yume_task_mutex_unlock (self->mutex);
-    if (!self->pcb || (err != ERR_OK))
+    if (!self->pcb || (err != ERR_OK && err != ERR_MEM))
         res = -1;
 
     return res;
