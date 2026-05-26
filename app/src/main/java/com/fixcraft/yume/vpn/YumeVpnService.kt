@@ -1006,6 +1006,17 @@ class YumeVpnService : VpnService() {
                     proxyAddress = proxyAddress,
                 )
             }
+
+            is Socks5ProxyRuntimeConfig -> {
+                // SOCKS5-only is dispatched to YumeSocks5ProxyService at
+                // the MainViewModel layer; if it ever reaches the VPN
+                // service (e.g. a stale Intent after a settings change),
+                // fail loudly rather than silently bringing up TUN.
+                error(
+                    "SOCKS5-only technique is owned by YumeSocks5ProxyService — " +
+                        "YumeVpnService should not receive it. Disconnect and reconnect."
+                )
+            }
         }
     }
 
