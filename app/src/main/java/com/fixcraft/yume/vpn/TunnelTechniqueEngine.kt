@@ -413,29 +413,25 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
         // Current native-direct is still the route-core/lwIP compatibility
         // bridge. Keep fan-out below Dispatchers.IO + route-core thread storm
         // territory; packet-bulk will lift this by removing per-flow relays.
-        maxActiveTcpRelays = 20,
-        relayAcquireTimeoutMs = 750L,
+        maxActiveTcpRelays = 12,
+        relayAcquireTimeoutMs = 250L,
         relayAcquireSliceMs = 50L,
         idleTcpEvictionMs = 18_000L,
         tcpEvictionGraceMs = 6_000L,
         tcpEvictionBatchSize = 8,
         bridgeChunkBytes = 32 * 1024,
-        // routeTcpBufferBytes sizes the SOCKS5 splice's local TCP
-        // buffer toward the lwIP layer. 1 MiB matches the lwIP
-        // TCP_WND (128×MSS) we configured in lwipopts.h, so we don't
-        // bottleneck the handover between Yume stream and lwIP.
-        // 256 KiB used to mean lwIP could only stage 256 KiB of
-        // inflight bytes before it had to wait for the previous
-        // chunk to drain — a 4× cap on the per-stream rate when
-        // many streams shared the lwIP processing thread.
-        routeTcpBufferBytes = 1024 * 1024,
+        // routeTcpBufferBytes sizes the socketpair/ring buffer between
+        // lwIP and the Yume stream relay. Keep it larger than lwIP's
+        // TCP_WND so short OPEN latency or TLS write stalls do not
+        // immediately push back into the app-facing TCP connection.
+        routeTcpBufferBytes = 2 * 1024 * 1024,
         // tcpStreamBufferBytes is the per-stream BufferedChunkQueue
         // cap on the Kotlin side. The route-core / lwIP / TUN
         // consumer chain is the slow link in native-direct mode. Give
         // each active flow more burst slack, but pair it with a lower
         // active-flow cap so the Android heap cannot fill with dozens
         // of 64 KiB chunks during a speedtest/ad-network fan-out.
-        tcpStreamBufferBytes = 6 * 1024 * 1024,
+        tcpStreamBufferBytes = 12 * 1024 * 1024,
         udpStreamBufferBytes = 256 * 1024,
         outboundFrameQueueCapacity = 256,
         tun2SocksConnectTimeoutMs = 5_000,

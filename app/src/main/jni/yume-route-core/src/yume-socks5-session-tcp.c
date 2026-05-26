@@ -52,6 +52,18 @@
 
 static void yume_socks5_session_tcp_splice (YumeSocks5Session *base);
 
+static size_t tcp_direct_log_opening_count;
+static size_t tcp_direct_log_queued_count;
+static size_t tcp_direct_log_accepted_count;
+
+static int
+tcp_direct_should_log (size_t *counter)
+{
+    size_t count = __sync_add_and_fetch (counter, 1);
+
+    return count <= 16 || (count & 0x1FF) == 0;
+}
+
 static int
 task_io_yielder (YumeTaskYieldType type, void *data)
 {
@@ -273,8 +285,10 @@ tcp_direct_relay_entry (void *data)
     pthread_t downstream_thread;
     int downstream_started = 0;
 
-    YUME_TCP_LOGI ("native-direct TCP opening %s:%d", self->direct_host,
-                   self->direct_port);
+    if (tcp_direct_should_log (&tcp_direct_log_opening_count)) {
+        YUME_TCP_LOGI ("native-direct TCP opening %s:%d", self->direct_host,
+                       self->direct_port);
+    }
     self->direct_stream_handle = yume_native_transport_open (
         self->direct_host, self->direct_port, "tcp", self->direct_timeout_ms);
 
@@ -291,9 +305,11 @@ tcp_direct_relay_entry (void *data)
         return NULL;
     }
 
-    YUME_TCP_LOGI ("native-direct TCP stream queued %s:%d handle=%d",
-                   self->direct_host, self->direct_port,
-                   self->direct_stream_handle);
+    if (tcp_direct_should_log (&tcp_direct_log_queued_count)) {
+        YUME_TCP_LOGI ("native-direct TCP stream queued %s:%d handle=%d",
+                       self->direct_host, self->direct_port,
+                       self->direct_stream_handle);
+    }
 
     if (pthread_create (&downstream_thread, NULL, tcp_direct_downstream_entry,
                         self) == 0) {
@@ -419,9 +435,11 @@ tcp_direct_start (YumeSocks5SessionTCP *self)
         goto fail;
 
     self->direct_relay_started = 1;
-    YUME_TCP_LOGI (
-        "native-direct TCP accepted %s:%d; splicing while Yume stream opens",
-        self->direct_host, self->direct_port);
+    if (tcp_direct_should_log (&tcp_direct_log_accepted_count)) {
+        YUME_TCP_LOGI (
+            "native-direct TCP accepted %s:%d; splicing while Yume stream opens",
+            self->direct_host, self->direct_port);
+    }
 
     return 0;
 

@@ -339,7 +339,7 @@ class YumeNativeTransport(
         init {
             workerScope.launch {
                 try {
-                    val stream = session.openTcpStreamOptimistic(host, port, timeoutMs)
+                    val stream = session.openTcpStream(host, port, timeoutMs)
                     settleOpen()
                     if (closed.get()) {
                         runCatching { stream.close("native transport already closed") }
@@ -636,7 +636,7 @@ class YumeNativeTransport(
                     try {
                         while (offset < mergedLen) {
                             val chunkSize = (mergedLen - offset).coerceAtMost(MAX_NATIVE_TCP_FRAME_BYTES)
-                            session.sendData(
+                            session.sendDataQueued(
                                 streamId = stream.streamId,
                                 data = mergedBuffer,
                                 offset = offset,
