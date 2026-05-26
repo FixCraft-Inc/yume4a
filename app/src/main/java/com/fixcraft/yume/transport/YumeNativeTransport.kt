@@ -323,7 +323,6 @@ class YumeNativeTransport(
         private val closed = AtomicBoolean(false)
         private val openSettled = AtomicBoolean(false)
         private val pendingWriteBytes = AtomicInteger(0)
-        private val readQueue = NativeByteQueue()
         private val writeQueue = NativeByteQueue()
         private val workerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private val streamReady = CompletableDeferred<YumeTcpStream>()
@@ -349,9 +348,6 @@ class YumeNativeTransport(
                     if (!streamReady.complete(stream)) {
                         runCatching { stream.close("native transport stream registration failed") }
                         return@launch
-                    }
-                    launch {
-                        runReadLoop(stream)
                     }
                     launch {
                         runWriteLoop(stream)
@@ -385,11 +381,11 @@ class YumeNativeTransport(
                     pending.copyOfRange(offset, pending.size)
                 }
             }
-            val chunk = readQueue.poll(timeoutMs)
+            val chunk = readNextChunk(timeoutMs)
             if (chunk != null) {
                 return chunk
             }
-            return if (closed.get() && readQueue.isEmpty()) {
+            return if (isInputClosed()) {
                 null
             } else {
                 ByteArray(0)
@@ -403,11 +399,12 @@ class YumeNativeTransport(
             var copied = 0
             var remainingTimeoutMs = timeoutMs
             while (buffer.hasRemaining()) {
-                val chunk = pendingReadChunk ?: readQueue.poll(remainingTimeoutMs)
+                val pending = pendingReadChunk
+                val chunk = pending ?: readNextChunk(remainingTimeoutMs)
                 if (chunk == null) {
                     return if (copied > 0) {
                         copied
-                    } else if (closed.get() && readQueue.isEmpty()) {
+                    } else if (isInputClosed()) {
                         -1
                     } else {
                         0
@@ -416,7 +413,7 @@ class YumeNativeTransport(
                 if (chunk.isEmpty()) {
                     return copied
                 }
-                val offset = if (chunk === pendingReadChunk) pendingReadOffset else 0
+                val offset = if (pending != null) pendingReadOffset else 0
                 val available = chunk.size - offset
                 if (available <= 0) {
                     pendingReadChunk = null
@@ -486,7 +483,6 @@ class YumeNativeTransport(
 
         override fun close(reason: String) {
             val shouldClose = closed.compareAndSet(false, true)
-            readQueue.close()
             writeQueue.close()
             workerScope.cancel()
             settleOpen()
@@ -510,7 +506,6 @@ class YumeNativeTransport(
 
         override fun abort(reason: String) {
             val shouldClose = closed.compareAndSet(false, true)
-            readQueue.close()
             writeQueue.close()
             workerScope.cancel()
             settleOpen()
@@ -586,7 +581,6 @@ class YumeNativeTransport(
         private fun markClosed() {
             settleOpen()
             if (closed.compareAndSet(false, true)) {
-                readQueue.close()
                 writeQueue.close()
                 workerScope.cancel()
                 writeLock.withLock {
@@ -594,7 +588,6 @@ class YumeNativeTransport(
                 }
                 onClosed()
             } else {
-                readQueue.close()
                 writeQueue.close()
                 writeLock.withLock {
                     writeSpaceAvailable.signalAll()
@@ -602,25 +595,25 @@ class YumeNativeTransport(
             }
         }
 
-        private fun settleOpen() {
-            if (openSettled.compareAndSet(false, true)) {
-                onOpenSettled()
+        private fun readNextChunk(timeoutMs: Int): ByteArray? {
+            val stream = currentStreamOrNull() ?: return null
+            if (timeoutMs <= 0) {
+                return stream.tryReadChunk()
+            }
+            return runBlocking {
+                withTimeoutOrNull(timeoutMs.toLong().coerceAtLeast(1L)) {
+                    stream.readChunk()
+                }
             }
         }
 
-        private suspend fun runReadLoop(stream: YumeTcpStream) {
-            try {
-                while (true) {
-                    val chunk = stream.readChunk() ?: break
-                    if (chunk.isNotEmpty()) {
-                        if (!readQueue.offer(chunk)) {
-                            break
-                        }
-                    }
-                }
-            } catch (_: Throwable) {
-            } finally {
-                markClosed()
+        private fun isInputClosed(): Boolean {
+            return closed.get() || currentStreamOrNull()?.isClosed == true
+        }
+
+        private fun settleOpen() {
+            if (openSettled.compareAndSet(false, true)) {
+                onOpenSettled()
             }
         }
 

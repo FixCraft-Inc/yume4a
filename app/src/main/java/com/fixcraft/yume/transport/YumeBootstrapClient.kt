@@ -126,6 +126,12 @@ private class BufferedChunkQueue(
         }
     }
 
+    fun tryReceiveCatching() = channel.tryReceive().also { result ->
+        result.getOrNull()?.let { chunk ->
+            bufferedBytes.addAndGet(-chunk.size)
+        }
+    }
+
     fun close(cause: Throwable? = null) {
         if (cause == null) {
             channel.close()
@@ -182,6 +188,18 @@ class YumeTcpStream internal constructor(
 
     suspend fun readChunk(): ByteArray? {
         val result = incomingChunks.receiveCatching()
+        result.exceptionOrNull()?.let { throwable ->
+            throw if (throwable is Exception) {
+                throwable
+            } else {
+                IOException("The Yume TCP stream failed", throwable)
+            }
+        }
+        return result.getOrNull()
+    }
+
+    fun tryReadChunk(): ByteArray? {
+        val result = incomingChunks.tryReceiveCatching()
         result.exceptionOrNull()?.let { throwable ->
             throw if (throwable is Exception) {
                 throwable
