@@ -63,8 +63,8 @@
 
 namespace {
 
-constexpr size_t kIoBufSize = 32 * 1024;
-constexpr size_t kMaxBufferedTx = 4 * 1024 * 1024;
+constexpr size_t kIoBufSize = 64 * 1024;
+constexpr size_t kMaxBufferedTx = 8 * 1024 * 1024;
 
 struct TxChunk {
     std::vector<uint8_t> data;
@@ -203,11 +203,12 @@ public:
             fd_ = -1;
             return -1;
         }
-        // TCP_NODELAY off — TLS records already coalesce in 16 KiB chunks,
-        // we want Nagle batching for the encrypted stream to keep cwnd
-        // ramping smoothly. Match what the CLI does.
-        // (Explicitly do NOT set TCP_NODELAY here; the kernel default is
-        // fine and toggling it can hurt large-write throughput.)
+        // Match the CLI/server tunnel sockets: Yume already coalesces DATA
+        // frames before TLS, so Nagle only adds latency to small control
+        // frames and sparse uploads.
+        int nodelay = 1;
+        (void)setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY,
+                         &nodelay, sizeof(nodelay));
 
         ssl_ = SSL_new(ctx_);
         if (!ssl_) {
@@ -565,7 +566,8 @@ private:
             ssl_wants_write = false;
             want_write = false;
             while (true) {
-                std::vector<uint8_t> chunk_copy;
+                const uint8_t* chunk_data = nullptr;
+                size_t chunk_size = 0;
                 size_t chunk_offset = 0;
                 {
                     std::lock_guard<std::mutex> lk(tx_mu_);
@@ -581,12 +583,22 @@ private:
                         }
                         break;
                     }
-                    chunk_copy = tx_queue_.front().data;
-                    chunk_offset = tx_queue_.front().offset;
+                    const auto& front = tx_queue_.front();
+                    chunk_data = front.data.data();
+                    chunk_size = front.data.size();
+                    chunk_offset = front.offset;
                 }
-                size_t to_write = chunk_copy.size() - chunk_offset;
+                if (chunk_offset >= chunk_size) {
+                    std::lock_guard<std::mutex> lk(tx_mu_);
+                    if (!tx_queue_.empty() &&
+                        tx_queue_.front().offset >= tx_queue_.front().data.size()) {
+                        tx_queue_.pop_front();
+                    }
+                    continue;
+                }
+                size_t to_write = chunk_size - chunk_offset;
                 int rc = SSL_write(ssl_,
-                                   chunk_copy.data() + chunk_offset,
+                                   chunk_data + chunk_offset,
                                    static_cast<int>(to_write));
                 if (rc > 0) {
                     {

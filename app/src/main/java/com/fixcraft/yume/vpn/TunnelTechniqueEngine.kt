@@ -390,9 +390,9 @@ private fun stableBridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeCon
             idleTcpEvictionMs = 30_000L,
             tcpEvictionGraceMs = 8_000L,
             tcpEvictionBatchSize = 8,
-            bridgeChunkBytes = 32 * 1024,
-            routeTcpBufferBytes = 256 * 1024,
-            tcpStreamBufferBytes = 2 * 1024 * 1024,
+            bridgeChunkBytes = 64 * 1024,
+            routeTcpBufferBytes = 1024 * 1024,
+            tcpStreamBufferBytes = 4 * 1024 * 1024,
             udpStreamBufferBytes = 512 * 1024,
             outboundFrameQueueCapacity = 256,
             tun2SocksConnectTimeoutMs = 8_000,
@@ -413,9 +413,9 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
         // Current native-direct is still the route-core/lwIP compatibility
         // bridge. Keep fan-out below Dispatchers.IO + route-core thread storm
         // territory; packet-bulk will lift this by removing per-flow relays.
-        maxActiveTcpRelays = 32,
-        relayAcquireTimeoutMs = 5_000L,
-        relayAcquireSliceMs = 100L,
+        maxActiveTcpRelays = 20,
+        relayAcquireTimeoutMs = 750L,
+        relayAcquireSliceMs = 50L,
         idleTcpEvictionMs = 18_000L,
         tcpEvictionGraceMs = 6_000L,
         tcpEvictionBatchSize = 8,
@@ -431,15 +431,11 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
         routeTcpBufferBytes = 1024 * 1024,
         // tcpStreamBufferBytes is the per-stream BufferedChunkQueue
         // cap on the Kotlin side. The route-core / lwIP / TUN
-        // consumer chain is the slow link in native-direct mode (the
-        // JNI bridge feeds route-core through coroutine-backed queues
-        // and lwIP's single-thread core). 4 MiB matches the
-        // tun2socks-stable Balanced profile and gives ~500 ms of
-        // slack at 64 Mbps before the "Yume stream overflow"
-        // stream-kill triggers. The 2 MiB previous value was killing
-        // streams during natural download bursts even though the TLS
-        // pipe and the server were both healthy.
-        tcpStreamBufferBytes = 4 * 1024 * 1024,
+        // consumer chain is the slow link in native-direct mode. Give
+        // each active flow more burst slack, but pair it with a lower
+        // active-flow cap so the Android heap cannot fill with dozens
+        // of 64 KiB chunks during a speedtest/ad-network fan-out.
+        tcpStreamBufferBytes = 6 * 1024 * 1024,
         udpStreamBufferBytes = 256 * 1024,
         outboundFrameQueueCapacity = 256,
         tun2SocksConnectTimeoutMs = 5_000,
@@ -454,5 +450,5 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
 }
 
 private fun nativeDirectTcpOpenConcurrency(maxActiveTcpRelays: Int): Int {
-    return (maxActiveTcpRelays.coerceAtLeast(1) / 4).coerceIn(6, 12)
+    return (maxActiveTcpRelays.coerceAtLeast(1) / 4).coerceIn(4, 8)
 }

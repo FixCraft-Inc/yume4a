@@ -31,33 +31,58 @@ data class YumeFrame(
 )
 
 object YumeFrameCodec {
-    private const val HEADER_SIZE = 8
+    const val HEADER_SIZE = 8
     private const val MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
 
+    data class FrameHeader(
+        val payloadLength: Int,
+        val type: YumeFrameType,
+        val streamId: Int,
+        val flags: Int,
+    )
+
     fun readFrame(input: InputStream): YumeFrame {
-        val header = readExact(input, HEADER_SIZE)
-        val payloadLength = ((header[0].toInt() and 0xFF) shl 24) or
-            ((header[1].toInt() and 0xFF) shl 16) or
-            ((header[2].toInt() and 0xFF) shl 8) or
-            (header[3].toInt() and 0xFF)
+        val header = readFrameHeader(input)
+        val payload = if (header.payloadLength == 0) {
+            ByteArray(0)
+        } else {
+            readPayload(input, header.payloadLength)
+        }
+        return YumeFrame(
+            type = header.type,
+            streamId = header.streamId,
+            flags = header.flags,
+            payload = payload,
+        )
+    }
+
+    fun readFrameHeader(input: InputStream, scratch: ByteArray = ByteArray(HEADER_SIZE)): FrameHeader {
+        require(scratch.size >= HEADER_SIZE) { "scratch too small" }
+        readExactInto(input, scratch, HEADER_SIZE)
+        val payloadLength = ((scratch[0].toInt() and 0xFF) shl 24) or
+            ((scratch[1].toInt() and 0xFF) shl 16) or
+            ((scratch[2].toInt() and 0xFF) shl 8) or
+            (scratch[3].toInt() and 0xFF)
         if (payloadLength < 0 || payloadLength > MAX_PAYLOAD_BYTES) {
             throw YumeTransportException("Invalid Yume frame length: $payloadLength")
         }
-        val frameType = YumeFrameType.fromWireValue(header[4].toInt() and 0xFF)
-            ?: throw YumeTransportException("Unknown Yume frame type: ${header[4].toInt() and 0xFF}")
-        val streamId = header[5].toInt() and 0xFF
-        val flags = ((header[6].toInt() and 0xFF) shl 8) or (header[7].toInt() and 0xFF)
-        val payload = if (payloadLength == 0) {
-            ByteArray(0)
-        } else {
-            readExact(input, payloadLength)
-        }
-        return YumeFrame(
+        val frameType = YumeFrameType.fromWireValue(scratch[4].toInt() and 0xFF)
+            ?: throw YumeTransportException("Unknown Yume frame type: ${scratch[4].toInt() and 0xFF}")
+        val streamId = scratch[5].toInt() and 0xFF
+        val flags = ((scratch[6].toInt() and 0xFF) shl 8) or (scratch[7].toInt() and 0xFF)
+        return FrameHeader(
+            payloadLength = payloadLength,
             type = frameType,
             streamId = streamId,
             flags = flags,
-            payload = payload,
         )
+    }
+
+    fun readPayload(input: InputStream, length: Int): ByteArray = readExact(input, length)
+
+    fun readPayloadInto(input: InputStream, target: ByteArray, length: Int) {
+        require(length >= 0 && length <= target.size) { "payload target too small" }
+        readExactInto(input, target, length)
     }
 
     fun writeFrame(output: OutputStream, frame: YumeFrame) {
@@ -109,6 +134,11 @@ object YumeFrameCodec {
 
     private fun readExact(input: InputStream, length: Int): ByteArray {
         val out = ByteArray(length)
+        readExactInto(input, out, length)
+        return out
+    }
+
+    private fun readExactInto(input: InputStream, out: ByteArray, length: Int) {
         var offset = 0
         while (offset < length) {
             val read = input.read(out, offset, length - offset)
@@ -117,7 +147,6 @@ object YumeFrameCodec {
             }
             offset += read
         }
-        return out
     }
 }
 

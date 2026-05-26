@@ -206,8 +206,8 @@ class YumeTcpStream internal constructor(
         // on Wi-Fi regardless of CPU. With the queued send, the
         // outbound channel (capacity outboundFrameQueueCapacity)
         // provides backpressure but lets runWriteLoop coalesce up
-        // to MAX_OUTBOUND_COALESCE_FRAMES (16) frames /
-        // MAX_OUTBOUND_COALESCE_BYTES (64 KiB) into a single TLS
+        // to MAX_OUTBOUND_COALESCE_FRAMES (32) frames /
+        // MAX_OUTBOUND_COALESCE_BYTES (256 KiB) into a single TLS
         // write — the actual fast path the writer was already built
         // for. Desktop CLI was fast because its socket loop is on
         // gigabit-loopback latency where the difference is invisible.
@@ -844,12 +844,32 @@ class YumeBootstrapSession internal constructor(
     }
 
     private suspend fun runReadLoop() {
+        val headerScratch = ByteArray(YumeFrameCodec.HEADER_SIZE)
+        var encryptedPayloadScratch = ByteArray(0)
         try {
             while (true) {
-                val rawFrame = YumeFrameCodec.readFrame(input)
-                perfTlsBytesRead.addAndGet((8L + rawFrame.payload.size))
+                val header = YumeFrameCodec.readFrameHeader(input, headerScratch)
+                val payload = when {
+                    header.payloadLength == 0 -> EMPTY_PAYLOAD
+                    shouldReuseEncryptedReadBuffer(header) -> {
+                        if (encryptedPayloadScratch.size != header.payloadLength) {
+                            encryptedPayloadScratch = ByteArray(header.payloadLength)
+                        }
+                        YumeFrameCodec.readPayloadInto(input, encryptedPayloadScratch, header.payloadLength)
+                        encryptedPayloadScratch
+                    }
+                    else -> YumeFrameCodec.readPayload(input, header.payloadLength)
+                }
+                perfTlsBytesRead.addAndGet((YumeFrameCodec.HEADER_SIZE + header.payloadLength).toLong())
                 perfFramesRecv.incrementAndGet()
-                val frame = decodeIncomingFrame(rawFrame)
+                val frame = decodeIncomingFrame(
+                    YumeFrame(
+                        type = header.type,
+                        streamId = header.streamId,
+                        flags = header.flags,
+                        payload = payload,
+                    )
+                )
                 when (frame.type) {
                     YumeFrameType.PING -> {
                         sendFrame(YumeFrame(type = YumeFrameType.PONG))
@@ -1265,6 +1285,10 @@ class YumeBootstrapSession internal constructor(
         )
     }
 
+    private fun shouldReuseEncryptedReadBuffer(header: YumeFrameCodec.FrameHeader): Boolean {
+        return innerState != null && requiresInnerEncryption(header.type)
+    }
+
     private fun ensureOpen() {
         synchronized(stateLock) {
             ensureOpenLocked()
@@ -1351,8 +1375,8 @@ class YumeBootstrapSession internal constructor(
         // but short enough that disconnect feels instant in the UI.
         private const val FLUSH_DURING_SHUTDOWN_TIMEOUT_MS = 500L
         private const val MAX_PROBE_RESPONSE_BYTES = 32 * 1024
-        private const val MAX_OUTBOUND_COALESCE_FRAMES = 16
-        private const val MAX_OUTBOUND_COALESCE_BYTES = 64 * 1024
+        private const val MAX_OUTBOUND_COALESCE_FRAMES = 32
+        private const val MAX_OUTBOUND_COALESCE_BYTES = 256 * 1024
         private const val INNER_ENCRYPTED_FLAG = 0x8000
         // AES-GCM wrap overhead: 12-byte IV + 16-byte authentication tag.
         private const val AEAD_OVERHEAD = 12 + 16
@@ -1360,6 +1384,7 @@ class YumeBootstrapSession internal constructor(
         // pool retains. Prevents unbounded growth when stream sizes vary.
         private const val MAX_POOL_DEPTH = 32
         private const val PERF_REPORT_INTERVAL_MS = 2_000L
+        private val EMPTY_PAYLOAD = ByteArray(0)
 
         private fun parseHttpBody(response: String): String {
             val trimmed = response.trim()

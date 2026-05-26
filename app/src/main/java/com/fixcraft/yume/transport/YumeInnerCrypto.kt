@@ -196,7 +196,16 @@ internal object YumeInnerCrypto {
     }
 
     fun decrypt(state: YumeInnerSessionState, frameType: YumeFrameType, streamId: Int, payload: ByteArray): ByteArray {
+        if (payload.size < Constants.AEAD_NONCE_LEN + Constants.AEAD_TAG_LEN) {
+            throw YumeBootstrapException("Failed to decrypt the Yume inner payload", IllegalArgumentException("AEAD payload too short"))
+        }
         val aad = buildAad(frameType, streamId)
+        val iv = ByteArray(Constants.AEAD_NONCE_LEN)
+        System.arraycopy(payload, 0, iv, 0, iv.size)
+        val ctOffset = iv.size
+        val ctLen = payload.size - ctOffset
+        val outLen = ctLen - Constants.AEAD_TAG_LEN
+        val plaintext = ByteArray(outLen)
         var lastError: Exception? = null
         // Iterate candidates LAZILY. The common case (frame on the
         // current hop) finds the right key on the first attempt and
@@ -205,7 +214,17 @@ internal object YumeInnerCrypto {
         // single change is the throughput fix.
         for (key in decryptKeyCandidates(state)) {
             try {
-                return Crypto.aesGcmDecrypt(key, payload, aad)
+                val written = Crypto.aesGcmDecryptWithIvInto(
+                    key,
+                    iv,
+                    payload,
+                    ctOffset,
+                    ctLen,
+                    plaintext,
+                    0,
+                    aad,
+                )
+                return if (written == plaintext.size) plaintext else plaintext.copyOf(written.coerceAtLeast(0))
             } catch (throwable: Exception) {
                 lastError = throwable
             }
