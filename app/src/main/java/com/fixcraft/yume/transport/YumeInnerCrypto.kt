@@ -92,12 +92,18 @@ internal object YumeInnerCrypto {
     private const val HEAVY_ARGON2_TIME_COST = 3
     private const val HEAVY_ARGON2_MEMORY_COST = 1 shl 16
     private const val HEAVY_ARGON2_PARALLELISM = 4
-    // Match the server's kHopDecryptWindow (24). With hop_interval_ms = 500 (the
-    // server default) this gives ±12 s of clock-drift tolerance, vs ±3 s at 6.
-    // Android's System.currentTimeMillis() can jump several seconds at once
-    // when the NTP service corrects the wall clock mid-session, so the wider
-    // window is required for parity with the desktop client.
-    private const val HOP_DECRYPT_WINDOW = 24
+    // Match the server's kHopDecryptWindow (120). At hop_interval_ms = 500 ms
+    // that's ±60 s of tolerance for the time between a frame being encrypted
+    // and the peer attempting to decrypt it. The old 24-hop (±12 s) window
+    // wasn't wide enough under heavy mobile upload congestion: a DATA frame
+    // could sit in the outbound channel + TLS tx_queue for 10+ seconds when
+    // wifi upload saturated at ~10 Mbps, putting its hop_id just outside the
+    // server's decrypt window — the server then failed AES-GCM tag verify
+    // and forcibly closed the session, manifesting as "speedtest could not
+    // connect" mid-test. 60 s covers the worst-case mobile-upload backlog
+    // we've observed in real traces. The cache keeps the cost flat: each
+    // unique hop_id is derived at most once per session.
+    private const val HOP_DECRYPT_WINDOW = 120
     private val HKDF_INFO = "yume-inner-v1".toByteArray(StandardCharsets.US_ASCII)
     private const val HOP_INFO_PREFIX = "yume-hop-v1:"
     private val RNG = SecureRandom()
