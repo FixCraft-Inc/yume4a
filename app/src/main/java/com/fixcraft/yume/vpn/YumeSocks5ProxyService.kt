@@ -794,7 +794,7 @@ class YumeSocks5ProxyService : Service() {
         private const val ACTION_DISCONNECT = "com.fixcraft.yume.action.SOCKS5_DISCONNECT"
         private const val EXTRA_PROFILE_ID = "extra_profile_id"
         private const val EXTRA_AUTH_KEY_PASSWORD = "extra_auth_key_password"
-        private const val CONNECT_TIMEOUT_MS = 8_000
+        private const val CONNECT_TIMEOUT_MS = 5_000
         private const val KEEPALIVE_PING_INTERVAL_MS = 15_000L
         private const val PRE_ROUTING_PING_TIMEOUT_MS = 6_000
         private const val KEEPALIVE_PING_FAILURES_BEFORE_RECONNECT = 2

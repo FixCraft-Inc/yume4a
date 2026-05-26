@@ -757,6 +757,7 @@ class YumeVpnService : VpnService() {
                     "No IPv4 control endpoint was available for ${profile.host}. Falling back to IPv6 $endpoint.",
                 )
             }
+            inFlightSocket = socket
             try {
                 socket.connect(InetSocketAddress(address, profile.port), CONNECT_TIMEOUT_MS)
                 socket.soTimeout = CONNECT_TIMEOUT_MS
@@ -764,6 +765,9 @@ class YumeVpnService : VpnService() {
             } catch (throwable: Throwable) {
                 lastFailure = throwable
                 runCatching { socket.close() }
+                if (inFlightSocket === socket) {
+                    inFlightSocket = null
+                }
             }
         }
         throw IOException(

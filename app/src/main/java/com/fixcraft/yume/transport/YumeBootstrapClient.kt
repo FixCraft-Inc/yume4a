@@ -22,12 +22,15 @@ import org.bouncycastle.openssl.PEMParser
 import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter
 import org.json.JSONObject
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -42,8 +45,11 @@ import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.StringReader
+import java.net.ConnectException
+import java.net.NoRouteToHostException
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
 import java.security.MessageDigest
@@ -1486,6 +1492,7 @@ object YumeBootstrapClient {
     private const val SERVER_INFO_TIMEOUT_MS_INNER = 20_000
     private const val SERVER_INFO_TIMEOUT_MS_INNER_HEAVY = 45_000
     private const val MAX_CONNECT_ATTEMPTS = 6
+    private const val MAX_ENDPOINT_REACHABILITY_ATTEMPTS = 2
     private val EMPTY_BYTES = ByteArray(0)
     private const val ANON_PROOF_WINDOW_SECONDS = 600L
     private const val ANON_MESSAGE_PREFIX = "YUME-ANON-V1:"
@@ -1543,10 +1550,13 @@ object YumeBootstrapClient {
         }
 
         connectLoop@ for (attempt in 1..MAX_CONNECT_ATTEMPTS) {
+            currentCoroutineContext().ensureActive()
             var rawSocket: Socket? = null
             var transport: YumeTransportSocket? = null
+            var protectedSocketConnected = false
             try {
                 rawSocket = rawSocketFactory()
+                protectedSocketConnected = true
                 runCatching {
                     rawSocket.tcpNoDelay = true
                     rawSocket.keepAlive = true
@@ -1766,6 +1776,9 @@ object YumeBootstrapClient {
                     innerState = sessionInnerState,
                     transportTuning = transportTuning,
                 )
+            } catch (throwable: CancellationException) {
+                runCatching { transport?.close() ?: rawSocket?.close() }
+                throw throwable
             } catch (throwable: Exception) {
                 runCatching { transport?.close() ?: rawSocket?.close() }
                 lastFailure = if (throwable is YumeBootstrapException) {
@@ -1773,7 +1786,14 @@ object YumeBootstrapClient {
                 } else {
                     YumeBootstrapException(throwable.message ?: "Failed to complete Yume session setup", throwable)
                 }
+                if (!protectedSocketConnected &&
+                    isEndpointReachabilityFailure(lastFailure) &&
+                    attempt >= MAX_ENDPOINT_REACHABILITY_ATTEMPTS
+                ) {
+                    throw endpointUnavailableException(profile, lastFailure)
+                }
                 if (attempt < MAX_CONNECT_ATTEMPTS && shouldRetryBootstrapFailure(lastFailure)) {
+                    currentCoroutineContext().ensureActive()
                     log?.invoke(
                         "Yume session setup attempt $attempt/$MAX_CONNECT_ATTEMPTS failed: ${lastFailure.message ?: "transient network error"}. Retrying with a fresh protected socket."
                     )
@@ -2857,6 +2877,38 @@ object YumeBootstrapClient {
             return false
         }
         return chain.any { it is IOException || it is SocketTimeoutException }
+    }
+
+    private fun endpointUnavailableException(
+        profile: ServerProfile,
+        failure: YumeBootstrapException,
+    ): YumeBootstrapException {
+        val detail = failure.message?.trim()?.takeIf { it.isNotEmpty() }
+            ?: "connect failed"
+        return YumeBootstrapException(
+            "Endpoint appears down (${profile.endpointLabel}): $detail",
+            failure,
+        )
+    }
+
+    private fun isEndpointReachabilityFailure(failure: YumeBootstrapException): Boolean {
+        val chain = throwableChain(failure)
+        if (chain.any {
+                it is UnknownHostException ||
+                    it is NoRouteToHostException ||
+                    it is ConnectException
+            }
+        ) {
+            return true
+        }
+        val messages = throwableMessages(failure)
+        return messages.contains("connect timed out") ||
+            messages.contains("timed out after") ||
+            messages.contains("connection refused") ||
+            messages.contains("network is unreachable") ||
+            messages.contains("host is unreachable") ||
+            messages.contains("no route to host") ||
+            messages.contains("failed to connect the protected control socket")
     }
 
     private fun throwableMessages(throwable: Throwable): String {
