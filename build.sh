@@ -345,11 +345,6 @@ if [[ "$SKIP_SIGN" -eq 0 ]]; then
   [[ -x "$APKSIGNER" ]] || { printf 'apksigner not found: %s\n' "$APKSIGNER" >&2; exit 1; }
 fi
 
-GRADLE_TASKS=(:app:assembleRelease)
-if [[ "$SKIP_CLEAN" -eq 0 ]]; then
-  GRADLE_TASKS=(:app:clean "${GRADLE_TASKS[@]}")
-fi
-
 # When only a subset of ABIs is requested, pass it to Gradle so the native
 # build / packaging skips work for the unselected ABIs. The build.gradle.kts
 # splits.abi block reads this property.
@@ -359,7 +354,15 @@ if [[ "${#SELECTED_ABIS[@]}" -ne ${#ALL_ABIS[@]} ]]; then
 fi
 
 log_section "Gradle build"
-./gradlew "${GRADLE_TASKS[@]}" "${GRADLE_ARGS[@]}"
+if [[ "$SKIP_CLEAN" -eq 0 ]]; then
+  log_item "step" "clean"
+  ./gradlew :app:clean "${GRADLE_ARGS[@]}"
+fi
+
+# Gradle can deadlock when clean and assemble are in the same task graph because
+# clean destroys outputs that assemble tasks also declare. Keep them separate.
+log_item "step" "assembleRelease"
+./gradlew :app:assembleRelease "${GRADLE_ARGS[@]}"
 
 # ABI splits produce one unsigned APK per ABI under $APK_OUTPUT_DIR. Filter the
 # discovered set down to the requested ABIs so --abi selects which APKs get
