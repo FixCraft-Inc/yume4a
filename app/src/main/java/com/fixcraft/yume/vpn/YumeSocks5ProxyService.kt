@@ -368,11 +368,92 @@ class YumeSocks5ProxyService : Service() {
         reason: String,
         generation: Long,
     ) {
-        // Tear down whatever's still alive, then rebuild the whole pool
-        // from scratch. The keepalive sits on the primary, so when
-        // it falls over we expect the secondaries are also dead or
-        // drifting — pinging each individually would double the
-        // round-trip cost without changing the outcome.
+        // Partial rebuild: drop only the dead tunnels, keep the live
+        // ones serving traffic, then open enough fresh ones to refill
+        // to tunnelCount. The previous "close everything, reopen
+        // everything" path triggered 4× simultaneous TCP resets on
+        // the server side (one RST per tunnel) and a thundering herd
+        // of heavy-Argon2 re-auths that often had at least one fail —
+        // and any single failure cascaded into the whole pool being
+        // empty for several seconds while reconnect retried. Now an
+        // isolated tunnel death only triggers an isolated rebuild.
+        val pool = bootstrapSessionPool
+        if (pool == null) {
+            // First-time path or full disconnect: full rebuild from
+            // scratch. This is also the recovery path when the entire
+            // pool died at once.
+            return rebuildPoolFresh(
+                profile, anonymCaPem, authKeyPem,
+                runtimeConfig, tunnelCount, reason, generation,
+            )
+        }
+        val dead = pool.removeDead()
+        if (dead.isNotEmpty()) {
+            YumeVpnRuntime.appendLog(
+                VpnLogLevel.Warn,
+                "Tunnel pool: dropping ${dead.size} dead tunnel(s) ($reason). ${pool.liveCount}/$tunnelCount remain.",
+            )
+            for (corpse in dead) {
+                runCatching { corpse.close() }
+            }
+        }
+        val missing = tunnelCount - pool.size
+        if (missing <= 0) {
+            return
+        }
+        // Open the missing tunnels in parallel. Live tunnels keep
+        // serving traffic while these handshakes run; SOCKS5 streams
+        // route to whichever tunnel is alive via pickForStream().
+        coroutineScope {
+            val tasks = (1..missing).map { idx ->
+                async {
+                    ensureSessionActive(generation)
+                    runCatching {
+                        openBootstrapSession(
+                            profile = profile,
+                            anonymCaPem = anonymCaPem,
+                            authKeyPem = authKeyPem,
+                            reason = "Refilling tunnel pool ($reason) — replacement ${idx}/$missing",
+                            runtimeConfig = runtimeConfig,
+                            generation = generation,
+                        )
+                    }
+                }
+            }
+            val results = tasks.awaitAll()
+            for ((idx, result) in results.withIndex()) {
+                result.fold(
+                    onSuccess = { session ->
+                        pool.add(session)
+                        if (bootstrapSession == null || bootstrapSession?.isAlive != true) {
+                            bootstrapSession = session
+                        }
+                    },
+                    onFailure = { throwable ->
+                        YumeVpnRuntime.appendLog(
+                            VpnLogLevel.Warn,
+                            "Tunnel pool refill ${idx + 1}/$missing failed: ${throwable.message ?: throwable.javaClass.simpleName}. " +
+                                "Live tunnels continue serving traffic.",
+                        )
+                    },
+                )
+            }
+        }
+        YumeVpnRuntime.appendLog(
+            VpnLogLevel.Info,
+            "Tunnel pool refilled: ${pool.liveCount}/${pool.size} live tunnels.",
+        )
+    }
+
+    private suspend fun rebuildPoolFresh(
+        profile: ServerProfile,
+        anonymCaPem: String,
+        authKeyPem: String,
+        runtimeConfig: Socks5ProxyRuntimeConfig,
+        tunnelCount: Int,
+        reason: String,
+        generation: Long,
+    ) {
         val oldPool = bootstrapSessionPool
         bootstrapSessionPool = null
         bootstrapSession = null
@@ -381,7 +462,7 @@ class YumeSocks5ProxyService : Service() {
             profile = profile,
             anonymCaPem = anonymCaPem,
             authKeyPem = authKeyPem,
-            reason = "Rebuilding tunnel pool ($reason) — primary 1/$tunnelCount",
+            reason = "Rebuilding tunnel pool from scratch ($reason) — primary 1/$tunnelCount",
             runtimeConfig = runtimeConfig,
             generation = generation,
         )
@@ -402,7 +483,7 @@ class YumeSocks5ProxyService : Service() {
         bootstrapSessionPool = pool
         YumeVpnRuntime.appendLog(
             VpnLogLevel.Info,
-            "SOCKS5 tunnel pool rebuilt: ${pool.liveCount}/${pool.size} live tunnels.",
+            "SOCKS5 tunnel pool rebuilt fresh: ${pool.liveCount}/${pool.size} live tunnels.",
         )
     }
 

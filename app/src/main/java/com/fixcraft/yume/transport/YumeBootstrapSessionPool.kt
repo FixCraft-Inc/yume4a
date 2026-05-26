@@ -79,6 +79,23 @@ class YumeBootstrapSessionPool {
         }
     }
 
+    /**
+     * Remove all dead sessions and return them so the caller can close
+     * them off-thread. Live sessions stay in the pool. Used by the
+     * partial-rebuild path so we don't tear down healthy tunnels just
+     * because one of them died — the previous "close everything,
+     * reopen everything" path triggered 4× simultaneous TCP resets on
+     * the server side (one RST per tunnel) and a thundering herd of
+     * heavy-Argon2 re-auths.
+     */
+    fun removeDead(): List<YumeBootstrapSession> {
+        return synchronized(mutex) {
+            val dead = sessions.filter { !it.isAlive }
+            sessions.removeAll(dead.toSet())
+            dead
+        }
+    }
+
     /** Number of sessions in the pool (regardless of liveness). */
     val size: Int
         get() = synchronized(mutex) { sessions.size }
