@@ -197,6 +197,16 @@ task_io_yielder (YumeTaskYieldType type, void *data)
     return run ? 0 : -1;
 }
 
+static void
+yume_route_wakeup_task_if_active (YumeTask *task)
+{
+    if (!task)
+        return;
+    if (yume_task_get_state (task) == YUME_TASK_STOPPED)
+        return;
+    yume_task_wakeup (task);
+}
+
 static err_t
 netif_output_handler (struct netif *netif, struct pbuf *p)
 {
@@ -357,7 +367,7 @@ tcp_accept_handler (void *arg, struct tcp_pcb *pcb, err_t err)
     node = yume_socks5_session_get_node (YUME_SOCKS5_SESSION (tcp));
     yume_route_insert_session (node);
     yume_task_run (task, yume_socks5_session_task_entry, tcp);
-    yume_task_wakeup (task_lwip_timer);
+    yume_route_wakeup_task_if_active (task_lwip_timer);
 
     return ERR_OK;
 }
@@ -443,7 +453,7 @@ udp_recv_handler (void *arg, struct udp_pcb *pcb, struct pbuf *p,
     node = yume_socks5_session_get_node (YUME_SOCKS5_SESSION (udp));
     yume_route_insert_session (node);
     yume_task_run (task, yume_socks5_session_task_entry, udp);
-    yume_task_wakeup (task_lwip_timer);
+    yume_route_wakeup_task_if_active (task_lwip_timer);
 }
 
 static void
@@ -472,10 +482,10 @@ event_task_entry (void *data)
 
     if (tun_fd >= 0 && task_lwip_io) {
         yume_tunnel_del_task (tun_fd, task_lwip_io);
-        yume_task_wakeup (task_lwip_io);
+        yume_route_wakeup_task_if_active (task_lwip_io);
     }
     if (task_lwip_timer)
-        yume_task_wakeup (task_lwip_timer);
+        yume_route_wakeup_task_if_active (task_lwip_timer);
 
     yume_task_join (task_lwip_io);
     yume_task_join (task_lwip_timer);
