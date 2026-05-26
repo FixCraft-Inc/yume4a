@@ -924,7 +924,7 @@ class YumeNativeTransport(
 
         private fun deriveTcpOpenConcurrency(maxConcurrentTcpStreams: Int): Int {
             val capped = maxConcurrentTcpStreams.coerceAtLeast(1)
-            return (capped / 4).coerceIn(4, 8)
+            return (capped / 2).coerceIn(4, 8)
         }
     }
 }

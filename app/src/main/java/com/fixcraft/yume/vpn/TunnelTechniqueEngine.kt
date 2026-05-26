@@ -409,8 +409,8 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
         // Current native-direct is still the route-core/lwIP compatibility
         // bridge. Keep fan-out below route-core thread-storm territory; packet
         // native will lift this by removing per-flow relays.
-        maxActiveTcpRelays = 8,
-        relayAcquireTimeoutMs = 250L,
+        maxActiveTcpRelays = 16,
+        relayAcquireTimeoutMs = 3_000L,
         relayAcquireSliceMs = 50L,
         idleTcpEvictionMs = 18_000L,
         tcpEvictionGraceMs = 6_000L,
@@ -428,7 +428,7 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
         // ART does not enter blocking GC during speedtest/ad-network fan-out.
         tcpStreamBufferBytes = 8 * 1024 * 1024,
         udpStreamBufferBytes = 256 * 1024,
-        outboundFrameQueueCapacity = 128,
+        outboundFrameQueueCapacity = 192,
         tun2SocksConnectTimeoutMs = 5_000,
         tun2SocksTcpReadWriteTimeoutMs = 120_000,
         tun2SocksUdpReadWriteTimeoutMs = 10_000,

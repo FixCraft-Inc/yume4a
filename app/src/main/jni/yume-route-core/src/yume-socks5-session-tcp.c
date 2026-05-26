@@ -55,6 +55,7 @@ static void yume_socks5_session_tcp_splice (YumeSocks5Session *base);
 static size_t tcp_direct_log_opening_count;
 static size_t tcp_direct_log_queued_count;
 static size_t tcp_direct_log_accepted_count;
+static size_t tcp_direct_log_failed_count;
 
 static int
 tcp_direct_should_log (size_t *counter)
@@ -299,8 +300,10 @@ tcp_direct_relay_entry (void *data)
     pthread_mutex_unlock (&self->direct_mutex);
 
     if (self->direct_stream_handle <= 0) {
-        YUME_TCP_LOGW ("native-direct TCP open failed %s:%d", self->direct_host,
-                       self->direct_port);
+        if (tcp_direct_should_log (&tcp_direct_log_failed_count)) {
+            YUME_TCP_LOGW ("native-direct TCP open failed %s:%d",
+                           self->direct_host, self->direct_port);
+        }
         shutdown (self->direct_peer_fd, SHUT_RDWR);
         return NULL;
     }
