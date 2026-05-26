@@ -948,6 +948,12 @@ class YumeBootstrapSession internal constructor(
                 synchronized(stateLock) {
                     closeState = CloseState.Closed
                 }
+                // Belt-and-braces: the original shutdown() already
+                // scheduled transport.close() on closeScope, but if
+                // that coroutine is still queued / blocked we can
+                // release the fd here too. transport.close() is
+                // idempotent on every backend.
+                runCatching { transport.close() }
                 sessionScope.cancel()
                 return
             }
@@ -998,6 +1004,10 @@ class YumeBootstrapSession internal constructor(
                 synchronized(stateLock) {
                     closeState = CloseState.Closed
                 }
+                // Same belt-and-braces as runReadLoop: if the original
+                // shutdown's closeScope.launch is stuck or queued, we
+                // release the fd here. close() is idempotent.
+                runCatching { transport.close() }
                 return
             }
             shutdown(failure)
@@ -1282,10 +1292,23 @@ class YumeBootstrapSession internal constructor(
         outboundFrames.close()
         controlFrames.close()
         closeScope.launch {
-            writeMutex.withLock {
-                runCatching { output.flush() }
-                runCatching { transport.close() }
+            // Best-effort flush of pending plaintext before tearing
+            // the transport down. Bounded by a short timeout: if the
+            // peer is already gone, output.flush() can block on a
+            // TCP buffer that will never drain, which would prevent
+            // transport.close() from running and leave the underlying
+            // fd stuck in CLOSE_WAIT (the original symptom that
+            // motivated this guard).
+            withTimeoutOrNull(FLUSH_DURING_SHUTDOWN_TIMEOUT_MS) {
+                writeMutex.withLock {
+                    runCatching { output.flush() }
+                }
             }
+            // transport.close() runs OUTSIDE the writeMutex so a stuck
+            // flush can't deadlock the fd release. Each transport
+            // backend's close() is idempotent and internally
+            // synchronized.
+            runCatching { transport.close() }
             synchronized(stateLock) {
                 closeState = CloseState.Closed
             }
@@ -1301,6 +1324,13 @@ class YumeBootstrapSession internal constructor(
         private const val DEFAULT_PING_TIMEOUT_MS = 5_000
         private const val DEFAULT_STREAM_TIMEOUT_MS = 25_000
         private const val DEFAULT_CONTROL_TIMEOUT_MS = 5_000
+        // Max time the shutdown coroutine waits for a final output.flush()
+        // before letting transport.close() run regardless. The flush is
+        // best-effort — if the peer is already gone, the TCP send buffer
+        // never drains and a blocking flush would deadlock the fd
+        // release. 500 ms is long enough for a graceful TLS close_notify
+        // but short enough that disconnect feels instant in the UI.
+        private const val FLUSH_DURING_SHUTDOWN_TIMEOUT_MS = 500L
         private const val MAX_PROBE_RESPONSE_BYTES = 32 * 1024
         private const val MAX_OUTBOUND_COALESCE_FRAMES = 16
         private const val MAX_OUTBOUND_COALESCE_BYTES = 64 * 1024
