@@ -345,9 +345,9 @@ if [[ "$SKIP_SIGN" -eq 0 ]]; then
   [[ -x "$APKSIGNER" ]] || { printf 'apksigner not found: %s\n' "$APKSIGNER" >&2; exit 1; }
 fi
 
-GRADLE_TASKS=(syncBasefwxJava :app:assembleRelease)
+GRADLE_TASKS=(:app:assembleRelease)
 if [[ "$SKIP_CLEAN" -eq 0 ]]; then
-  GRADLE_TASKS=(clean "${GRADLE_TASKS[@]}")
+  GRADLE_TASKS=(:app:clean "${GRADLE_TASKS[@]}")
 fi
 
 # When only a subset of ABIs is requested, pass it to Gradle so the native
