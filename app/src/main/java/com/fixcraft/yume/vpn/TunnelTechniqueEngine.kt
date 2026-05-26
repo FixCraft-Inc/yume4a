@@ -411,9 +411,9 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
     return Tun2SocksRuntimeConfig(
         performanceProfile = PerformanceProfile.Balanced,
         // Current native-direct is still the route-core/lwIP compatibility
-        // bridge. Keep fan-out below Dispatchers.IO + route-core thread storm
-        // territory; packet-bulk will lift this by removing per-flow relays.
-        maxActiveTcpRelays = 12,
+        // bridge. Keep fan-out below route-core thread-storm territory; packet
+        // native will lift this by removing per-flow relays.
+        maxActiveTcpRelays = 8,
         relayAcquireTimeoutMs = 250L,
         relayAcquireSliceMs = 50L,
         idleTcpEvictionMs = 18_000L,
@@ -427,13 +427,12 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
         routeTcpBufferBytes = 2 * 1024 * 1024,
         // tcpStreamBufferBytes is the per-stream BufferedChunkQueue
         // cap on the Kotlin side. The route-core / lwIP / TUN
-        // consumer chain is the slow link in native-direct mode. Give
-        // each active flow more burst slack, but pair it with a lower
-        // active-flow cap so the Android heap cannot fill with dozens
-        // of 64 KiB chunks during a speedtest/ad-network fan-out.
-        tcpStreamBufferBytes = 12 * 1024 * 1024,
+        // consumer chain is the slow link in native-direct mode. Keep enough
+        // slack for short server bursts, but cap worst-case Java heap growth so
+        // ART does not enter blocking GC during speedtest/ad-network fan-out.
+        tcpStreamBufferBytes = 8 * 1024 * 1024,
         udpStreamBufferBytes = 256 * 1024,
-        outboundFrameQueueCapacity = 256,
+        outboundFrameQueueCapacity = 128,
         tun2SocksConnectTimeoutMs = 5_000,
         tun2SocksTcpReadWriteTimeoutMs = 120_000,
         tun2SocksUdpReadWriteTimeoutMs = 10_000,

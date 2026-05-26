@@ -917,7 +917,7 @@ class YumeNativeTransport(
     }
 
     companion object {
-        private const val MAX_NATIVE_TCP_FRAME_BYTES = 256 * 1024
+        private const val MAX_NATIVE_TCP_FRAME_BYTES = 128 * 1024
         private const val MAX_NATIVE_TCP_MERGE_BYTES = 256 * 1024
         private const val NATIVE_TCP_COALESCE_DELAY_MS = 1L
         private const val NATIVE_TCP_COALESCE_WAIT_BELOW_BYTES = 32 * 1024
