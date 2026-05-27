@@ -78,6 +78,8 @@ import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 import kotlin.math.abs
 
+private const val INBOUND_STREAM_BACKPRESSURE_WAIT_MS = 2_000L
+
 data class YumeTransportTuning(
     val tcpStreamMaxBufferedBytes: Int = 256 * 1024,
     val udpStreamMaxBufferedBytes: Int = 128 * 1024,
@@ -118,6 +120,20 @@ private class BufferedChunkQueue(
             return false
         }
         return true
+    }
+
+    suspend fun trySendWithBackpressure(data: ByteArray): Boolean {
+        if (trySend(data)) {
+            return true
+        }
+        val deadline = SystemClock.elapsedRealtime() + INBOUND_STREAM_BACKPRESSURE_WAIT_MS
+        while (SystemClock.elapsedRealtime() < deadline) {
+            delay(1L)
+            if (trySend(data)) {
+                return true
+            }
+        }
+        return false
     }
 
     suspend fun receiveCatching() = channel.receiveCatching().also { result ->
@@ -170,7 +186,7 @@ data class YumeServerBootstrap(
 private interface YumeInboundStream {
     val streamId: Int
     val isClosed: Boolean
-    fun offerIncoming(data: ByteArray): Boolean
+    suspend fun offerIncoming(data: ByteArray): Boolean
     fun closeFromRemote(reason: String?)
     fun fail(cause: Throwable)
 }
@@ -243,7 +259,7 @@ class YumeTcpStream internal constructor(
         }
     }
 
-    override fun offerIncoming(data: ByteArray): Boolean = incomingChunks.trySend(data)
+    override suspend fun offerIncoming(data: ByteArray): Boolean = incomingChunks.trySendWithBackpressure(data)
 
     override fun closeFromRemote(reason: String?) {
         if (closedReason.complete(reason)) {
@@ -301,7 +317,7 @@ class YumeUdpStream internal constructor(
         }
     }
 
-    override fun offerIncoming(data: ByteArray): Boolean = incomingChunks.trySend(data)
+    override suspend fun offerIncoming(data: ByteArray): Boolean = incomingChunks.trySendWithBackpressure(data)
 
     override fun closeFromRemote(reason: String?) {
         if (closedReason.complete(reason)) {
@@ -928,17 +944,12 @@ class YumeBootstrapSession internal constructor(
                         val stream = synchronized(stateLock) {
                             streams[frame.streamId]
                         }
-                        // Kill the stream on receive-buffer overflow.
-                        // YUME has no per-stream WINDOW_UPDATE frame, so
-                        // there is no way for us to signal "slow down" to
-                        // the server other than closing the stream — the
-                        // close propagates back as TCP FIN through the
-                        // server's outbound socket, which is what
-                        // throttles the remote sender. The previous
-                        // attempt to "silently drop" the excess payload
-                        // instead made things worse: the server kept
-                        // blasting at line-rate while we threw the data
-                        // away, and the connection never recovered.
+                        // Prefer coarse connection-level backpressure before
+                        // killing a stream. Native-direct can briefly fill a
+                        // per-stream queue while route-core/lwIP catches up;
+                        // blocking the TLS reader for a short window lets the
+                        // socket buffers push back naturally instead of
+                        // resetting the browser's TCP flow mid-page.
                         if (stream != null && !stream.offerIncoming(frame.payload)) {
                             synchronized(stateLock) {
                                 streams.remove(frame.streamId)

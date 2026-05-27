@@ -632,7 +632,6 @@ class YumeVpnService : VpnService() {
             relayAcquireTimeoutMs = runtimeConfig.relayAcquireTimeoutMs,
             maxBufferedTcpBytes = runtimeConfig.tcpStreamBufferBytes,
             maxBufferedUdpBytes = runtimeConfig.udpStreamBufferBytes,
-            warmupTcpDestinationAllowedProvider = ::isWarmupProbeDestinationAllowed,
             protectedTcpDestinationBlockedProvider = { host, port ->
                 val protected = currentProtectedDestinations()
                 if (port != protected.port) {

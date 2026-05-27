@@ -25,7 +25,6 @@ class YumeNativeTransport(
     private val relayAcquireTimeoutMs: Long,
     private val maxBufferedTcpBytes: Int,
     private val maxBufferedUdpBytes: Int,
-    private val warmupTcpDestinationAllowedProvider: (String, Int) -> Boolean,
     private val protectedTcpDestinationBlockedProvider: (String, Int) -> Boolean,
     private val mappedHostResolver: (String) -> String?,
     private val log: (VpnLogLevel, String) -> Unit,
@@ -673,11 +672,8 @@ class YumeNativeTransport(
     private val tcpStreamLimiter = Semaphore(maxConcurrentTcpStreams.coerceAtLeast(1), false)
     private val tcpOpenLimiter = Semaphore(deriveTcpOpenConcurrency(maxConcurrentTcpStreams), false)
     private var nextHandle = 1
-    @Volatile
-    private var startupWarmupMode = false
 
     fun setWarmupMode(enabled: Boolean) {
-        startupWarmupMode = enabled
         if (!enabled) {
             synchronized(warningLock) {
                 warnedKeys.clear()
@@ -706,14 +702,6 @@ class YumeNativeTransport(
                 "protected:$effectiveHost:$port",
                 VpnLogLevel.Warn,
                 "Native direct TCP $effectiveHost:$port blocked to avoid routing the active Yume server endpoint back through the Yume tunnel.",
-            )
-            return -1
-        }
-        if (startupWarmupMode && (normalizedProto != "tcp" || !warmupTcpDestinationAllowedProvider(effectiveHost, port))) {
-            warnOnce(
-                "warmup:$normalizedProto:$effectiveHost:$port",
-                VpnLogLevel.Warn,
-                "Native direct ${normalizedProto.uppercase(Locale.US)} $effectiveHost:$port blocked during Android tunnel warm-up. Yume is only allowing verification traffic until routed protection is confirmed.",
             )
             return -1
         }
