@@ -161,10 +161,11 @@ internal object YumeInnerCrypto {
 
     /**
      * Encrypts directly into a caller-supplied output buffer. `output`
-     * must be at least `plainLen + 28` bytes (12 IV + plaintext + 16 GCM tag).
+     * must have at least `outputOff + plainLen + 28` bytes available
+     * (12 IV + plaintext + 16 GCM tag).
      * Returns the number of bytes written (always `plainLen + 28` on
-     * success). The IV is written into `output[0..12)` and the
-     * ciphertext+tag follows.
+     * success). The IV is written at `outputOff` and the ciphertext+tag
+     * follows.
      *
      * Used by the upload hot path: instead of [encrypt] allocating a
      * fresh ByteArray per frame, the caller pools a buffer of the
@@ -178,14 +179,15 @@ internal object YumeInnerCrypto {
         plainOff: Int,
         plainLen: Int,
         output: ByteArray,
+        outputOff: Int = 0,
     ): Int {
         val key = currentEncryptKey(state)
         val aad = buildAad(frameType, streamId)
         val iv = Crypto.randomBytes(Constants.AEAD_NONCE_LEN)
         return try {
-            System.arraycopy(iv, 0, output, 0, iv.size)
+            System.arraycopy(iv, 0, output, outputOff, iv.size)
             val cipherLen = Crypto.aesGcmEncryptWithIvInto(
-                key, iv, plaintext, plainOff, plainLen, output, iv.size, aad,
+                key, iv, plaintext, plainOff, plainLen, output, outputOff + iv.size, aad,
             )
             iv.size + cipherLen
         } catch (throwable: IllegalArgumentException) {

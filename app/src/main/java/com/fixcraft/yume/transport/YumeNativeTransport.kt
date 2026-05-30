@@ -1,4 +1,6 @@
 package com.fixcraft.yume.transport
+
+import android.os.SystemClock
 import com.fixcraft.yume.vpn.VpnLogLevel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -22,7 +24,12 @@ import kotlin.concurrent.withLock
 class YumeNativeTransport(
     private val sessionProvider: () -> YumeBootstrapSession?,
     private val maxConcurrentTcpStreams: Int,
+    private val maxConcurrentTcpOpens: Int,
     private val relayAcquireTimeoutMs: Long,
+    private val relayAcquireSliceMs: Long,
+    private val idleTcpEvictionMs: Long,
+    private val tcpEvictionGraceMs: Long,
+    private val tcpEvictionBatchSize: Int,
     private val maxBufferedTcpBytes: Int,
     private val maxBufferedUdpBytes: Int,
     private val protectedTcpDestinationBlockedProvider: (String, Int) -> Boolean,
@@ -34,6 +41,7 @@ class YumeNativeTransport(
         fun readInto(buffer: ByteBuffer, timeoutMs: Int): Int
         fun write(data: ByteArray): Int
         fun writeBuffer(buffer: ByteBuffer, length: Int): Int
+        fun finishInput(reason: String): Int
         fun close(reason: String)
         fun abort(reason: String)
     }
@@ -189,6 +197,8 @@ class YumeNativeTransport(
             source.get(owned, 0, length)
             return enqueueOwned(owned)
         }
+
+        override fun finishInput(reason: String): Int = -1
 
         // Takes ownership of `payload`. Used by both write paths so writeBuffer
         // doesn't allocate twice on the per-datagram hot path.
@@ -455,6 +465,16 @@ class YumeNativeTransport(
             return enqueueOwned(owned)
         }
 
+        override fun finishInput(reason: String): Int {
+            val stream = currentStreamOrNull() ?: return -1
+            return runCatching {
+                runBlocking {
+                    stream.finishUpload(reason.ifBlank { "native TCP upload finished" })
+                }
+                0
+            }.getOrDefault(-1)
+        }
+
         // Takes ownership of `payload`. The TUN write path hammers this — every
         // duplicated allocation hurts throughput on large transfers.
         private fun enqueueOwned(payload: ByteArray): Int {
@@ -607,7 +627,7 @@ class YumeNativeTransport(
         }
 
         private fun isInputClosed(): Boolean {
-            return closed.get() || currentStreamOrNull()?.isClosed == true
+            return closed.get() || currentStreamOrNull()?.isInputClosed == true
         }
 
         private fun settleOpen() {
@@ -628,7 +648,7 @@ class YumeNativeTransport(
                     try {
                         while (offset < mergedLen) {
                             val chunkSize = (mergedLen - offset).coerceAtMost(MAX_NATIVE_TCP_FRAME_BYTES)
-                            session.sendDataQueued(
+                            session.sendTcpUpload(
                                 streamId = stream.streamId,
                                 data = mergedBuffer,
                                 offset = offset,
@@ -668,10 +688,27 @@ class YumeNativeTransport(
     private val stateLock = Any()
     private val warningLock = Any()
     private val streams = mutableMapOf<Int, NativeStreamHandle>()
+    private val tcpHandles = linkedMapOf<Int, ActiveTcpHandle>()
     private val warnedKeys = linkedSetOf<String>()
     private val tcpStreamLimiter = Semaphore(maxConcurrentTcpStreams.coerceAtLeast(1), false)
-    private val tcpOpenLimiter = Semaphore(deriveTcpOpenConcurrency(maxConcurrentTcpStreams), false)
+    private val tcpOpenLimiter = Semaphore(
+        maxConcurrentTcpOpens.coerceIn(1, maxConcurrentTcpStreams.coerceAtLeast(1)),
+        false,
+    )
     private var nextHandle = 1
+
+    private data class ActiveTcpHandle(
+        val handle: Int,
+        val host: String,
+        val port: Int,
+        val stream: NativeStreamHandle,
+        val createdAtMs: Long = SystemClock.elapsedRealtime(),
+        @Volatile var lastActivityAtMs: Long = createdAtMs,
+    ) {
+        fun touch(nowMs: Long = SystemClock.elapsedRealtime()) {
+            lastActivityAtMs = nowMs
+        }
+    }
 
     fun setWarmupMode(enabled: Boolean) {
         if (!enabled) {
@@ -693,7 +730,7 @@ class YumeNativeTransport(
             warnOnce(
                 "ipv6:$normalizedProto:$effectiveHost:$port",
                 VpnLogLevel.Warn,
-                "Native direct ${normalizedProto.uppercase(Locale.US)} $effectiveHost:$port blocked on Android because Yume is operating in IPv6 fail-closed mode.",
+                "Native direct ${normalizedProto.uppercase(Locale.US)} $effectiveHost:$port blocked on Android because this Yume path is IPv4-only.",
             )
             return -1
         }
@@ -737,14 +774,13 @@ class YumeNativeTransport(
             )
             return -1
         }
-        val streamPermitAcquired = runCatching {
-            tcpStreamLimiter.tryAcquire(relayAcquireTimeoutMs, TimeUnit.MILLISECONDS)
-        }.getOrDefault(false)
+        val streamPermitAcquired = acquireTcpStreamPermit(effectiveHost, port)
         if (!streamPermitAcquired) {
+            val activeCount = synchronized(stateLock) { tcpHandles.size }
             warnOnce(
                 "stream-cap:$effectiveHost:$port",
                 VpnLogLevel.Warn,
-                "Native direct TCP $effectiveHost:$port blocked because the Android native beta reached its concurrent TCP stream limit.",
+                "Native direct TCP $effectiveHost:$port blocked because the Android native beta reached its concurrent TCP stream limit ($activeCount/$maxConcurrentTcpStreams active).",
             )
             return -1
         }
@@ -762,6 +798,7 @@ class YumeNativeTransport(
             return -1
         }
 
+        val id = synchronized(stateLock) { allocateHandleLocked() }
         val handle = TcpHandle(
             session = session,
             host = effectiveHost,
@@ -769,18 +806,22 @@ class YumeNativeTransport(
             timeoutMs = timeoutMs,
             maxBufferedWriteBytes = maxBufferedTcpBytes,
             onOpenSettled = { tcpOpenLimiter.release() },
-            onClosed = { tcpStreamLimiter.release() },
+            onClosed = { releaseTcpHandle(id) },
         )
 
-        val id = synchronized(stateLock) {
-            allocateHandleLocked().also { candidate ->
-                streams[candidate] = handle
-            }
+        synchronized(stateLock) {
+            streams[id] = handle
+            tcpHandles[id] = ActiveTcpHandle(
+                handle = id,
+                host = effectiveHost,
+                port = port,
+                stream = handle,
+            )
         }
         val opened = runBlocking { handle.awaitOpen(timeoutMs) }
         if (!opened) {
             synchronized(stateLock) {
-                streams.remove(id)
+                removeHandleLocked(id)
             }
             runCatching { handle.abort("native tcp open failed") }
             return -1
@@ -794,7 +835,11 @@ class YumeNativeTransport(
             stream.read(timeoutMs)
         }.onFailure {
             discardHandle(handle, "native transport read failed")
-        }.getOrNull()
+        }.getOrNull()?.also { data ->
+            if (data.isNotEmpty()) {
+                touchTcpHandle(handle)
+            }
+        }
     }
 
     fun readIntoInternal(handle: Int, buffer: ByteBuffer, timeoutMs: Int): Int {
@@ -802,11 +847,15 @@ class YumeNativeTransport(
             return -1
         }
         val stream = synchronized(stateLock) { streams[handle] } ?: return -1
-        return runCatching {
+        val result = runCatching {
             stream.readInto(buffer, timeoutMs)
         }.onFailure {
             discardHandle(handle, "native transport read failed")
         }.getOrDefault(-1)
+        if (result > 0) {
+            touchTcpHandle(handle)
+        }
+        return result
     }
 
     fun sendDataInternal(handle: Int, data: ByteArray): Int {
@@ -814,11 +863,15 @@ class YumeNativeTransport(
             return 0
         }
         val stream = synchronized(stateLock) { streams[handle] } ?: return -1
-        return runCatching {
+        val result = runCatching {
             stream.write(data)
         }.onFailure {
             discardHandle(handle, "native transport write failed")
         }.getOrDefault(-1)
+        if (result > 0) {
+            touchTcpHandle(handle)
+        }
+        return result
     }
 
     fun sendDirectInternal(handle: Int, buffer: ByteBuffer, length: Int): Int {
@@ -829,21 +882,36 @@ class YumeNativeTransport(
             return -1
         }
         val stream = synchronized(stateLock) { streams[handle] } ?: return -1
-        return runCatching {
+        val result = runCatching {
             stream.writeBuffer(buffer, length)
         }.onFailure {
             discardHandle(handle, "native transport write failed")
         }.getOrDefault(-1)
+        if (result > 0) {
+            touchTcpHandle(handle)
+        }
+        return result
     }
 
     fun closeStreamInternal(handle: Int, reason: String): Int {
         val stream = synchronized(stateLock) {
-            streams.remove(handle)
+            removeHandleLocked(handle)
         } ?: return 0
         return runCatching {
             stream.abort(reason)
             0
         }.getOrDefault(-1)
+    }
+
+    fun finishStreamInputInternal(handle: Int, reason: String): Int {
+        val stream = synchronized(stateLock) { streams[handle] } ?: return -1
+        val result = runCatching {
+            stream.finishInput(reason)
+        }.getOrDefault(-1)
+        if (result == 0) {
+            touchTcpHandle(handle)
+        }
+        return result
     }
 
     fun isAliveInternal(): Int {
@@ -855,6 +923,7 @@ class YumeNativeTransport(
         val toClose = synchronized(stateLock) {
             val copy = streams.toMap()
             streams.clear()
+            tcpHandles.clear()
             copy
         }
         toClose.forEach { (handle, stream) ->
@@ -871,7 +940,7 @@ class YumeNativeTransport(
 
     private fun discardHandle(handle: Int, reason: String) {
         val stream = synchronized(stateLock) {
-            streams.remove(handle)
+            removeHandleLocked(handle)
         }
         stream ?: return
         runCatching {
@@ -887,6 +956,138 @@ class YumeNativeTransport(
             }
         }
         error("No native transport handles are available")
+    }
+
+    private fun removeHandleLocked(handle: Int): NativeStreamHandle? {
+        tcpHandles.remove(handle)
+        return streams.remove(handle)
+    }
+
+    private fun releaseTcpHandle(handle: Int) {
+        if (handle > 0) {
+            synchronized(stateLock) {
+                removeHandleLocked(handle)
+            }
+        }
+        tcpStreamLimiter.release()
+    }
+
+    private fun touchTcpHandle(handle: Int) {
+        synchronized(stateLock) {
+            tcpHandles[handle]?.touch()
+        }
+    }
+
+    private fun acquireTcpStreamPermit(host: String, port: Int): Boolean {
+        val timeoutMs = relayAcquireTimeoutMs.coerceAtLeast(1L)
+        val sliceMs = relayAcquireSliceMs.coerceAtLeast(1L)
+        val deadlineMs = SystemClock.elapsedRealtime() + timeoutMs
+        while (true) {
+            val remainingMs = deadlineMs - SystemClock.elapsedRealtime()
+            if (remainingMs <= 0L) {
+                return false
+            }
+            val waitMs = minOf(remainingMs, sliceMs)
+            val acquired = runCatching {
+                tcpStreamLimiter.tryAcquire(waitMs, TimeUnit.MILLISECONDS)
+            }.getOrDefault(false)
+            if (acquired) {
+                return true
+            }
+            evictStaleTcpStreamsForPressure(host, port)
+        }
+    }
+
+    private fun evictStaleTcpStreamsForPressure(requestHost: String, requestPort: Int) {
+        val batchSize = tcpEvictionBatchSize.coerceAtLeast(0)
+        if (batchSize == 0) {
+            return
+        }
+        val nowMs = SystemClock.elapsedRealtime()
+        val idleMs = idleTcpEvictionMs.coerceAtLeast(0L)
+        val graceMs = tcpEvictionGraceMs.coerceAtLeast(0L)
+        val evicted = synchronized(stateLock) {
+            tcpHandles.values
+                .asSequence()
+                .filter { relay ->
+                    nowMs - relay.createdAtMs >= graceMs &&
+                        nowMs - relay.lastActivityAtMs >= idleMs
+                }
+                .sortedWith(
+                    compareByDescending<ActiveTcpHandle> {
+                        pressureEvictionScore(it, requestHost, requestPort)
+                    }.thenBy { it.lastActivityAtMs },
+                )
+                .take(batchSize)
+                .toList()
+                .also { candidates ->
+                    candidates.forEach { candidate ->
+                        removeHandleLocked(candidate.handle)
+                    }
+                }
+        }
+        evicted.forEach { relay ->
+            log(
+                VpnLogLevel.Warn,
+                "Evicting stale native-direct TCP ${relay.host}:${relay.port} to preserve Yume stream capacity for $requestHost:$requestPort.",
+            )
+            runCatching { relay.stream.abort("evicted for native-direct stream pressure") }
+        }
+    }
+
+    private fun pressureEvictionScore(relay: ActiveTcpHandle, requestHost: String, requestPort: Int): Int {
+        var score = 0
+        if (isLikelyAdOrTrackerHost(relay.host)) {
+            score += 100
+        }
+        if (requestPort != 443 && relay.port == 443) {
+            score += 20
+        }
+        if (relay.port == requestPort) {
+            score += 5
+        }
+        if (isLikelyMeasurementHost(relay.host) && !isLikelyMeasurementHost(requestHost)) {
+            score -= 100
+        }
+        return score
+    }
+
+    private fun isLikelyMeasurementHost(host: String): Boolean {
+        val normalized = host.lowercase(Locale.US)
+        return "speedtest" in normalized ||
+            "ookla" in normalized ||
+            "nperf" in normalized ||
+            "measurement-lab" in normalized ||
+            ".mlab-" in normalized ||
+            normalized == "fast.com" ||
+            normalized.endsWith(".fast.com")
+    }
+
+    private fun isLikelyAdOrTrackerHost(host: String): Boolean {
+        val normalized = host.lowercase(Locale.US)
+        val labels = normalized.split('.')
+        return labels.any { label ->
+            label == "ad" ||
+                label == "ads" ||
+                label.startsWith("ad-") ||
+                label.endsWith("-ad") ||
+                label.startsWith("ads-") ||
+                label.endsWith("-ads")
+        } ||
+            "doubleclick" in normalized ||
+            "googlesyndication" in normalized ||
+            "scorecardresearch" in normalized ||
+            "rubiconproject" in normalized ||
+            "criteo" in normalized ||
+            "pubmatic" in normalized ||
+            "openx" in normalized ||
+            "adsrvr" in normalized ||
+            "imrworldwide" in normalized ||
+            "casalemedia" in normalized ||
+            "sharethrough" in normalized ||
+            "id5-sync" in normalized ||
+            "bidswitch" in normalized ||
+            "rtb" in labels
     }
 
     private fun isIpv6LiteralHost(host: String): Boolean {
@@ -909,10 +1110,5 @@ class YumeNativeTransport(
         private const val MAX_NATIVE_TCP_MERGE_BYTES = 256 * 1024
         private const val NATIVE_TCP_COALESCE_DELAY_MS = 1L
         private const val NATIVE_TCP_COALESCE_WAIT_BELOW_BYTES = 32 * 1024
-
-        private fun deriveTcpOpenConcurrency(maxConcurrentTcpStreams: Int): Int {
-            val capped = maxConcurrentTcpStreams.coerceAtLeast(1)
-            return (capped / 2).coerceIn(4, 8)
-        }
     }
 }

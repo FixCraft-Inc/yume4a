@@ -136,8 +136,115 @@ log_ipv4_packet (const char *direction, struct pbuf *p, size_t count)
 }
 
 #ifdef ANDROID
+static void
+write_be16 (unsigned char *p, uint16_t v)
+{
+    p[0] = (unsigned char)(v >> 8);
+    p[1] = (unsigned char)(v & 0xFF);
+}
+
+static uint16_t
+checksum_be16 (const unsigned char *p, size_t len)
+{
+    uint32_t sum = 0;
+
+    while (len > 1) {
+        sum += ((uint16_t)p[0] << 8) | p[1];
+        p += 2;
+        len -= 2;
+    }
+    if (len)
+        sum += (uint16_t)p[0] << 8;
+
+    while (sum >> 16)
+        sum = (sum & 0xFFFF) + (sum >> 16);
+
+    return (uint16_t)~sum;
+}
+
+static ssize_t write_tun_with_backpressure (int fd, struct pbuf *p);
+
 static int
-should_drop_android_non_dns_udp (struct pbuf *p)
+send_android_udp_port_unreachable (struct pbuf *original,
+                                   const unsigned char *data,
+                                   unsigned int ihl)
+{
+    enum {
+        IPV4_HEADER_LEN = 20,
+        ICMP_HEADER_LEN = 8,
+        ICMP_UNREACHABLE_TYPE = 3,
+        ICMP_PORT_UNREACHABLE_CODE = 3,
+        ICMP_REPLY_TTL = 64,
+        ICMP_COPY_PAYLOAD_LEN = 8,
+    };
+    const size_t input_len = original->len;
+    size_t ip_len = read_be16 (&data[2]);
+    size_t copy_len;
+    size_t icmp_len;
+    size_t reply_len;
+    struct pbuf *reply;
+    unsigned char *out;
+    unsigned char *icmp;
+    ssize_t written;
+
+    if (ip_len > input_len)
+        ip_len = input_len;
+    if (ip_len < ihl + ICMP_COPY_PAYLOAD_LEN)
+        return 0;
+
+    copy_len = ihl + ICMP_COPY_PAYLOAD_LEN;
+    if (copy_len > ip_len)
+        copy_len = ip_len;
+    icmp_len = ICMP_HEADER_LEN + copy_len;
+    reply_len = IPV4_HEADER_LEN + icmp_len;
+    if (reply_len > 65535)
+        return 0;
+
+    reply = pbuf_alloc (PBUF_RAW, (u16_t)reply_len, PBUF_RAM);
+    if (!reply || !reply->payload || reply->len < reply_len) {
+        if (reply)
+            pbuf_free (reply);
+        return 0;
+    }
+
+    out = reply->payload;
+    memset (out, 0, reply_len);
+
+    out[0] = 0x45;
+    out[1] = 0;
+    write_be16 (&out[2], (uint16_t)reply_len);
+    write_be16 (&out[4], 0);
+    write_be16 (&out[6], 0);
+    out[8] = ICMP_REPLY_TTL;
+    out[9] = 1;
+    memcpy (&out[12], &data[16], 4);
+    memcpy (&out[16], &data[12], 4);
+    write_be16 (&out[10], checksum_be16 (out, IPV4_HEADER_LEN));
+
+    icmp = out + IPV4_HEADER_LEN;
+    icmp[0] = ICMP_UNREACHABLE_TYPE;
+    icmp[1] = ICMP_PORT_UNREACHABLE_CODE;
+    write_be16 (&icmp[2], 0);
+    memset (&icmp[4], 0, 4);
+    memcpy (&icmp[ICMP_HEADER_LEN], data, copy_len);
+    write_be16 (&icmp[2], checksum_be16 (icmp, icmp_len));
+
+    reply->len = (u16_t)reply_len;
+    reply->tot_len = (u16_t)reply_len;
+    written = write_tun_with_backpressure (tun_fd, reply);
+    if (written > 0) {
+        stat_rx_packets++;
+        stat_rx_bytes += written;
+        pbuf_free (reply);
+        return 1;
+    }
+
+    pbuf_free (reply);
+    return 0;
+}
+
+static int
+reject_android_non_dns_udp (struct pbuf *p)
 {
     const unsigned char *data;
     unsigned int version;
@@ -145,6 +252,7 @@ should_drop_android_non_dns_udp (struct pbuf *p)
     const unsigned char *udp;
     uint16_t dst_port;
     uint32_t dst_addr;
+    int icmp_sent;
 
     if (!p || !p->payload || p->len < 28)
         return 0;
@@ -166,6 +274,7 @@ should_drop_android_non_dns_udp (struct pbuf *p)
         return 0;
     }
 
+    icmp_sent = send_android_udp_port_unreachable (p, data, ihl);
     android_udp_reject_count++;
     if (android_udp_reject_count <= 8 ||
         (android_udp_reject_count & 0x3FF) == 0) {
@@ -174,8 +283,10 @@ should_drop_android_non_dns_udp (struct pbuf *p)
 
         format_ipv4 (&data[12], src, sizeof (src));
         format_ipv4 (&data[16], dst, sizeof (dst));
-        YUME_RC_LOG ("lwip_io_task_entry: dropped non-DNS UDP %s:%u -> %s:%u before lwIP session creation",
-                     src, read_be16 (&udp[0]), dst, dst_port);
+        YUME_RC_LOG ("lwip_io_task_entry: rejected non-DNS UDP %s:%u -> %s:%u before lwIP session creation (%s)",
+                     src, read_be16 (&udp[0]), dst, dst_port,
+                     icmp_sent ? "sent ICMP port-unreachable" :
+                         "ICMP port-unreachable failed");
     }
 
     return 1;
@@ -624,7 +735,7 @@ lwip_io_task_entry (void *data)
         }
 
 #ifdef ANDROID
-        if (should_drop_android_non_dns_udp (buf)) {
+        if (reject_android_non_dns_udp (buf)) {
             pbuf_free (buf);
             continue;
         }

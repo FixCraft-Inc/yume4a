@@ -8,9 +8,11 @@ package com.fixcraft.yume.ui.share
 
 import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -28,6 +31,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -74,6 +78,11 @@ fun ExportShareDialog(
     var confirm by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var pendingBytes by remember { mutableStateOf<ByteArray?>(null) }
+    // "encrypting" covers Argon2 + AES-GCM (1–3 s on this Pixel),
+    // "writing" covers the SAF outputStream.write after the user
+    // picks a destination. Both are async — without an indicator the
+    // dialog just looks frozen until the SAF picker opens.
+    var busyLabel by remember { mutableStateOf<String?>(null) }
     val authKeyEncrypted = authKeySummary?.importedEncrypted == true
     val authKeyAvailable = authKeySummary != null
 
@@ -91,9 +100,12 @@ fun ExportShareDialog(
             return@rememberLauncherForActivityResult
         }
         scope.launch {
+            busyLabel = "Writing…"
             val ok = writeUri(context, uri, bytes)
+            val displayName = resolveDisplayName(context, uri)
+            busyLabel = null
             if (ok) {
-                onResult(true, "Exported to ${uri.lastPathSegment ?: uri.toString()}.")
+                onResult(true, "Exported to $displayName.")
                 onDismiss()
             } else {
                 status = "Write failed."
@@ -161,18 +173,35 @@ fun ExportShareDialog(
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                busyLabel?.let { label ->
+                    Spacer(Modifier.height(4.dp))
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            CircularProgressIndicator()
+                            Text(label, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
                 status?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = {
             Button(
-                enabled = password.length >= 8 && password == confirm,
+                enabled = busyLabel == null && password.length >= 8 && password == confirm,
                 onClick = {
                     scope.launch {
+                        status = null
                         // Step 1: resolve the auth key PEM (if any).
                         // Unencrypted → null password; encrypted with
                         // a typed password → use it; encrypted with
                         // blank password → produce info-only bundle.
+                        busyLabel = "Unlocking auth key…"
                         val authPem: String = if (!authKeyAvailable) {
                             ""
                         } else {
@@ -185,6 +214,7 @@ fun ExportShareDialog(
                                     resolveAuthKeyPem(if (pwd.isEmpty()) null else pwd)
                                 }
                                 if (resolved.isFailure) {
+                                    busyLabel = null
                                     status = "Auth-key unlock failed: " +
                                         (resolved.exceptionOrNull()?.message ?: "wrong password")
                                     return@launch
@@ -193,6 +223,7 @@ fun ExportShareDialog(
                             }
                         }
                         // Step 2: encrypt the bundle.
+                        busyLabel = "Encrypting…"
                         val (bytes, err) = withContext(Dispatchers.Default) {
                             try {
                                 val bundle = ShareFile.Bundle(
@@ -218,6 +249,7 @@ fun ExportShareDialog(
                             }
                         }
                         if (err != null) {
+                            busyLabel = null
                             status = "Encrypt failed: $err"
                             return@launch
                         }
@@ -225,13 +257,22 @@ fun ExportShareDialog(
                         val defaultName = (profile.host
                             .replace('/', '_').replace(':', '_'))
                             .ifBlank { "yume-backup" } + ".yss"
+                        // saveLauncher.launch hands off to the system
+                        // SAF picker; clear busy so the dialog stops
+                        // showing the spinner while the picker is up.
+                        // The saveLauncher callback sets busy=Writing
+                        // when the user actually picks a target.
+                        busyLabel = null
                         saveLauncher.launch(defaultName)
                     }
                 },
             ) { Text("Encrypt & save") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(
+                enabled = busyLabel == null,
+                onClick = onDismiss,
+            ) { Text("Cancel") }
         },
     )
 }
@@ -254,6 +295,7 @@ fun ImportShareDialog(
     var password by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var preview by remember { mutableStateOf<ShareFile.Bundle?>(null) }
+    var busyLabel by remember { mutableStateOf<String?>(null) }
 
     val openLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -263,7 +305,10 @@ fun ImportShareDialog(
             return@rememberLauncherForActivityResult
         }
         scope.launch {
+            busyLabel = "Reading…"
             val bytes = withContext(Dispatchers.IO) { readUri(context, uri) }
+            val displayName = resolveDisplayName(context, uri)
+            busyLabel = null
             if (bytes == null) {
                 status = "Could not read file."
                 return@launch
@@ -274,7 +319,7 @@ fun ImportShareDialog(
                 return@launch
             }
             fileBytes = bytes
-            fileName = uri.lastPathSegment
+            fileName = displayName
             preview = null
             status = "Loaded ${bytes.size} bytes (v${header.version}, type=${header.type})."
         }
@@ -313,9 +358,10 @@ fun ImportShareDialog(
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Button(
-                        enabled = password.isNotEmpty() && preview == null,
+                        enabled = busyLabel == null && password.isNotEmpty() && preview == null,
                         onClick = {
                             scope.launch {
+                                busyLabel = "Decrypting…"
                                 val (bundle, err) = withContext(Dispatchers.Default) {
                                     try {
                                         ShareFile.decode(fileBytes!!, password) to null
@@ -323,6 +369,7 @@ fun ImportShareDialog(
                                         null to (t.message ?: t.javaClass.simpleName)
                                     }
                                 }
+                                busyLabel = null
                                 if (err != null) {
                                     status = "Decrypt: $err"
                                 } else {
@@ -344,19 +391,37 @@ fun ImportShareDialog(
                         Text("Obfs secret: ${if (b.obfsSecret.isEmpty()) "(none)" else "PRESENT"}")
                     }
                 }
+                busyLabel?.let { label ->
+                    Spacer(Modifier.height(4.dp))
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            CircularProgressIndicator()
+                            Text(label, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
                 status?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = {
             Button(
-                enabled = preview != null,
+                enabled = busyLabel == null && preview != null,
                 onClick = {
                     preview?.let { onApply(it); onDismiss() }
                 },
             ) { Text("Create profile") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(
+                enabled = busyLabel == null,
+                onClick = onDismiss,
+            ) { Text("Cancel") }
         },
     )
 }
@@ -374,4 +439,27 @@ private suspend fun writeUri(context: Context, uri: Uri, bytes: ByteArray): Bool
             context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
             true
         }.getOrDefault(false)
+    }
+
+// SAF document URIs look like content://com.android.providers.downloads.documents/document/456.
+// `uri.lastPathSegment` returns "456" — the document ID — which is what
+// the old code was showing as the "exported to …" filename. The real
+// display name lives in the Openable cursor under DISPLAY_NAME.
+private suspend fun resolveDisplayName(context: Context, uri: Uri): String =
+    withContext(Dispatchers.IO) {
+        runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null, null, null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && !cursor.isNull(idx)) {
+                        return@withContext cursor.getString(idx)
+                    }
+                }
+            }
+            null
+        }.getOrNull() ?: uri.lastPathSegment ?: uri.toString()
     }

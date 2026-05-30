@@ -21,6 +21,7 @@ ssize_t yume_native_transport_read_into (int handle, void *data, size_t len,
 ssize_t yume_native_transport_read (int handle, unsigned char **data,
                                  int timeout_ms);
 int yume_native_transport_close_stream (int handle, const char *reason);
+int yume_native_transport_finish_stream_input (int handle, const char *reason);
 int yume_native_transport_close (void);
 
 #endif /* __YUME_NATIVE_TRANSPORT_H__ */

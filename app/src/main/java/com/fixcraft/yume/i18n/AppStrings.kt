@@ -14,6 +14,7 @@ import com.fixcraft.yume.data.LogLanguage
 import com.fixcraft.yume.data.PerformanceProfile
 import com.fixcraft.yume.data.ResolvedAppLanguage
 import com.fixcraft.yume.data.SecureMaterialType
+import com.fixcraft.yume.data.Socks5BindMode
 import com.fixcraft.yume.data.ThemeColorMode
 import com.fixcraft.yume.data.canonicalLabel
 import com.fixcraft.yume.i18n.translations.LanguageJa
@@ -412,7 +413,7 @@ class AppStrings private constructor(
     val runtimeNativeTcpFlowWindowLabel = t("Native TCP flow window")
     val runtimeNativeUdpFlowBufferLabel = t("Native UDP flow buffer")
     val runtimeIpv6PolicyLabel = t("IPv6 policy")
-    val runtimeIpv6FailClosedStatus = t("fail-closed")
+    val runtimeIpv6FailClosedStatus = t("blocked")
     val runtimeTcpRelaysLabel = t("TCP relays")
     val runtimeRelayAcquireTimeoutLabel = t("Relay acquire timeout")
     val runtimeRelayAcquireSliceLabel = t("Relay acquire slice")
@@ -451,6 +452,22 @@ class AppStrings private constructor(
     val serverSaved = t("Server saved")
     val embeddedAnonymCaCannotBeRemoved = t("The embedded Anonym CA cannot be removed")
     val nativeDirectUnavailable = t("Native direct beta is disabled in this build until the packet-native engine is ready.")
+    val socks5ProxyTitle = t("SOCKS5 proxy")
+    val socks5ProxySubtitle = t("Only apps configured with this local proxy use Yume.")
+    val socks5ListenPortLabel = t("Listen port")
+    val socks5BindAddressLabel = t("Bind address")
+    val socks5CustomBindAddressLabel = t("Custom IPv4 address")
+    val socks5BindThisDeviceLabel = t("This device")
+    val socks5BindWifiLabel = t("Wi-Fi")
+    val socks5BindAllLabel = t("All")
+    val socks5WifiAddressUnavailable = t("Wi-Fi address")
+    val socks5BindAddressHelper = t("IPv4 address. Leave blank to use the selected preset.")
+    val socks5BindAddressError = t("Use a valid IPv4 address or leave it blank.")
+    val socks5PortRangeError = t("Use port 1024-65535")
+    val socks5ParallelTunnelsLabel = t("Parallel tunnels")
+    val socks5ParallelTunnelsHelper = t("More tunnels can improve throughput. Default: 4.")
+    val socks5TunnelRangeError = t("Use 1-8 tunnels")
+    val socks5OnlyRuntimeDetail = t("Only apps configured for this proxy use Yume.")
     val amoledOn = t("AMOLED on")
     val amoledOff = t("AMOLED off")
     val permissionRequiredHeadline = t("Permission required")
@@ -552,14 +569,20 @@ class AppStrings private constructor(
     }
 
     fun connectionTechniqueDescription(technique: ConnectionTechnique): String = when (technique) {
-        ConnectionTechnique.Tun2SocksStable -> t("Stable Android path through tun2socks with TCP and UDP support.")
-        ConnectionTechnique.NativeDirectBeta -> t("Direct Yume TCP and UDP path. Fixed tuning. IPv6 stays fail-closed.")
-        ConnectionTechnique.Socks5ProxyOnly -> t("Local SOCKS5 proxy only — no system-wide VPN. Configure your browser or apps to point at the listed port.")
+        ConnectionTechnique.Tun2SocksStable -> t("Stable VPN routing through tun2socks.")
+        ConnectionTechnique.NativeDirectBeta -> t("Direct Yume TCP streams. UDP falls back to TCP; IPv6 is blocked.")
+        ConnectionTechnique.Socks5ProxyOnly -> t("Local proxy for apps you configure manually.")
     }
 
     val nativeDirectFixedTuningName = t("Fixed native tuning")
 
-    val nativeDirectFixedTuningDescription = t("Native direct uses fixed tuning. Performance profiles apply only to Tun2Socks stable.")
+    val nativeDirectFixedTuningDescription = t("Native direct uses fixed tuning.")
+
+    fun socks5BindModeName(mode: Socks5BindMode): String = when (mode) {
+        Socks5BindMode.Loopback -> socks5BindThisDeviceLabel
+        Socks5BindMode.Wifi -> socks5BindWifiLabel
+        Socks5BindMode.Wildcard -> socks5BindAllLabel
+    }
 
     fun performanceProfileName(profile: PerformanceProfile): String = when (profile) {
         PerformanceProfile.Latency -> t(profile.canonicalLabel())
@@ -942,6 +965,12 @@ class AppStrings private constructor(
                 "Idle", "Permission needed", "Connecting", "Verifying",
                 "Protected", "Proxy ready", "Connected", "Disconnecting", "Error",
                 "Latency", "Balanced", "Throughput",
+                "Stable VPN routing through tun2socks.",
+                "Direct Yume TCP streams. UDP falls back to TCP; IPv6 is blocked.",
+                "Local proxy for apps you configure manually.",
+                "Lower queueing for interactive traffic.",
+                "Default mixed-use profile.",
+                "Larger buffers for sustained transfers.",
             )
             collector.toList()
         }

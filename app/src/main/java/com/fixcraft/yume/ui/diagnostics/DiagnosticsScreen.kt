@@ -1,5 +1,7 @@
 package com.fixcraft.yume.ui.diagnostics
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -23,9 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.fixcraft.yume.MainUiState
@@ -40,7 +40,9 @@ fun DiagnosticsScreen(
 ) {
     val strings = appStrings()
     val context = LocalContext.current
-    val clipboardManager = LocalClipboardManager.current
+    val clipboardManager = remember(context) {
+        context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager
+    }
     val profileSummary = if (uiState.appSettings.connectionTechnique.supportsUserSelectablePerformanceProfiles()) {
         strings.performanceProfileName(uiState.appSettings.performanceProfile)
     } else {
@@ -84,7 +86,9 @@ fun DiagnosticsScreen(
                     )
                     Button(
                         onClick = {
-                            clipboardManager.setText(AnnotatedString(diagnosticsReport))
+                            clipboardManager.setPrimaryClip(
+                                ClipData.newPlainText("Yume diagnostics", diagnosticsReport),
+                            )
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) {

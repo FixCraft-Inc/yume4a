@@ -13,6 +13,7 @@ static jmethodID read_into_method;
 static jmethodID send_data_method;
 static jmethodID send_direct_method;
 static jmethodID close_stream_method;
+static jmethodID finish_stream_input_method;
 static jmethodID is_alive_method;
 static jmethodID close_method;
 static int direct_enabled;
@@ -21,6 +22,7 @@ static jobject
 transport_local_ref (JNIEnv *env, jmethodID *open_method, jmethodID *read_method,
                      jmethodID *read_into, jmethodID *send_method,
                      jmethodID *send_direct, jmethodID *close_stream,
+                     jmethodID *finish_input,
                      jmethodID *alive_method, jmethodID *shutdown_method)
 {
     jobject local = NULL;
@@ -40,6 +42,8 @@ transport_local_ref (JNIEnv *env, jmethodID *open_method, jmethodID *read_method
             *send_direct = send_direct_method;
         if (close_stream)
             *close_stream = close_stream_method;
+        if (finish_input)
+            *finish_input = finish_stream_input_method;
         if (alive_method)
             *alive_method = is_alive_method;
         if (shutdown_method)
@@ -102,6 +106,8 @@ yume_native_transport_set (JNIEnv *env, jobject transport)
         env, klass, "sendDirectInternal", "(ILjava/nio/ByteBuffer;I)I");
     close_stream_method = (*env)->GetMethodID (
         env, klass, "closeStreamInternal", "(ILjava/lang/String;)I");
+    finish_stream_input_method = (*env)->GetMethodID (
+        env, klass, "finishStreamInputInternal", "(ILjava/lang/String;)I");
     is_alive_method = (*env)->GetMethodID (env, klass, "isAliveInternal", "()I");
     close_method = (*env)->GetMethodID (env, klass, "closeInternal", "()I");
 
@@ -111,8 +117,8 @@ yume_native_transport_set (JNIEnv *env, jobject transport)
 
     if (transport_clear_exception (env) < 0 || !open_stream_method ||
         !read_stream_method || !read_into_method || !send_data_method ||
-        !send_direct_method || !close_stream_method || !is_alive_method ||
-        !close_method) {
+        !send_direct_method || !close_stream_method ||
+        !finish_stream_input_method || !is_alive_method || !close_method) {
         yume_native_transport_clear (env);
         return -1;
     }
@@ -139,6 +145,7 @@ yume_native_transport_clear (JNIEnv *env)
     send_data_method = NULL;
     send_direct_method = NULL;
     close_stream_method = NULL;
+    finish_stream_input_method = NULL;
     is_alive_method = NULL;
     close_method = NULL;
     direct_enabled = 0;
@@ -197,7 +204,7 @@ yume_native_transport_is_alive (void)
         return 0;
 
     transport = transport_local_ref (env, NULL, NULL, NULL, NULL, NULL, NULL,
-                                     &alive_method, NULL);
+                                     NULL, &alive_method, NULL);
     if (!transport || !alive_method)
         return 0;
 
@@ -224,7 +231,7 @@ yume_native_transport_open (const char *host, int port, const char *proto,
         return -1;
 
     transport = transport_local_ref (env, &method, NULL, NULL, NULL, NULL, NULL,
-                                     NULL, NULL);
+                                     NULL, NULL, NULL);
     if (!transport || !method)
         return -1;
 
@@ -261,7 +268,7 @@ yume_native_transport_send (int handle, const void *data, size_t len)
         return -1;
 
     transport = transport_local_ref (env, NULL, NULL, NULL, &method, NULL, NULL,
-                                     NULL, NULL);
+                                     NULL, NULL, NULL);
     if (!transport || !method)
         return -1;
 
@@ -298,7 +305,7 @@ yume_native_transport_send_direct (int handle, const void *data, size_t len)
         return -1;
 
     transport = transport_local_ref (env, NULL, NULL, NULL, NULL, &method, NULL,
-                                     NULL, NULL);
+                                     NULL, NULL, NULL);
     if (!transport || !method)
         return -1;
 
@@ -336,7 +343,7 @@ yume_native_transport_read (int handle, unsigned char **data, int timeout_ms)
         return -1;
 
     transport = transport_local_ref (env, NULL, &method, NULL, NULL, NULL, NULL,
-                                     NULL, NULL);
+                                     NULL, NULL, NULL);
     if (!transport || !method)
         return -1;
 
@@ -392,7 +399,7 @@ yume_native_transport_read_into (int handle, void *data, size_t len, int timeout
         return -1;
 
     transport = transport_local_ref (env, NULL, NULL, &method, NULL, NULL, NULL,
-                                     NULL, NULL);
+                                     NULL, NULL, NULL);
     if (!transport || !method)
         return -1;
 
@@ -426,7 +433,40 @@ yume_native_transport_close_stream (int handle, const char *reason)
         return -1;
 
     transport = transport_local_ref (env, NULL, NULL, NULL, NULL, NULL, &method,
-                                     NULL, NULL);
+                                     NULL, NULL, NULL);
+    if (!transport || !method)
+        return -1;
+
+    reason_string = (*env)->NewStringUTF (env, reason ? reason : "");
+    if (!reason_string || transport_clear_exception (env) < 0)
+        goto exit;
+
+    res = (*env)->CallIntMethod (env, transport, method, handle, reason_string);
+    if (transport_clear_exception (env) < 0)
+        res = -1;
+
+exit:
+    if (reason_string)
+        (*env)->DeleteLocalRef (env, reason_string);
+    (*env)->DeleteLocalRef (env, transport);
+
+    return res;
+}
+
+int
+yume_native_transport_finish_stream_input (int handle, const char *reason)
+{
+    JNIEnv *env = yume_jni_get_env ();
+    jobject transport;
+    jmethodID method = NULL;
+    jstring reason_string = NULL;
+    jint res = 0;
+
+    if (!env || handle <= 0)
+        return -1;
+
+    transport = transport_local_ref (env, NULL, NULL, NULL, NULL, NULL, NULL,
+                                     &method, NULL, NULL);
     if (!transport || !method)
         return -1;
 

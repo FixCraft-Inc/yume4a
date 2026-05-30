@@ -24,6 +24,7 @@ import org.json.JSONObject
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -67,6 +68,7 @@ import java.util.Base64
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLContext
@@ -78,12 +80,17 @@ import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 import kotlin.math.abs
 
-private const val INBOUND_STREAM_BACKPRESSURE_WAIT_MS = 2_000L
+private const val INBOUND_STREAM_BACKPRESSURE_WAIT_MS = 60_000L
+private const val DEFAULT_OUTBOUND_COALESCE_FRAMES = 32
+private const val DEFAULT_OUTBOUND_COALESCE_BYTES = 256 * 1024
 
 data class YumeTransportTuning(
     val tcpStreamMaxBufferedBytes: Int = 256 * 1024,
     val udpStreamMaxBufferedBytes: Int = 128 * 1024,
     val outboundFrameQueueCapacity: Int = 64,
+    val maxOutboundCoalesceFrames: Int = DEFAULT_OUTBOUND_COALESCE_FRAMES,
+    val maxOutboundCoalesceBytes: Int = DEFAULT_OUTBOUND_COALESCE_BYTES,
+    val paceTcpUploadWrites: Boolean = false,
     // When true AND libyumetransport.so loads successfully, the TLS
     // pipe is driven by a native non-blocking OpenSSL loop instead of
     // SSLSocket. Off by default for release-channel safety. The toggle
@@ -99,10 +106,17 @@ private class BufferedChunkQueue(
 ) {
     private val channel = Channel<ByteArray>(Channel.UNLIMITED)
     private val bufferedBytes = AtomicInteger(0)
+    private val spaceSignalLock = Any()
+    @Volatile
+    private var closed = false
+    private var spaceSignal = CompletableDeferred<Unit>()
 
     fun trySend(data: ByteArray): Boolean {
         if (data.isEmpty()) {
             return true
+        }
+        if (closed || data.size > maxBufferedBytes) {
+            return false
         }
         while (true) {
             val current = bufferedBytes.get()
@@ -123,12 +137,22 @@ private class BufferedChunkQueue(
     }
 
     suspend fun trySendWithBackpressure(data: ByteArray): Boolean {
+        if (data.size > maxBufferedBytes) {
+            return false
+        }
         if (trySend(data)) {
             return true
         }
         val deadline = SystemClock.elapsedRealtime() + INBOUND_STREAM_BACKPRESSURE_WAIT_MS
-        while (SystemClock.elapsedRealtime() < deadline) {
-            delay(1L)
+        while (!closed) {
+            val remainingMs = deadline - SystemClock.elapsedRealtime()
+            if (remainingMs <= 0L) {
+                return false
+            }
+            val waiter = spaceAvailableSignal(data.size)
+            withTimeoutOrNull(remainingMs.coerceAtMost(1_000L)) {
+                waiter.await()
+            }
             if (trySend(data)) {
                 return true
             }
@@ -139,20 +163,42 @@ private class BufferedChunkQueue(
     suspend fun receiveCatching() = channel.receiveCatching().also { result ->
         result.getOrNull()?.let { chunk ->
             bufferedBytes.addAndGet(-chunk.size)
+            signalSpaceAvailable()
         }
     }
 
     fun tryReceiveCatching() = channel.tryReceive().also { result ->
         result.getOrNull()?.let { chunk ->
             bufferedBytes.addAndGet(-chunk.size)
+            signalSpaceAvailable()
         }
     }
 
     fun close(cause: Throwable? = null) {
+        closed = true
+        signalSpaceAvailable()
         if (cause == null) {
             channel.close()
         } else {
             channel.close(cause)
+        }
+    }
+
+    private fun spaceAvailableSignal(requiredBytes: Int): CompletableDeferred<Unit> {
+        synchronized(spaceSignalLock) {
+            if (closed || maxBufferedBytes - bufferedBytes.get() >= requiredBytes) {
+                return CompletableDeferred(Unit)
+            }
+            return spaceSignal
+        }
+    }
+
+    private fun signalSpaceAvailable() {
+        synchronized(spaceSignalLock) {
+            if (!spaceSignal.isCompleted) {
+                spaceSignal.complete(Unit)
+            }
+            spaceSignal = CompletableDeferred()
         }
     }
 }
@@ -187,6 +233,8 @@ private interface YumeInboundStream {
     val streamId: Int
     val isClosed: Boolean
     suspend fun offerIncoming(data: ByteArray): Boolean
+    fun tryOfferIncoming(data: ByteArray): Boolean
+    fun finishIncomingFromRemote(reason: String?)
     fun closeFromRemote(reason: String?)
     fun fail(cause: Throwable)
 }
@@ -198,9 +246,13 @@ class YumeTcpStream internal constructor(
 ) : YumeInboundStream {
     private val incomingChunks = BufferedChunkQueue(maxBufferedBytes)
     private val closedReason = CompletableDeferred<String?>()
+    private val incomingFinished = AtomicBoolean(false)
+    private val uploadFinished = AtomicBoolean(false)
 
     override val isClosed: Boolean
         get() = closedReason.isCompleted
+    val isInputClosed: Boolean
+        get() = incomingFinished.get() || closedReason.isCompleted
 
     suspend fun readChunk(): ByteArray? {
         val result = incomingChunks.receiveCatching()
@@ -232,20 +284,7 @@ class YumeTcpStream internal constructor(
         if (length == 0) {
             return
         }
-        // Use the *queued* send so callers don't serialize on each
-        // TLS write completion. Pre-fix, every chunk awaited
-        // pending.completion (sendData -> sendEncodedFrame
-        // waitForWrite=true), which made the SOCKS bridge effectively
-        // one-frame-per-RTT and capped Android downloads to ~1-8 Mbps
-        // on Wi-Fi regardless of CPU. With the queued send, the
-        // outbound channel (capacity outboundFrameQueueCapacity)
-        // provides backpressure but lets runWriteLoop coalesce up
-        // to MAX_OUTBOUND_COALESCE_FRAMES (32) frames /
-        // MAX_OUTBOUND_COALESCE_BYTES (256 KiB) into a single TLS
-        // write — the actual fast path the writer was already built
-        // for. Desktop CLI was fast because its socket loop is on
-        // gigabit-loopback latency where the difference is invisible.
-        session.sendDataQueued(streamId, data, offset, length)
+        session.sendTcpUpload(streamId, data, offset, length)
     }
 
     suspend fun close(reason: String = "") {
@@ -259,16 +298,33 @@ class YumeTcpStream internal constructor(
         }
     }
 
+    suspend fun finishUpload(reason: String = "client upload finished") {
+        if (closedReason.isCompleted || !uploadFinished.compareAndSet(false, true)) {
+            return
+        }
+        session.finishStreamInput(streamId, reason)
+    }
+
     override suspend fun offerIncoming(data: ByteArray): Boolean = incomingChunks.trySendWithBackpressure(data)
+
+    override fun tryOfferIncoming(data: ByteArray): Boolean = incomingChunks.trySend(data)
 
     override fun closeFromRemote(reason: String?) {
         if (closedReason.complete(reason)) {
+            incomingFinished.set(true)
+            incomingChunks.close()
+        }
+    }
+
+    override fun finishIncomingFromRemote(reason: String?) {
+        if (incomingFinished.compareAndSet(false, true)) {
             incomingChunks.close()
         }
     }
 
     override fun fail(cause: Throwable) {
         if (closedReason.complete(cause.message)) {
+            incomingFinished.set(true)
             incomingChunks.close(cause)
         }
     }
@@ -318,6 +374,10 @@ class YumeUdpStream internal constructor(
     }
 
     override suspend fun offerIncoming(data: ByteArray): Boolean = incomingChunks.trySendWithBackpressure(data)
+
+    override fun tryOfferIncoming(data: ByteArray): Boolean = incomingChunks.trySend(data)
+
+    override fun finishIncomingFromRemote(reason: String?) = closeFromRemote(reason)
 
     override fun closeFromRemote(reason: String?) {
         if (closedReason.complete(reason)) {
@@ -700,7 +760,7 @@ class YumeBootstrapSession internal constructor(
             )
             if (!waitForOpen) {
                 enqueueFrame(
-                    encodeOutgoingFrame(openFrame),
+                    openFrame,
                     waitForWrite = false,
                 )
                 scheduleOpenTimeout(
@@ -869,12 +929,46 @@ class YumeBootstrapSession internal constructor(
         )
     }
 
-    internal suspend fun closeStream(streamId: Int, reason: String) {
-        synchronized(stateLock) {
-            pendingOpen.remove(streamId)
-            streams.remove(streamId)
+    internal suspend fun sendTcpUpload(
+        streamId: Int,
+        data: ByteArray,
+        offset: Int = 0,
+        length: Int = data.size,
+    ) {
+        if (transportTuning.paceTcpUploadWrites) {
+            sendData(streamId, data, offset, length)
+        } else {
+            sendDataQueued(streamId, data, offset, length)
         }
-        sendFrame(YumeFrame(type = YumeFrameType.CLOSE, streamId = streamId, payload = reason.toByteArray(StandardCharsets.UTF_8)))
+    }
+
+    internal suspend fun closeStream(streamId: Int, reason: String) {
+        sendCloseFrame(streamId, reason, fullClose = true)
+    }
+
+    internal suspend fun finishStreamInput(streamId: Int, reason: String) {
+        sendCloseFrame(streamId, reason, fullClose = false)
+    }
+
+    private suspend fun sendCloseFrame(streamId: Int, reason: String, fullClose: Boolean) {
+        if (fullClose) {
+            synchronized(stateLock) {
+                pendingOpen.remove(streamId)
+                streams.remove(streamId)
+            }
+        }
+        val flags = if (fullClose) 0 else YUME_FLAG_STREAM_FIN
+        val frame = YumeFrame(
+            type = YumeFrameType.CLOSE,
+            streamId = streamId,
+            flags = flags,
+            payload = reason.toByteArray(StandardCharsets.UTF_8),
+        )
+        // A stream FIN is ordered with the TCP byte stream: every DATA frame
+        // queued before it must reach the server first. Full closes remain
+        // control-priority aborts, but FIN stays in the normal outbound queue
+        // so speedtest uploads cannot see EOF before the last queued bytes.
+        enqueueFrame(frame, priority = fullClose)
     }
 
     private suspend fun runReadLoop() {
@@ -917,7 +1011,7 @@ class YumeBootstrapSession internal constructor(
                     }
 
                     YumeFrameType.OPEN -> {
-                        val ok = (frame.flags and 0x0001) != 0
+                        val ok = (frame.flags and YUME_FLAG_OPEN_OK) != 0
                         val reason = frame.payload.toString(StandardCharsets.UTF_8).ifBlank {
                             if (ok) "opened" else "open failed"
                         }
@@ -944,28 +1038,20 @@ class YumeBootstrapSession internal constructor(
                         val stream = synchronized(stateLock) {
                             streams[frame.streamId]
                         }
-                        // Prefer coarse connection-level backpressure before
-                        // killing a stream. Native-direct can briefly fill a
-                        // per-stream queue while route-core/lwIP catches up;
-                        // blocking the TLS reader for a short window lets the
-                        // socket buffers push back naturally instead of
-                        // resetting the browser's TCP flow mid-page.
-                        if (stream != null && !stream.offerIncoming(frame.payload)) {
+                        // Never let one slow app-facing TCP stream block the
+                        // only authenticated Yume read loop. Native-direct is
+                        // multiplexed over one TLS carrier; waiting here makes
+                        // every other stream stall behind the full stream.
+                        // Close only the slow stream and keep the carrier
+                        // draining so active page/speedtest flows can proceed.
+                        if (stream != null && !stream.tryOfferIncoming(frame.payload)) {
                             synchronized(stateLock) {
                                 streams.remove(frame.streamId)
                                 pendingOpen.remove(frame.streamId)
                             }
-                            // Visible log: previously this stream-kill
-                            // was silent, making it impossible to tell
-                            // from logcat whether download throughput
-                            // was being capped by buffer overflow.
-                            // Without this signal we were guessing
-                            // whether streams were dying or the wire
-                            // was just slow. Capped at WARN so it's
-                            // visible in default-level captures.
                             YumeVpnRuntime.appendLog(
                                 VpnLogLevel.Warn,
-                                "Yume stream ${frame.streamId}: receive buffer overflow (${frame.payload.size} bytes incoming); killing stream — consumer can't drain fast enough.",
+                                "Yume stream ${frame.streamId}: receive buffer is full (${frame.payload.size} bytes incoming); closing slow stream to keep the Yume carrier draining.",
                             )
                             stream.fail(YumeBootstrapException("Incoming Yume stream overflow"))
                             sendFrame(YumeFrame(type = YumeFrameType.CLOSE, streamId = frame.streamId, payload = "client receive buffer overflow".toByteArray(StandardCharsets.UTF_8)))
@@ -974,14 +1060,31 @@ class YumeBootstrapSession internal constructor(
 
                     YumeFrameType.CLOSE -> {
                         val reason = frame.payload.toString(StandardCharsets.UTF_8).ifBlank { "remote closed the stream" }
-                        val waiter = synchronized(stateLock) {
-                            pendingOpen.remove(frame.streamId)
+                        val isFin = (frame.flags and YUME_FLAG_STREAM_FIN) != 0
+                        if (frame.streamId == 0 && !isFin) {
+                            shutdown(YumeBootstrapException(reason))
+                            return
                         }
-                        val stream = synchronized(stateLock) {
-                            streams.remove(frame.streamId)
+                        var handledFin = false
+                        if (isFin) {
+                            val stream = synchronized(stateLock) {
+                                streams[frame.streamId]
+                            }
+                            if (stream != null) {
+                                stream.finishIncomingFromRemote(reason)
+                                handledFin = true
+                            }
                         }
-                        waiter?.completeExceptionally(YumeBootstrapException(reason))
-                        stream?.closeFromRemote(reason)
+                        if (!handledFin) {
+                            val waiter = synchronized(stateLock) {
+                                pendingOpen.remove(frame.streamId)
+                            }
+                            val stream = synchronized(stateLock) {
+                                streams.remove(frame.streamId)
+                            }
+                            waiter?.completeExceptionally(YumeBootstrapException(reason))
+                            stream?.closeFromRemote(reason)
+                        }
                     }
 
                     YumeFrameType.CONTROL -> {
@@ -1001,7 +1104,7 @@ class YumeBootstrapSession internal constructor(
                             if (cmd == "server.closing") {
                                 val reason = json.optString("reason").trim()
                                     .ifBlank { json.optString("message").trim() }
-                                    .ifBlank { "server closed, kicked" }
+                                    .ifBlank { "server closed" }
                                 throw YumeBootstrapException(reason)
                             }
                         }
@@ -1106,6 +1209,7 @@ class YumeBootstrapSession internal constructor(
     // closed branch in `select` would CPU-spin returning null. We
     // therefore only register select branches for channels that are
     // still open (or have buffered items).
+    @OptIn(DelicateCoroutinesApi::class)
     private suspend fun takeNextPending(): PendingWrite? {
         while (true) {
             controlFrames.tryReceive().getOrNull()?.let { return it }
@@ -1138,25 +1242,27 @@ class YumeBootstrapSession internal constructor(
     private fun collectWriteBatch(first: PendingWrite): List<PendingWrite> {
         val batch = ArrayList<PendingWrite>(4)
         batch += first
-        var totalBytes = first.encodedSize
+        var totalBytes = estimatedEncodedSize(first.frame)
+        val maxFrames = transportTuning.maxOutboundCoalesceFrames.coerceAtLeast(1)
+        val maxBytes = transportTuning.maxOutboundCoalesceBytes.coerceAtLeast(PendingWrite.HEADER_SIZE)
         // Drain control frames first — cheap, small, and we want them
         // out NOW to keep keepalive responsive.
-        while (batch.size < MAX_OUTBOUND_COALESCE_FRAMES && totalBytes < MAX_OUTBOUND_COALESCE_BYTES) {
+        while (batch.size < maxFrames && totalBytes < maxBytes) {
             val next = controlFrames.tryReceive().getOrNull() ?: break
             batch += next
-            totalBytes += next.encodedSize
+            totalBytes += estimatedEncodedSize(next.frame)
         }
-        while (batch.size < MAX_OUTBOUND_COALESCE_FRAMES && totalBytes < MAX_OUTBOUND_COALESCE_BYTES) {
+        while (batch.size < maxFrames && totalBytes < maxBytes) {
             val next = outboundFrames.tryReceive().getOrNull() ?: break
             batch += next
-            totalBytes += next.encodedSize
+            totalBytes += estimatedEncodedSize(next.frame)
         }
         return batch
     }
 
     // Reusable scratch buffer for batch coalescing. Only written from
     // runWriteLoop's single coroutine, so no synchronization needed.
-    // Grows monotonically (doubling) up to MAX_OUTBOUND_COALESCE_BYTES
+    // Grows monotonically (doubling) up to the configured coalesce byte cap
     // and is never reclaimed for the lifetime of the session — that's
     // exactly the point: every output.write batch reuses this instead
     // of allocating a fresh ByteArray of 16-64 KiB. At ~100 batches/sec
@@ -1170,7 +1276,7 @@ class YumeBootstrapSession internal constructor(
     private data class EncodedBatch(val buffer: ByteArray, val length: Int)
 
     private fun encodeWriteBatch(batch: List<PendingWrite>): EncodedBatch {
-        val totalBytes = batch.sumOf { it.encodedSize }
+        val totalBytes = batch.sumOf { estimatedEncodedSize(it.frame) }
         var scratch = writeBatchScratch
         if (scratch.size < totalBytes) {
             scratch = ByteArray(maxOf(totalBytes, scratch.size * 2, 16 * 1024))
@@ -1178,30 +1284,14 @@ class YumeBootstrapSession internal constructor(
         }
         var offset = 0
         batch.forEach { pending ->
-            val frame = pending.frame
-            val payload = frame.payload
-            val payloadLen = payload.size
-            // 8-byte big-endian header: len(4) / type(1) / streamId(1) / flags(2)
-            scratch[offset]     = ((payloadLen ushr 24) and 0xFF).toByte()
-            scratch[offset + 1] = ((payloadLen ushr 16) and 0xFF).toByte()
-            scratch[offset + 2] = ((payloadLen ushr 8)  and 0xFF).toByte()
-            scratch[offset + 3] = (payloadLen and 0xFF).toByte()
-            scratch[offset + 4] = (frame.type.wireValue and 0xFF).toByte()
-            scratch[offset + 5] = (frame.streamId and 0xFF).toByte()
-            scratch[offset + 6] = ((frame.flags ushr 8) and 0xFF).toByte()
-            scratch[offset + 7] = (frame.flags and 0xFF).toByte()
-            offset += 8
-            if (payloadLen > 0) {
-                payload.copyInto(scratch, destinationOffset = offset)
-                offset += payloadLen
-            }
+            offset = encodeFrameIntoScratch(pending.frame, scratch, offset)
         }
-        return EncodedBatch(scratch, totalBytes)
+        return EncodedBatch(scratch, offset)
     }
 
     private suspend fun sendFrame(frame: YumeFrame) {
         enqueueFrame(
-            encodeOutgoingFrame(frame),
+            frame,
             priority = frame.type != YumeFrameType.DATA,
         )
     }
@@ -1236,18 +1326,12 @@ class YumeBootstrapSession internal constructor(
         }
     }
 
-    // Returns a YumeFrame ready to be queued — payload is already
-    // inner-encrypted if required. The runWriteLoop scratch buffer
-    // serialises the 8-byte header + payload directly, so no encoded
-    // ByteArray is created here.
-    //
-    // (Earlier revision attempted an exact-size payloadBufferPool to
-    // avoid the per-frame ciphertext allocation, but variable upload
-    // chunk sizes meant pool buckets rarely hit; the ConcurrentHashMap
-    // bookkeeping overhead added more cost than the alloc itself. The
-    // remaining alloc — `length + 28` bytes for ciphertext — is the
-    // smallest LOS allocation in the path and not the dominant GC
-    // pressure source.)
+    // Returns a YumeFrame ready to be queued. For inner+hopping sessions
+    // the payload intentionally stays plaintext until encodeWriteBatch()
+    // runs on the TLS writer. Encrypting at enqueue time made upload DATA
+    // frames age in the queue; with 2 Hz hopping the server then had to
+    // trial old hop keys for each stale frame, which collapses sustained
+    // upload throughput.
     private fun buildOutgoingDataFrame(
         streamId: Int,
         data: ByteArray,
@@ -1259,41 +1343,67 @@ class YumeBootstrapSession internal constructor(
         if (length == 0) {
             return YumeFrame(type = YumeFrameType.DATA, streamId = streamId)
         }
-        val state = innerState
-        if (state == null || !requiresInnerEncryption(YumeFrameType.DATA)) {
-            val payload = if (offset == 0 && length == data.size) {
-                data
-            } else {
-                data.copyOfRange(offset, offset + length)
-            }
-            return YumeFrame(type = YumeFrameType.DATA, streamId = streamId, payload = payload)
-        }
-        val payload = if (offset == 0 && length == data.size) {
-            data
-        } else {
-            data.copyOfRange(offset, offset + length)
-        }
-        val encStart = System.nanoTime()
-        val encrypted = YumeInnerCrypto.encrypt(state, YumeFrameType.DATA, streamId, payload)
-        perfEncryptNanos.addAndGet(System.nanoTime() - encStart)
-        perfBytesEncrypted.addAndGet(payload.size.toLong())
-        return YumeFrame(
-            type = YumeFrameType.DATA,
-            streamId = streamId,
-            flags = INNER_ENCRYPTED_FLAG,
-            payload = encrypted,
-        )
+        // The writer is queued and asynchronous. Callers commonly pass
+        // a reusable socket-read buffer, so the frame must own an
+        // immutable snapshot until the writer encrypts/serializes it.
+        val payload = data.copyOfRange(offset, offset + length)
+        return YumeFrame(type = YumeFrameType.DATA, streamId = streamId, payload = payload)
     }
 
-    private fun encodeOutgoingFrame(frame: YumeFrame): YumeFrame {
-        val state = innerState ?: return frame
-        if (!requiresInnerEncryption(frame.type)) {
-            return frame
+    private fun estimatedEncodedSize(frame: YumeFrame): Int {
+        val encryptedPayloadBytes = if (
+            innerState != null &&
+            requiresInnerEncryption(frame.type) &&
+            (frame.flags and INNER_ENCRYPTED_FLAG) == 0
+        ) {
+            frame.payload.size + AEAD_OVERHEAD
+        } else {
+            frame.payload.size
         }
-        return frame.copy(
-            flags = frame.flags or INNER_ENCRYPTED_FLAG,
-            payload = YumeInnerCrypto.encrypt(state, frame.type, frame.streamId, frame.payload),
-        )
+        return PendingWrite.HEADER_SIZE + encryptedPayloadBytes
+    }
+
+    private fun encodeFrameIntoScratch(frame: YumeFrame, scratch: ByteArray, offset: Int): Int {
+        var flags = frame.flags
+        val payloadOffset = offset + PendingWrite.HEADER_SIZE
+        val payloadLen = if (
+            innerState != null &&
+            requiresInnerEncryption(frame.type) &&
+            (flags and INNER_ENCRYPTED_FLAG) == 0
+        ) {
+            val state = innerState ?: error("inner state disappeared while encoding")
+            val encStart = System.nanoTime()
+            val written = YumeInnerCrypto.encryptInto(
+                state = state,
+                frameType = frame.type,
+                streamId = frame.streamId,
+                plaintext = frame.payload,
+                plainOff = 0,
+                plainLen = frame.payload.size,
+                output = scratch,
+                outputOff = payloadOffset,
+            )
+            perfEncryptNanos.addAndGet(System.nanoTime() - encStart)
+            perfBytesEncrypted.addAndGet(frame.payload.size.toLong())
+            flags = flags or INNER_ENCRYPTED_FLAG
+            written
+        } else {
+            if (frame.payload.isNotEmpty()) {
+                frame.payload.copyInto(scratch, destinationOffset = payloadOffset)
+            }
+            frame.payload.size
+        }
+
+        // 8-byte big-endian header: len(4) / type(1) / streamId(1) / flags(2)
+        scratch[offset] = ((payloadLen ushr 24) and 0xFF).toByte()
+        scratch[offset + 1] = ((payloadLen ushr 16) and 0xFF).toByte()
+        scratch[offset + 2] = ((payloadLen ushr 8) and 0xFF).toByte()
+        scratch[offset + 3] = (payloadLen and 0xFF).toByte()
+        scratch[offset + 4] = (frame.type.wireValue and 0xFF).toByte()
+        scratch[offset + 5] = (frame.streamId and 0xFF).toByte()
+        scratch[offset + 6] = ((flags ushr 8) and 0xFF).toByte()
+        scratch[offset + 7] = (flags and 0xFF).toByte()
+        return payloadOffset + payloadLen
     }
 
     private fun decodeIncomingFrame(frame: YumeFrame): YumeFrame {
@@ -1404,8 +1514,6 @@ class YumeBootstrapSession internal constructor(
         // but short enough that disconnect feels instant in the UI.
         private const val FLUSH_DURING_SHUTDOWN_TIMEOUT_MS = 500L
         private const val MAX_PROBE_RESPONSE_BYTES = 32 * 1024
-        private const val MAX_OUTBOUND_COALESCE_FRAMES = 32
-        private const val MAX_OUTBOUND_COALESCE_BYTES = 256 * 1024
         private const val INNER_ENCRYPTED_FLAG = 0x8000
         // AES-GCM wrap overhead: 12-byte IV + 16-byte authentication tag.
         private const val AEAD_OVERHEAD = 12 + 16
@@ -1500,17 +1608,13 @@ class YumeBootstrapSession internal constructor(
         Closed,
     }
 
-    // PendingWrite no longer carries a pre-encoded ByteArray. We hold the
-    // (already inner-encrypted, if applicable) YumeFrame and encode it
-    // straight into the runWriteLoop scratch buffer at batch time. This
-    // removes one ByteArray allocation per frame on the send hot path —
-    // the dominant non-data allocation observed in the GC trace.
+    // PendingWrite no longer carries a pre-encoded ByteArray. We hold
+    // the raw YumeFrame and encrypt/encode it on the TLS writer so the
+    // hop key is chosen as close to the actual write time as possible.
     private data class PendingWrite(
         val frame: YumeFrame,
         val completion: CompletableDeferred<Unit>?,
     ) {
-        val encodedSize: Int get() = HEADER_SIZE + frame.payload.size
-
         companion object {
             const val HEADER_SIZE = 8
         }

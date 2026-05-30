@@ -158,6 +158,10 @@ class YumeSocks5Proxy(
             }
             client.keepAlive = true
             client.tcpNoDelay = true
+            runCatching {
+                client.receiveBufferSize = runtimeConfig.routeTcpBufferBytes
+                client.sendBufferSize = runtimeConfig.routeTcpBufferBytes
+            }
             val peer = client.remoteSocketAddress as? InetSocketAddress
             log(
                 VpnLogLevel.Info,
@@ -218,7 +222,7 @@ class YumeSocks5Proxy(
                         sendSocksReply(output, REPLY_ADDRESS_TYPE_NOT_SUPPORTED)
                         log(
                             VpnLogLevel.Warn,
-                            "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} blocked on Android because Yume is operating in IPv6 fail-closed mode.",
+                            "SOCKS5 CONNECT ${effectiveRequest.host}:${effectiveRequest.port} blocked on Android because this Yume path is IPv4-only.",
                         )
                         return
                     }
@@ -298,7 +302,7 @@ class YumeSocks5Proxy(
                         session.openTcpStream(
                             effectiveRequest.host,
                             effectiveRequest.port,
-                            timeoutMs = yumeStreamOpenTimeoutMs(),
+                            timeoutMs = yumeStreamOpenTimeoutMs(effectiveRequest.host, effectiveRequest.port),
                         )
                     } catch (throwable: Exception) {
                         val chain = generateSequence(throwable as Throwable?) { it.cause }
@@ -394,9 +398,8 @@ class YumeSocks5Proxy(
                     (nowMs - relay.lastActivityAtMs) >= runtimeConfig.idleTcpEvictionMs
             }
             .sortedWith(
-                compareBy<ActiveTcpRelay> { it.lastActivityAtMs }
-                    .thenByDescending { if (it.port == request.port) 1 else 0 }
-                    .thenByDescending { if (it.port == 443) 1 else 0 },
+                compareByDescending<ActiveTcpRelay> { pressureEvictionScore(it, request) }
+                    .thenBy { it.lastActivityAtMs },
             )
         if (candidates.isEmpty()) {
             return emptyList()
@@ -642,7 +645,7 @@ class YumeSocks5Proxy(
                 val stream = session.openUdpStream(
                     host,
                     port,
-                    timeoutMs = yumeStreamOpenTimeoutMs(),
+                    timeoutMs = yumeStreamOpenTimeoutMs(host, port),
                 )
                 val association = UdpAssociation(
                     key = key,
@@ -736,12 +739,14 @@ class YumeSocks5Proxy(
         val remoteCompleted = AtomicBoolean(false)
         val firstUploadLogged = AtomicBoolean(false)
         val firstDownloadLogged = AtomicBoolean(false)
+        val drainTimeoutMs = bridgeDrainTimeoutMs(request)
         val clientToYume = launch(Dispatchers.IO) {
             try {
                 val buffer = ByteArray(runtimeConfig.bridgeChunkBytes)
                 while (true) {
                     val read = input.read(buffer)
                     if (read < 0) {
+                        runCatching { stream.finishUpload("SOCKS5 client upload finished") }
                         break
                     }
                     if (read > 0) {
@@ -810,17 +815,17 @@ class YumeSocks5Proxy(
         completion.await()
         when {
             localCompleted.get() && !remoteCompleted.get() -> {
-                withTimeoutOrNull(BRIDGE_DRAIN_TIMEOUT_MS) {
+                withTimeoutOrNull(drainTimeoutMs) {
                     yumeToClient.join()
                 }
                 if (!yumeToClient.isCompleted && !stream.isClosed) {
-                    runCatching { stream.close("SOCKS5 client upload finished") }
+                    runCatching { stream.close("SOCKS5 bridge drain timeout after client upload finished") }
                 }
             }
 
             remoteCompleted.get() && !localCompleted.get() -> {
                 runCatching { client.shutdownOutput() }
-                withTimeoutOrNull(BRIDGE_DRAIN_TIMEOUT_MS) {
+                withTimeoutOrNull(drainTimeoutMs) {
                     clientToYume.join()
                 }
             }
@@ -953,7 +958,7 @@ class YumeSocks5Proxy(
             if (shouldLog) {
                 log(
                     VpnLogLevel.Warn,
-                    "SOCKS5 UDP $destination blocked on Android because Yume is operating in IPv6 fail-closed mode.",
+                    "SOCKS5 UDP $destination blocked on Android because this Yume path is IPv4-only.",
                 )
             }
             return
@@ -1422,7 +1427,8 @@ class YumeSocks5Proxy(
     private fun mapOpenFailureToReply(throwable: Throwable): Int {
         val message = throwable.message?.lowercase(Locale.ROOT).orEmpty()
         return when {
-            message.contains("resolve") || message.contains("host") -> REPLY_HOST_UNREACHABLE
+            message.contains("timed out") || message.contains("timeout") -> REPLY_GENERAL_FAILURE
+            message.contains("resolve") || message.contains("unknown host") -> REPLY_HOST_UNREACHABLE
             message.contains("network") -> REPLY_NETWORK_UNREACHABLE
             message.contains("refused") -> REPLY_CONNECTION_REFUSED
             throwable is YumeBootstrapException -> REPLY_GENERAL_FAILURE
@@ -1507,12 +1513,80 @@ class YumeSocks5Proxy(
             message.contains("closed")
     }
 
-    private fun yumeStreamOpenTimeoutMs(): Int {
-        return runtimeConfig.tun2SocksConnectTimeoutMs.coerceAtLeast(1)
+    private fun yumeStreamOpenTimeoutMs(host: String, port: Int): Int {
+        val base = runtimeConfig.tun2SocksConnectTimeoutMs.coerceAtLeast(1)
+        return when {
+            isLikelyMeasurementHost(host) || port != 443 -> maxOf(base, MEASUREMENT_STREAM_OPEN_TIMEOUT_MS)
+            isLikelyAdOrTrackerHost(host) -> minOf(base, TRACKER_STREAM_OPEN_TIMEOUT_MS)
+            else -> base
+        }
     }
 
     private fun yumeDnsTcpOpenTimeoutMs(): Int {
-        return minOf(DNS_OVER_TCP_TIMEOUT_MS, yumeStreamOpenTimeoutMs())
+        return minOf(DNS_OVER_TCP_TIMEOUT_MS, runtimeConfig.tun2SocksConnectTimeoutMs.coerceAtLeast(1))
+    }
+
+    private fun bridgeDrainTimeoutMs(request: SocksRequest): Long {
+        return if (isLikelyMeasurementHost(request.host) || request.port != 443) {
+            MEASUREMENT_BRIDGE_DRAIN_TIMEOUT_MS
+        } else {
+            BRIDGE_DRAIN_TIMEOUT_MS
+        }
+    }
+
+    private fun pressureEvictionScore(relay: ActiveTcpRelay, request: SocksRequest): Int {
+        var score = 0
+        if (isLikelyAdOrTrackerHost(relay.host)) {
+            score += 100
+        }
+        if (request.port != 443 && relay.port == 443) {
+            score += 20
+        }
+        if (relay.port == request.port) {
+            score += 5
+        }
+        if (isLikelyMeasurementHost(relay.host) && !isLikelyMeasurementHost(request.host)) {
+            score -= 100
+        }
+        return score
+    }
+
+    private fun isLikelyMeasurementHost(host: String): Boolean {
+        val normalized = normalizeHost(host)
+        return "speedtest" in normalized ||
+            "ookla" in normalized ||
+            "nperf" in normalized ||
+            "measurement-lab" in normalized ||
+            ".mlab-" in normalized ||
+            normalized == "fast.com" ||
+            normalized.endsWith(".fast.com")
+    }
+
+    private fun isLikelyAdOrTrackerHost(host: String): Boolean {
+        val normalized = normalizeHost(host)
+        val labels = normalized.split('.')
+        return labels.any { label ->
+            label == "ad" ||
+                label == "ads" ||
+                label.startsWith("ad-") ||
+                label.endsWith("-ad") ||
+                label.startsWith("ads-") ||
+                label.endsWith("-ads")
+        } ||
+            "doubleclick" in normalized ||
+            "googlesyndication" in normalized ||
+            "scorecardresearch" in normalized ||
+            "rubiconproject" in normalized ||
+            "criteo" in normalized ||
+            "pubmatic" in normalized ||
+            "openx" in normalized ||
+            "adsrvr" in normalized ||
+            "imrworldwide" in normalized ||
+            "casalemedia" in normalized ||
+            "sharethrough" in normalized ||
+            "id5-sync" in normalized ||
+            "bidswitch" in normalized ||
+            "rtb" in labels
     }
 
     private fun isWarmupTcpAllowed(host: String, port: Int): Boolean {
@@ -1915,9 +1989,12 @@ class YumeSocks5Proxy(
         private const val DNS_UDP_ASSOCIATION_IDLE_TIMEOUT_MS = 8_000L
         private const val UDP_ASSOCIATION_IDLE_TIMEOUT_MS = 15_000L
         private const val UDP_ASSOCIATION_CLEANUP_INTERVAL_MS = 5_000L
+        private const val MEASUREMENT_STREAM_OPEN_TIMEOUT_MS = 20_000
+        private const val TRACKER_STREAM_OPEN_TIMEOUT_MS = 3_500
         private val TCP_FALLBACK_UDP_PORTS = setOf(443)
         private const val LOOPBACK_HOST = "127.0.0.1"
         private const val BRIDGE_DRAIN_TIMEOUT_MS = 1_500L
+        private const val MEASUREMENT_BRIDGE_DRAIN_TIMEOUT_MS = 30_000L
 
         private const val SOCKS_VERSION = 5
         private const val METHOD_NO_AUTH = 0x00

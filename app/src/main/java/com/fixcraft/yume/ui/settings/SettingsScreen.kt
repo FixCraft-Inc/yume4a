@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -55,7 +56,6 @@ import com.fixcraft.yume.data.PerformanceProfile
 import com.fixcraft.yume.data.Socks5BindMode
 import com.fixcraft.yume.data.Socks5ProxySettings
 import com.fixcraft.yume.data.ThemeColorMode
-import com.fixcraft.yume.data.canonicalLabel
 import com.fixcraft.yume.data.supportsUserSelectablePerformanceProfiles
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AppLanguageGroup
@@ -64,6 +64,8 @@ import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.appDialogProperties
 import com.fixcraft.yume.ui.appDialogWidth
 import kotlinx.coroutines.launch
+import java.net.Inet4Address
+import java.net.NetworkInterface
 
 @Composable
 fun SettingsScreen(
@@ -71,6 +73,7 @@ fun SettingsScreen(
     onSelectTechnique: (ConnectionTechnique) -> Unit,
     onSelectPerformanceProfile: (PerformanceProfile) -> Unit,
     onSelectSocks5BindMode: (Socks5BindMode) -> Unit,
+    onUpdateSocks5BindAddress: (String) -> Unit,
     onUpdateSocks5Port: (Int) -> Unit,
     onUpdateSocks5TunnelCount: (Int) -> Unit,
     onSelectThemeColorMode: (ThemeColorMode) -> Unit,
@@ -297,7 +300,9 @@ fun SettingsScreen(
             item {
                 Socks5ProxySettingsSection(
                     settings = uiState.appSettings.socks5ProxySettings,
+                    advancedMode = uiState.appSettings.advancedMode,
                     onSelectBindMode = onSelectSocks5BindMode,
+                    onUpdateBindAddress = onUpdateSocks5BindAddress,
                     onUpdatePort = onUpdateSocks5Port,
                     onUpdateTunnelCount = onUpdateSocks5TunnelCount,
                 )
@@ -844,15 +849,29 @@ private fun SettingFact(
 @Composable
 private fun Socks5ProxySettingsSection(
     settings: Socks5ProxySettings,
+    advancedMode: Boolean,
     onSelectBindMode: (Socks5BindMode) -> Unit,
+    onUpdateBindAddress: (String) -> Unit,
     onUpdatePort: (Int) -> Unit,
     onUpdateTunnelCount: (Int) -> Unit,
 ) {
+    val strings = appStrings()
+    val wifiAddress = remember { resolveWifiBindAddress() }
+    val defaultBindAddress = remember(settings.bindMode, wifiAddress) {
+        when (settings.bindMode) {
+            Socks5BindMode.Loopback -> "127.0.0.1"
+            Socks5BindMode.Wifi -> wifiAddress.orEmpty()
+            Socks5BindMode.Wildcard -> "0.0.0.0"
+        }
+    }
+    val effectiveBindAddress = settings.normalizedCustomBindAddress.ifBlank {
+        defaultBindAddress.ifBlank { strings.socks5WifiAddressUnavailable }
+    }
     SettingGroupCard(
-        title = "SOCKS5 proxy",
-        subtitle = "Configure your browser or apps to point at this address; only those apps go through Yume.",
+        title = strings.socks5ProxyTitle,
+        subtitle = strings.socks5ProxySubtitle,
     ) {
-        var portText by remember(settings.port) { mutableStateOf(settings.port.toString()) }
+        var portText by remember(settings.normalizedPort) { mutableStateOf(settings.normalizedPort.toString()) }
         var portError by remember { mutableStateOf<String?>(null) }
 
         OutlinedTextField(
@@ -862,62 +881,134 @@ private fun Socks5ProxySettingsSection(
                 portText = digits
                 val parsed = digits.toIntOrNull()
                 if (parsed == null || parsed !in Socks5ProxySettings.MIN_SOCKS5_PORT..Socks5ProxySettings.MAX_SOCKS5_PORT) {
-                    portError = "Port must be between ${Socks5ProxySettings.MIN_SOCKS5_PORT} and ${Socks5ProxySettings.MAX_SOCKS5_PORT}"
+                    portError = strings.socks5PortRangeError
                 } else {
                     portError = null
-                    if (parsed != settings.port) {
+                    if (parsed != settings.normalizedPort) {
                         onUpdatePort(parsed)
                     }
                 }
             },
-            label = { Text("Listen port") },
+            label = { Text(strings.socks5ListenPortLabel) },
             singleLine = true,
             isError = portError != null,
             supportingText = portError?.let { { Text(it) } },
             modifier = Modifier.fillMaxWidth(),
         )
 
-        Socks5BindMode.entries.forEach { mode ->
-            val (title, description) = when (mode) {
-                Socks5BindMode.Loopback ->
-                    mode.canonicalLabel() to "Only apps on this device can connect to the proxy."
-                Socks5BindMode.Wifi ->
-                    mode.canonicalLabel() to "Other devices on the same Wi-Fi can use the proxy. Useful for testing on a desktop/laptop."
-                Socks5BindMode.Wildcard ->
-                    mode.canonicalLabel() to "Listens on every interface. Expose with care — anyone reachable on this device's network can use the proxy."
+        Text(
+            text = strings.socks5BindAddressLabel,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Socks5BindMode.entries.forEach { mode ->
+                FilterChip(
+                    modifier = Modifier.weight(1f),
+                    selected = settings.bindMode == mode,
+                    onClick = { onSelectBindMode(mode) },
+                    label = {
+                        Text(
+                            text = strings.socks5BindModeName(mode),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                )
             }
-            SettingChoiceCard(
-                title = title,
-                description = description,
-                selected = settings.bindMode == mode,
-                enabled = true,
-                onClick = { onSelectBindMode(mode) },
+        }
+        SettingFact(strings.socks5BindAddressLabel, effectiveBindAddress)
+
+        if (advancedMode) {
+            var bindAddressText by remember(settings.normalizedCustomBindAddress, defaultBindAddress) {
+                mutableStateOf(settings.normalizedCustomBindAddress.ifBlank { defaultBindAddress })
+            }
+            var bindAddressError by remember { mutableStateOf<String?>(null) }
+            OutlinedTextField(
+                value = bindAddressText,
+                onValueChange = { raw ->
+                    val next = raw.trim().take(Socks5ProxySettings.MAX_BIND_ADDRESS_LENGTH)
+                    bindAddressText = next
+                    when {
+                        next.isBlank() -> {
+                            bindAddressError = null
+                            if (settings.normalizedCustomBindAddress.isNotBlank()) {
+                                onUpdateBindAddress("")
+                            }
+                        }
+                        isValidIpv4BindAddress(next) -> {
+                            bindAddressError = null
+                            if (next != settings.normalizedCustomBindAddress) {
+                                onUpdateBindAddress(next)
+                            }
+                        }
+                        else -> bindAddressError = strings.socks5BindAddressError
+                    }
+                },
+                label = { Text(strings.socks5CustomBindAddressLabel) },
+                singleLine = true,
+                isError = bindAddressError != null,
+                supportingText = {
+                    Text(bindAddressError ?: strings.socks5BindAddressHelper)
+                },
+                modifier = Modifier.fillMaxWidth(),
             )
         }
 
-        var tunnelText by remember(settings.tunnelCount) { mutableStateOf(settings.tunnelCount.toString()) }
-        var tunnelError by remember { mutableStateOf<String?>(null) }
-        OutlinedTextField(
-            value = tunnelText,
-            onValueChange = { raw ->
-                val digits = raw.filter { it.isDigit() }.take(2)
-                tunnelText = digits
-                val parsed = digits.toIntOrNull()
-                if (parsed == null || parsed !in Socks5ProxySettings.MIN_TUNNEL_COUNT..Socks5ProxySettings.MAX_TUNNEL_COUNT) {
-                    tunnelError = "Tunnels must be between ${Socks5ProxySettings.MIN_TUNNEL_COUNT} and ${Socks5ProxySettings.MAX_TUNNEL_COUNT}"
-                } else {
-                    tunnelError = null
-                    if (parsed != settings.tunnelCount) {
-                        onUpdateTunnelCount(parsed)
+        if (advancedMode) {
+            var tunnelText by remember(settings.normalizedTunnelCount) {
+                mutableStateOf(settings.normalizedTunnelCount.toString())
+            }
+            var tunnelError by remember { mutableStateOf<String?>(null) }
+            OutlinedTextField(
+                value = tunnelText,
+                onValueChange = { raw ->
+                    val digits = raw.filter { it.isDigit() }.take(2)
+                    tunnelText = digits
+                    val parsed = digits.toIntOrNull()
+                    if (parsed == null || parsed !in Socks5ProxySettings.MIN_TUNNEL_COUNT..Socks5ProxySettings.MAX_TUNNEL_COUNT) {
+                        tunnelError = strings.socks5TunnelRangeError
+                    } else {
+                        tunnelError = null
+                        if (parsed != settings.normalizedTunnelCount) {
+                            onUpdateTunnelCount(parsed)
+                        }
                     }
-                }
-            },
-            label = { Text("Parallel tunnels") },
-            singleLine = true,
-            isError = tunnelError != null,
-            supportingText = tunnelError?.let { { Text(it) } }
-                ?: { Text("More tunnels = more throughput but more handshakes during connect; 4 is the sweet spot for mobile.") },
-            modifier = Modifier.fillMaxWidth(),
-        )
+                },
+                label = { Text(strings.socks5ParallelTunnelsLabel) },
+                singleLine = true,
+                isError = tunnelError != null,
+                supportingText = {
+                    Text(tunnelError ?: strings.socks5ParallelTunnelsHelper)
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
+}
+
+private fun isValidIpv4BindAddress(value: String): Boolean {
+    val parts = value.split('.')
+    if (parts.size != 4) return false
+    return parts.all { part ->
+        part.isNotEmpty() && part.length <= 3 && part.all { it.isDigit() } && part.toIntOrNull() in 0..255
+    }
+}
+
+private fun resolveWifiBindAddress(): String? {
+    val interfaces = runCatching { NetworkInterface.getNetworkInterfaces() }.getOrNull() ?: return null
+    for (iface in interfaces) {
+        if (!iface.isUp || iface.isLoopback || iface.isVirtual) continue
+        val name = iface.name.orEmpty().lowercase()
+        if (!name.startsWith("wlan")) continue
+        for (address in iface.inetAddresses) {
+            if (address is Inet4Address && !address.isLoopbackAddress && !address.isAnyLocalAddress) {
+                return address.hostAddress
+            }
+        }
+    }
+    return null
 }

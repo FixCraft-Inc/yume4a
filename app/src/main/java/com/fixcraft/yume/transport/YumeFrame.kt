@@ -4,6 +4,9 @@ import java.io.EOFException
 import java.io.InputStream
 import java.io.OutputStream
 
+const val YUME_FLAG_OPEN_OK = 0x0001
+const val YUME_FLAG_STREAM_FIN = 0x0002
+
 enum class YumeFrameType(val wireValue: Int) {
     AUTH(1),
     OPEN(2),

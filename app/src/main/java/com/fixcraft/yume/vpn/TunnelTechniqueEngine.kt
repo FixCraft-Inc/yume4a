@@ -46,6 +46,8 @@ data class Tun2SocksRuntimeConfig(
     val tcpStreamBufferBytes: Int,
     val udpStreamBufferBytes: Int,
     val outboundFrameQueueCapacity: Int,
+    val outboundCoalesceFrames: Int,
+    val outboundCoalesceBytes: Int,
     val tun2SocksConnectTimeoutMs: Int,
     val tun2SocksTcpReadWriteTimeoutMs: Int,
     val tun2SocksUdpReadWriteTimeoutMs: Int,
@@ -75,6 +77,7 @@ data class Tun2SocksRuntimeConfig(
         appendLine("TCP stream buffer: ${tcpStreamBufferBytes / 1024} KiB")
         appendLine("UDP stream buffer: ${udpStreamBufferBytes / 1024} KiB")
         appendLine("Outbound frame queue: $outboundFrameQueueCapacity")
+        appendLine("Outbound TLS batch: $outboundCoalesceFrames frames / ${outboundCoalesceBytes / 1024} KiB")
         appendLine("tun2socks connect timeout: ${tun2SocksConnectTimeoutMs}ms")
         appendLine("tun2socks TCP read/write timeout: ${tun2SocksTcpReadWriteTimeoutMs}ms")
         appendLine("tun2socks UDP read/write timeout: ${tun2SocksUdpReadWriteTimeoutMs}ms")
@@ -83,7 +86,7 @@ data class Tun2SocksRuntimeConfig(
         appendLine("DNS relay concurrency: $dnsRelayMaxConcurrency")
         appendLine("Pre-routing stability delay: ${preRoutingStabilityDelayMs}ms")
         appendLine("Post-routing traffic ramp: ${postRoutingTrafficRampDelayMs}ms")
-        append("UDP 443 policy: route-core drop for TCP fallback")
+        append("UDP 443 policy: ICMP fast-fail for TCP fallback")
     }
 
     fun toBootstrapTuning(): YumeTransportTuning {
@@ -91,6 +94,9 @@ data class Tun2SocksRuntimeConfig(
             tcpStreamMaxBufferedBytes = tcpStreamBufferBytes,
             udpStreamMaxBufferedBytes = udpStreamBufferBytes,
             outboundFrameQueueCapacity = outboundFrameQueueCapacity,
+            maxOutboundCoalesceFrames = outboundCoalesceFrames,
+            maxOutboundCoalesceBytes = outboundCoalesceBytes,
+            paceTcpUploadWrites = false,
             useNativeTransport = false,
         )
     }
@@ -125,8 +131,8 @@ data class NativeDirectRuntimeConfig(
         appendLine("Native TCP active streams: ${bridgeTuning.maxActiveTcpRelays}")
         appendLine("Native TCP flow window: ${tcpFlowWindowBytes / 1024} KiB")
         appendLine("Native UDP flow buffer: ${udpFlowBufferBytes / 1024} KiB")
-        appendLine("UDP policy: DNS only; non-DNS UDP is dropped so apps fall back to TCP")
-        appendLine("IPv6 policy: ${if (ipv6FailClosed) "fail-closed" else "enabled"}")
+        appendLine("UDP policy: DNS only; non-DNS UDP gets ICMP port-unreachable so apps fall back to TCP")
+        appendLine("IPv6 policy: ${if (ipv6FailClosed) "blocked" else "enabled"}")
         appendLine()
         appendLine("Applied tunnel tuning")
         append(bridgeTuning.bridgeDiagnosticsSummary(includeTechnique = false))
@@ -144,14 +150,24 @@ data class Socks5ProxyRuntimeConfig(
         appendLine("Technique: ${technique.canonicalLabel()}")
         appendLine("Profile: ${performanceProfile.canonicalLabel()}")
         appendLine("Listen port: ${proxySettings.normalizedPort}")
-        appendLine("Bind: ${proxySettings.bindMode.canonicalLabel()}")
-        appendLine("No system-wide VPN: only apps configured with the SOCKS5 proxy will route through Yume.")
+        appendLine("Bind address: ${proxySettings.bindDiagnosticsLabel()}")
+        appendLine("Only apps configured for this proxy use Yume.")
         appendLine()
         appendLine("Applied tunnel tuning")
         append(bridgeTuning.bridgeDiagnosticsSummary(includeTechnique = false))
     }
 
     fun toBootstrapTuning(): YumeTransportTuning = bridgeTuning.toBootstrapTuning()
+}
+
+private fun Socks5ProxySettings.bindDiagnosticsLabel(): String {
+    return normalizedCustomBindAddress.ifBlank {
+        when (bindMode) {
+            Socks5BindMode.Loopback -> "127.0.0.1"
+            Socks5BindMode.Wifi -> "Wi-Fi address"
+            Socks5BindMode.Wildcard -> "0.0.0.0"
+        }
+    }
 }
 
 interface TunnelTechniqueEngine {
@@ -326,7 +342,9 @@ private fun stableBridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeCon
             tcpStreamBufferBytes = 512 * 1024,
             udpStreamBufferBytes = 128 * 1024,
             outboundFrameQueueCapacity = 128,
-            tun2SocksConnectTimeoutMs = 4_000,
+            outboundCoalesceFrames = 32,
+            outboundCoalesceBytes = 256 * 1024,
+            tun2SocksConnectTimeoutMs = 8_000,
             tun2SocksTcpReadWriteTimeoutMs = 60_000,
             tun2SocksUdpReadWriteTimeoutMs = 9_000,
             maxDnsUdpAssociations = 32,
@@ -339,7 +357,7 @@ private fun stableBridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeCon
         PerformanceProfile.Balanced -> Tun2SocksRuntimeConfig(
             performanceProfile = profile,
             maxActiveTcpRelays = 64,
-            relayAcquireTimeoutMs = 5_000L,
+            relayAcquireTimeoutMs = 8_000L,
             relayAcquireSliceMs = 150L,
             idleTcpEvictionMs = 15_000L,
             tcpEvictionGraceMs = 5_000L,
@@ -359,16 +377,15 @@ private fun stableBridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeCon
             // BufferedChunkQueue used to absorb bursts between the
             // Yume tunnel and the SOCKS5 splice. 4 MiB gives ~500 ms
             // of slack at 64 Mbps per stream — comfortably above the
-            // RTT of mobile networks. Previously 1 MiB triggered the
-            // "incoming Yume stream overflow" stream-kill path on
-            // every speedtest download (see YumeBootstrapClient
-            // runReadLoop, which no longer kills the stream but
-            // silently drops; this larger buffer keeps that drop
-            // rare).
+            // RTT of mobile networks. When this still fills, the
+            // offending stream is closed without blocking the shared
+            // Yume read loop.
             tcpStreamBufferBytes = 4 * 1024 * 1024,
             udpStreamBufferBytes = 256 * 1024,
             outboundFrameQueueCapacity = 192,
-            tun2SocksConnectTimeoutMs = 5_000,
+            outboundCoalesceFrames = 32,
+            outboundCoalesceBytes = 256 * 1024,
+            tun2SocksConnectTimeoutMs = 12_000,
             tun2SocksTcpReadWriteTimeoutMs = 120_000,
             tun2SocksUdpReadWriteTimeoutMs = 15_000,
             maxDnsUdpAssociations = 40,
@@ -381,7 +398,7 @@ private fun stableBridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeCon
         PerformanceProfile.Throughput -> Tun2SocksRuntimeConfig(
             performanceProfile = profile,
             maxActiveTcpRelays = 80,
-            relayAcquireTimeoutMs = 8_000L,
+            relayAcquireTimeoutMs = 12_000L,
             relayAcquireSliceMs = 150L,
             idleTcpEvictionMs = 30_000L,
             tcpEvictionGraceMs = 8_000L,
@@ -391,7 +408,9 @@ private fun stableBridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeCon
             tcpStreamBufferBytes = 4 * 1024 * 1024,
             udpStreamBufferBytes = 512 * 1024,
             outboundFrameQueueCapacity = 256,
-            tun2SocksConnectTimeoutMs = 8_000,
+            outboundCoalesceFrames = 48,
+            outboundCoalesceBytes = 256 * 1024,
+            tun2SocksConnectTimeoutMs = 15_000,
             tun2SocksTcpReadWriteTimeoutMs = 180_000,
             tun2SocksUdpReadWriteTimeoutMs = 30_000,
             maxDnsUdpAssociations = 48,
@@ -407,31 +426,33 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
     return Tun2SocksRuntimeConfig(
         performanceProfile = PerformanceProfile.Balanced,
         // Current native-direct is still the route-core/lwIP compatibility
-        // bridge. Keep fan-out below route-core thread-storm territory; packet
-        // native will lift this by removing per-flow relays.
-        maxActiveTcpRelays = 16,
-        relayAcquireTimeoutMs = 3_000L,
-        relayAcquireSliceMs = 50L,
+        // bridge. Keep fan-out lower than tun2socks so SYN storms do not pin
+        // the single TUN/lwIP worker and starve upload ACKs.
+        maxActiveTcpRelays = 32,
+        relayAcquireTimeoutMs = 10_000L,
+        relayAcquireSliceMs = 100L,
         idleTcpEvictionMs = 18_000L,
         tcpEvictionGraceMs = 6_000L,
-        tcpEvictionBatchSize = 8,
-        bridgeChunkBytes = 32 * 1024,
+        tcpEvictionBatchSize = 6,
+        bridgeChunkBytes = 64 * 1024,
         // routeTcpBufferBytes sizes the socketpair/ring buffer between
         // lwIP and the Yume stream relay. Keep it larger than lwIP's
         // TCP_WND so short OPEN latency or TLS write stalls do not
         // immediately push back into the app-facing TCP connection.
-        routeTcpBufferBytes = 2 * 1024 * 1024,
+        routeTcpBufferBytes = 1024 * 1024,
         // tcpStreamBufferBytes is the per-stream BufferedChunkQueue
         // cap on the Kotlin side. The route-core / lwIP / TUN
         // consumer chain is the slow link in native-direct mode. Keep enough
         // slack for short server bursts, but cap worst-case Java heap growth so
         // ART does not enter blocking GC during speedtest/ad-network fan-out.
-        tcpStreamBufferBytes = 8 * 1024 * 1024,
+        tcpStreamBufferBytes = 1024 * 1024,
         udpStreamBufferBytes = 256 * 1024,
         outboundFrameQueueCapacity = 192,
-        tun2SocksConnectTimeoutMs = 5_000,
+        outboundCoalesceFrames = 32,
+        outboundCoalesceBytes = 256 * 1024,
+        tun2SocksConnectTimeoutMs = 12_000,
         tun2SocksTcpReadWriteTimeoutMs = 120_000,
-        tun2SocksUdpReadWriteTimeoutMs = 10_000,
+        tun2SocksUdpReadWriteTimeoutMs = 15_000,
         maxDnsUdpAssociations = 16,
         maxUdpAssociations = 16,
         dnsRelayMaxConcurrency = 6,

@@ -46,6 +46,7 @@ struct _YumeSocks5SessionTCP
     int direct_open_status;
     int direct_timeout_ms;
     volatile int direct_stop;
+    volatile int direct_download_done;
     int pcb_eof;
     char direct_host[256];
     int direct_port;

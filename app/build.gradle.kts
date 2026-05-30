@@ -116,7 +116,8 @@ android {
         buildConfigField("String", "YUME_PROTOCOL_VERSION", "\"$yumeProtocolVersion\"")
         buildConfigField("String", "BASEFWX_ENGINE_VERSION", "\"$basefwxEngineVersion\"")
         buildConfigField("String", "YUME_PROTECTION_POLICY", "\"Auto (highest available)\"")
-        buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "true")
+        // Native-direct still drops active streams under browser/speedtest fan-out.
+        buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "false")
         buildConfigField(
             "String",
             "YUME_ROUTING_MODE",

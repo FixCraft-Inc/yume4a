@@ -193,6 +193,7 @@ class MainActivity : ComponentActivity() {
                     onSelectTechnique = viewModel::updateConnectionTechnique,
                     onSelectPerformanceProfile = viewModel::updatePerformanceProfile,
                     onSelectSocks5BindMode = viewModel::updateSocks5BindMode,
+                    onUpdateSocks5BindAddress = viewModel::updateSocks5BindAddress,
                     onUpdateSocks5Port = viewModel::updateSocks5ProxyPort,
                     onUpdateSocks5TunnelCount = viewModel::updateSocks5TunnelCount,
                     onSelectThemeColorMode = viewModel::updateThemeColorMode,

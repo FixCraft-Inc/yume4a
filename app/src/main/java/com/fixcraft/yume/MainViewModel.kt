@@ -642,7 +642,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateSocks5BindMode(mode: Socks5BindMode) {
         val current = uiState.value.appSettings.socks5ProxySettings
-        appSettingsStore.updateSocks5ProxySettings(current.copy(bindMode = mode))
+        appSettingsStore.updateSocks5ProxySettings(current.copy(bindMode = mode, customBindAddress = ""))
+    }
+
+    fun updateSocks5BindAddress(address: String) {
+        val current = uiState.value.appSettings.socks5ProxySettings
+        appSettingsStore.updateSocks5ProxySettings(current.copy(customBindAddress = address))
     }
 
     fun updateSocks5TunnelCount(count: Int) {
@@ -842,11 +847,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val lines = when (runtimeConfig) {
             is com.fixcraft.yume.vpn.Tun2SocksRuntimeConfig -> buildBridgeLines(runtimeConfig)
             is com.fixcraft.yume.vpn.Socks5ProxyRuntimeConfig -> buildList {
+                val bindLabel = runtimeConfig.proxySettings.normalizedCustomBindAddress
+                    .ifBlank { runtimeConfig.proxySettings.bindMode.canonicalLabel() }
                 add("${strings.techniqueLabel}: ${strings.connectionTechniqueName(runtimeConfig.technique)}")
                 add("${strings.profileLabel}: ${strings.performanceProfileName(runtimeConfig.performanceProfile)}")
-                add("Listen port: ${runtimeConfig.proxySettings.normalizedPort}")
-                add("Bind: ${runtimeConfig.proxySettings.bindMode.canonicalLabel()}")
-                add("No system-wide VPN — only apps configured with the SOCKS5 proxy are tunneled.")
+                add("${strings.socks5ListenPortLabel}: ${runtimeConfig.proxySettings.normalizedPort}")
+                add("${strings.socks5BindAddressLabel}: $bindLabel")
+                add(strings.socks5OnlyRuntimeDetail)
                 add("")
                 add(strings.runtimeAppliedBridgeTuningTitle)
                 addAll(buildBridgeLines(runtimeConfig.bridgeTuning).drop(2))

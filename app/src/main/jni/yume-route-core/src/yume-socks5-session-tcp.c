@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdlib.h>
 
 #ifdef ANDROID
 #include <android/log.h>
@@ -48,7 +49,8 @@
 #define TCP_DIRECT_POLL_TIMEOUT_MS 10
 #define TCP_DIRECT_STREAM_READ_TIMEOUT_MS 100
 #define TCP_DIRECT_WRITE_WAIT_MS 10
-#define TCP_DIRECT_UPLOAD_BATCH_BYTES (128 * 1024)
+#define TCP_DIRECT_UPLOAD_BATCH_BYTES (256 * 1024)
+#define TCP_DIRECT_DOWNLOAD_BATCH_BYTES (128 * 1024)
 
 static void yume_socks5_session_tcp_splice (YumeSocks5Session *base);
 
@@ -216,8 +218,17 @@ tcp_direct_forward_peer_data (YumeSocks5SessionTCP *self, unsigned char *buffer,
                 continue;
             return -1;
         }
-        if (read_len == 0)
-            return -1;
+        if (read_len == 0) {
+            if (buffered > 0 &&
+                yume_native_transport_send_direct (self->direct_stream_handle,
+                                                   buffer, buffered) < 0)
+                return -1;
+            if (yume_native_transport_finish_stream_input (
+                    self->direct_stream_handle,
+                    "native direct TCP upload finished") < 0)
+                return -1;
+            return 1;
+        }
         buffered += (size_t)read_len;
     }
 
@@ -255,26 +266,41 @@ static void *
 tcp_direct_downstream_entry (void *data)
 {
     YumeSocks5SessionTCP *self = data;
-    unsigned char recv_buf[65536];
+    unsigned char *recv_buf = malloc (TCP_DIRECT_DOWNLOAD_BATCH_BYTES);
+
+    if (!recv_buf) {
+        YUME_TCP_LOGW ("native-direct TCP downstream buffer allocation failed %s:%d",
+                       self->direct_host, self->direct_port);
+        self->direct_stop = 1;
+        if (self->direct_peer_fd >= 0)
+            shutdown (self->direct_peer_fd, SHUT_RDWR);
+        return NULL;
+    }
 
     while (!self->direct_stop && !tcp_session_stopping (self)) {
         ssize_t incoming_len;
 
         incoming_len = yume_native_transport_read_into (
-            self->direct_stream_handle, recv_buf, sizeof (recv_buf),
+            self->direct_stream_handle, recv_buf, TCP_DIRECT_DOWNLOAD_BATCH_BYTES,
             TCP_DIRECT_STREAM_READ_TIMEOUT_MS);
-        if (incoming_len < 0)
+        if (incoming_len < 0) {
+            self->direct_download_done = 1;
+            if (self->direct_peer_fd >= 0)
+                shutdown (self->direct_peer_fd, SHUT_WR);
             break;
+        }
         if (incoming_len == 0)
             continue;
         if (tcp_direct_send_all (self, self->direct_peer_fd, recv_buf,
-                                 incoming_len) < 0)
+                                 incoming_len) < 0) {
+            self->direct_stop = 1;
+            if (self->direct_peer_fd >= 0)
+                shutdown (self->direct_peer_fd, SHUT_RDWR);
             break;
+        }
     }
 
-    self->direct_stop = 1;
-    if (self->direct_peer_fd >= 0)
-        shutdown (self->direct_peer_fd, SHUT_RDWR);
+    free (recv_buf);
     return NULL;
 }
 
@@ -282,9 +308,22 @@ static void *
 tcp_direct_relay_entry (void *data)
 {
     YumeSocks5SessionTCP *self = data;
-    unsigned char send_buf[TCP_DIRECT_UPLOAD_BATCH_BYTES];
+    unsigned char *send_buf = malloc (TCP_DIRECT_UPLOAD_BATCH_BYTES);
     pthread_t downstream_thread;
     int downstream_started = 0;
+    int upload_done = 0;
+
+    if (!send_buf) {
+        YUME_TCP_LOGW ("native-direct TCP upload buffer allocation failed %s:%d",
+                       self->direct_host, self->direct_port);
+        pthread_mutex_lock (&self->direct_mutex);
+        self->direct_open_status = -1;
+        self->direct_open_done = 1;
+        pthread_cond_signal (&self->direct_cond);
+        pthread_mutex_unlock (&self->direct_mutex);
+        shutdown (self->direct_peer_fd, SHUT_RDWR);
+        return NULL;
+    }
 
     if (tcp_direct_should_log (&tcp_direct_log_opening_count)) {
         YUME_TCP_LOGI ("native-direct TCP opening %s:%d", self->direct_host,
@@ -305,6 +344,7 @@ tcp_direct_relay_entry (void *data)
                            self->direct_host, self->direct_port);
         }
         shutdown (self->direct_peer_fd, SHUT_RDWR);
+        free (send_buf);
         return NULL;
     }
 
@@ -328,17 +368,29 @@ tcp_direct_relay_entry (void *data)
         struct pollfd pfd = { 0 };
         int poll_res;
 
+        if (upload_done) {
+            if (self->direct_download_done)
+                break;
+            usleep (TCP_DIRECT_POLL_TIMEOUT_MS * 1000);
+            continue;
+        }
+
         pfd.fd = self->direct_peer_fd;
         pfd.events = POLLIN | POLLERR | POLLHUP | POLLNVAL;
         poll_res = poll (&pfd, 1, TCP_DIRECT_POLL_TIMEOUT_MS);
         if (poll_res > 0) {
-            if (pfd.revents & POLLIN) {
-                if (tcp_direct_forward_peer_data (self, send_buf,
-                                                  sizeof (send_buf)) < 0)
+            if (pfd.revents & (POLLIN | POLLHUP)) {
+                int forward_res = tcp_direct_forward_peer_data (
+                    self, send_buf, TCP_DIRECT_UPLOAD_BATCH_BYTES);
+                if (forward_res < 0)
                     break;
+                if (forward_res > 0)
+                    upload_done = 1;
             }
 
-            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
+            if (pfd.revents & (POLLERR | POLLNVAL))
+                break;
+            if ((pfd.revents & POLLHUP) && !upload_done)
                 break;
         } else if (poll_res < 0 && errno != EINTR) {
             break;
@@ -359,6 +411,7 @@ tcp_direct_relay_entry (void *data)
     }
 
     shutdown (self->direct_peer_fd, SHUT_RDWR);
+    free (send_buf);
     return NULL;
 }
 
@@ -372,6 +425,7 @@ tcp_direct_stop (YumeSocks5SessionTCP *self, const char *reason)
         return;
 
     self->direct_stop = 1;
+    self->direct_download_done = 1;
 
     if (self->direct_peer_fd >= 0)
         shutdown (self->direct_peer_fd, SHUT_RDWR);
@@ -420,6 +474,7 @@ tcp_direct_start (YumeSocks5SessionTCP *self)
     self->direct_peer_fd = fds[1];
     self->direct_stream_handle = -1;
     self->direct_stop = 0;
+    self->direct_download_done = 0;
     self->direct_open_done = 0;
     self->direct_open_status = -1;
     self->direct_timeout_ms = yume_route_config_get_misc_connect_timeout ();
@@ -483,9 +538,28 @@ tcp_splice_f (YumeSocks5SessionTCP *self)
                 res = -1;
         } else {
             yume_task_mutex_lock (self->mutex);
-            self->queue = pbuf_free_header (self->queue, s);
-            if (self->pcb)
-                tcp_recved (self->pcb, s);
+            /* writev() routinely returns > 65535 now that the lwIP RX
+             * window is scaled to ~1 MiB (TCP_WND = 128 * TCP_MSS). Both
+             * pbuf_free_header() and tcp_recved() take a u16_t, so feeding
+             * the raw ssize_t silently truncated the length to (s & 0xFFFF):
+             * the queue was under-freed (the already-sent tail was
+             * re-gathered and re-sent → duplicated upload bytes) and ~64 KiB
+             * of receive-window credit leaked per large splice until rcv_wnd
+             * decayed to 0 and the app's TCP could no longer send — i.e. the
+             * upload "burst then collapse". Credit and free in u16_t-sized
+             * steps so they track exactly the bytes writev() delivered. The
+             * download splicer (tcp_splice_b) was unaffected because it
+             * already caps every tcp_write() to a u16_t chunk. */
+            {
+                size_t acked = (size_t) s;
+                while (acked > 0) {
+                    u16_t step = acked > 0xFFFFu ? 0xFFFFu : (u16_t) acked;
+                    self->queue = pbuf_free_header (self->queue, step);
+                    if (self->pcb)
+                        tcp_recved (self->pcb, step);
+                    acked -= step;
+                }
+            }
             yume_task_mutex_unlock (self->mutex);
             res = 1;
         }
@@ -795,6 +869,7 @@ yume_socks5_session_tcp_construct (YumeSocks5SessionTCP *self,
     self->direct_peer_fd = -1;
     self->direct_stream_handle = -1;
     self->direct_open_status = -1;
+    self->direct_download_done = 0;
 
     return 0;
 }

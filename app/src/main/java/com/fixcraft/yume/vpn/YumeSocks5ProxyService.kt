@@ -24,6 +24,7 @@ import com.fixcraft.yume.data.ServerProfile
 import com.fixcraft.yume.data.ServerProfileStore
 import com.fixcraft.yume.data.SecureMaterialStore
 import com.fixcraft.yume.data.Socks5BindMode
+import com.fixcraft.yume.data.Socks5ProxySettings
 import com.fixcraft.yume.i18n.AppLocaleManager
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.transport.YumeBootstrapClient
@@ -558,7 +559,7 @@ class YumeSocks5ProxyService : Service() {
             forceTcpFallbackUdp443Provider = { true },
             log = { level, message -> YumeVpnRuntime.appendLog(level, message) },
         ).also { socksProxy = it }
-        val bindHost = resolveBindHost(runtimeConfig.proxySettings.bindMode)
+        val bindHost = resolveBindHost(runtimeConfig.proxySettings)
         // No fallback to port 0 here: the user picked a specific port to
         // expose to other apps/LAN, so silently moving it would surface
         // as "why does my browser say 'connection refused'?". Fail loudly
@@ -571,15 +572,21 @@ class YumeSocks5ProxyService : Service() {
         return "${address.address.hostAddress}:${address.port}"
     }
 
-    private fun resolveBindHost(mode: Socks5BindMode): String = when (mode) {
-        Socks5BindMode.Loopback -> YumeSocks5Proxy.LOOPBACK_BIND_HOST
-        Socks5BindMode.Wildcard -> YumeSocks5Proxy.WILDCARD_BIND_HOST
-        Socks5BindMode.Wifi -> resolveWifiBindHost() ?: run {
-            YumeVpnRuntime.appendLog(
-                VpnLogLevel.Warn,
-                "Could not determine a Wi-Fi interface address; binding SOCKS5 proxy to loopback instead.",
-            )
-            YumeSocks5Proxy.LOOPBACK_BIND_HOST
+    private fun resolveBindHost(settings: Socks5ProxySettings): String {
+        val customBindAddress = settings.normalizedCustomBindAddress
+        if (customBindAddress.isNotBlank()) {
+            return customBindAddress
+        }
+        return when (settings.bindMode) {
+            Socks5BindMode.Loopback -> YumeSocks5Proxy.LOOPBACK_BIND_HOST
+            Socks5BindMode.Wildcard -> YumeSocks5Proxy.WILDCARD_BIND_HOST
+            Socks5BindMode.Wifi -> resolveWifiBindHost() ?: run {
+                YumeVpnRuntime.appendLog(
+                    VpnLogLevel.Warn,
+                    "Could not determine a Wi-Fi interface address; binding SOCKS5 proxy to loopback instead.",
+                )
+                YumeSocks5Proxy.LOOPBACK_BIND_HOST
+            }
         }
     }
 
@@ -758,16 +765,20 @@ class YumeSocks5ProxyService : Service() {
 
     private fun buildNotification(profile: ServerProfile, status: String): Notification {
         val localizedContext = AppLocaleManager.current(this)
+        val text = strings()
+        val bindLabel = activeRuntimeConfig?.proxySettings?.let { settings ->
+            settings.normalizedCustomBindAddress.ifBlank {
+                when (settings.bindMode) {
+                    Socks5BindMode.Loopback -> "127.0.0.1"
+                    Socks5BindMode.Wifi -> text.socks5BindWifiLabel
+                    Socks5BindMode.Wildcard -> "0.0.0.0"
+                }
+            }
+        } ?: "127.0.0.1"
         val expandedText = buildList {
             add(status)
             localProxyAddress?.let { add("SOCKS5: $it") }
-            add("Bind: ${activeRuntimeConfig?.proxySettings?.bindMode?.let { mode ->
-                when (mode) {
-                    Socks5BindMode.Loopback -> "Loopback (this device only)"
-                    Socks5BindMode.Wifi -> "Wi-Fi interface"
-                    Socks5BindMode.Wildcard -> "All interfaces (0.0.0.0) — expose with care"
-                }
-            } ?: "Loopback"}")
+            add("${text.socks5BindAddressLabel}: $bindLabel")
         }.joinToString("\n")
 
         val disconnectIntent = Intent(this, YumeSocks5ProxyService::class.java).apply {
