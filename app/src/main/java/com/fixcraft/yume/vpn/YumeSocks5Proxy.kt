@@ -815,12 +815,14 @@ class YumeSocks5Proxy(
         completion.await()
         when {
             localCompleted.get() && !remoteCompleted.get() -> {
-                withTimeoutOrNull(drainTimeoutMs) {
-                    yumeToClient.join()
-                }
-                if (!yumeToClient.isCompleted && !stream.isClosed) {
-                    runCatching { stream.close("SOCKS5 bridge drain timeout after client upload finished") }
-                }
+                // The app finished sending its request (clientToYume hit EOF and
+                // already sent the upload FIN via stream.finishUpload). The
+                // DOWNLOAD is still streaming — let it run to the server's natural
+                // EOF instead of force-closing it on a 1.5 s wall-clock timer,
+                // which truncated real downloads (Connection: close / single-shot
+                // fetches) mid-transfer. A genuinely stalled peer is still bounded
+                // by the session-level idle timeout, which cancels this scope.
+                yumeToClient.join()
             }
 
             remoteCompleted.get() && !localCompleted.get() -> {

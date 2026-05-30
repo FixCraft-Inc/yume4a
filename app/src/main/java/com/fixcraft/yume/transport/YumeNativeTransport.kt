@@ -344,6 +344,16 @@ class YumeNativeTransport(
         private val writeLock = ReentrantLock()
         private val writeSpaceAvailable = writeLock.newCondition()
 
+        // Identity-compared marker enqueued onto writeQueue to mark "upload is
+        // half-closed; send the stream FIN once everything ahead of this point
+        // has been flushed to the carrier". Routing the FIN through the SAME
+        // ordered queue as DATA is what prevents it from overtaking in-flight
+        // upload bytes (which made the server SHUT_WR early and truncate the
+        // upload). Never carries data — length is always 0.
+        private val uploadFinSentinel = ByteArray(0)
+        @Volatile
+        private var pendingFinReason: String? = null
+
         init {
             workerScope.launch {
                 try {
@@ -466,13 +476,17 @@ class YumeNativeTransport(
         }
 
         override fun finishInput(reason: String): Int {
-            val stream = currentStreamOrNull() ?: return -1
-            return runCatching {
-                runBlocking {
-                    stream.finishUpload(reason.ifBlank { "native TCP upload finished" })
-                }
-                0
-            }.getOrDefault(-1)
+            if (closed.get()) {
+                return -1
+            }
+            // Do NOT send the FIN inline here (relay thread). The last upload
+            // DATA may still be sitting in writeQueue, drained asynchronously by
+            // runWriteLoop. Enqueue the FIN as an ordered sentinel so runWriteLoop
+            // emits it only after the final DATA chunk has been queued to the
+            // carrier — preserving app-TCP byte order and stopping the server
+            // from half-closing the upstream before the last bytes arrive.
+            pendingFinReason = reason.ifBlank { "native TCP upload finished" }
+            return if (writeQueue.offer(uploadFinSentinel)) 0 else -1
         }
 
         // Takes ownership of `payload`. The TUN write path hammers this — every
@@ -550,9 +564,15 @@ class YumeNativeTransport(
         @Volatile
         private var mergeScratch: ByteArray = ByteArray(0)
 
-        private data class MergedWrite(val buffer: ByteArray, val length: Int)
+        // finFollows: the upload FIN sentinel was dequeued at or immediately
+        // after this batch, so runWriteLoop must send the stream FIN once this
+        // batch is on the carrier (and not before).
+        private data class MergedWrite(val buffer: ByteArray, val length: Int, val finFollows: Boolean = false)
 
         private suspend fun mergePendingWrites(first: ByteArray): MergedWrite {
+            if (first === uploadFinSentinel) {
+                return MergedWrite(first, 0, finFollows = true)
+            }
             if (writeQueue.isEmpty()) {
                 val delayed = if (first.size < NATIVE_TCP_COALESCE_WAIT_BELOW_BYTES) {
                     writeQueue.receiveWithin(NATIVE_TCP_COALESCE_DELAY_MS)
@@ -561,6 +581,9 @@ class YumeNativeTransport(
                 }
                 if (delayed == null) {
                     return MergedWrite(first, first.size)
+                }
+                if (delayed === uploadFinSentinel) {
+                    return MergedWrite(first, first.size, finFollows = true)
                 }
                 val merged = ArrayList<ByteArray>(8)
                 merged += first
@@ -575,14 +598,19 @@ class YumeNativeTransport(
 
         private fun mergePendingWrites(merged: ArrayList<ByteArray>, initialBytes: Int): MergedWrite {
             var total = initialBytes
+            var finFollows = false
             while (total < MAX_NATIVE_TCP_MERGE_BYTES) {
                 val next = writeQueue.pollNow() ?: break
+                if (next === uploadFinSentinel) {
+                    finFollows = true
+                    break
+                }
                 merged += next
                 total += next.size
             }
             if (merged.size == 1) {
                 val only = merged[0]
-                return MergedWrite(only, only.size)
+                return MergedWrite(only, only.size, finFollows)
             }
             var scratch = mergeScratch
             if (scratch.size < total) {
@@ -594,7 +622,7 @@ class YumeNativeTransport(
                 chunk.copyInto(scratch, destinationOffset = offset)
                 offset += chunk.size
             }
-            return MergedWrite(scratch, total)
+            return MergedWrite(scratch, total, finFollows)
         }
 
         private fun markClosed() {
@@ -637,6 +665,7 @@ class YumeNativeTransport(
         }
 
         private suspend fun runWriteLoop(stream: YumeTcpStream) {
+            var halfClosed = false
             try {
                 while (true) {
                     val first = writeQueue.receive() ?: break
@@ -673,10 +702,24 @@ class YumeNativeTransport(
                             }
                         }
                     }
+                    if (merged.finFollows) {
+                        // Every DATA chunk ahead of the FIN sentinel has now been
+                        // queued to the carrier (sendTcpUpload above), so the FIN
+                        // can no longer overtake the upload. Send it and stop the
+                        // upload loop — but DO NOT markClosed(): this is a TCP
+                        // half-close; the download direction must keep running.
+                        runCatching {
+                            stream.finishUpload(pendingFinReason ?: "native TCP upload finished")
+                        }
+                        halfClosed = true
+                        break
+                    }
                 }
             } catch (_: Throwable) {
             } finally {
-                markClosed()
+                if (!halfClosed) {
+                    markClosed()
+                }
             }
         }
 

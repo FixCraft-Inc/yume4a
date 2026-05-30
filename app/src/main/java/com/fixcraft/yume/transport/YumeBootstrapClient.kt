@@ -80,7 +80,13 @@ import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 import kotlin.math.abs
 
-private const val INBOUND_STREAM_BACKPRESSURE_WAIT_MS = 60_000L
+// How long the single Yume read loop will block applying backpressure to ONE
+// slow inbound stream before giving up and killing just that stream. This is a
+// head-of-line bound: while we wait here, no other stream's frames are read, so
+// it must be long enough to ride out the millisecond-scale consumer hiccups that
+// are normal under a fast download, but short enough that a genuinely-stuck
+// stream can't freeze the whole multiplexed carrier. 5 s balances both.
+private const val INBOUND_STREAM_BACKPRESSURE_WAIT_MS = 5_000L
 private const val DEFAULT_OUTBOUND_COALESCE_FRAMES = 32
 private const val DEFAULT_OUTBOUND_COALESCE_BYTES = 256 * 1024
 
@@ -1038,13 +1044,18 @@ class YumeBootstrapSession internal constructor(
                         val stream = synchronized(stateLock) {
                             streams[frame.streamId]
                         }
-                        // Never let one slow app-facing TCP stream block the
-                        // only authenticated Yume read loop. Native-direct is
-                        // multiplexed over one TLS carrier; waiting here makes
-                        // every other stream stall behind the full stream.
-                        // Close only the slow stream and keep the carrier
-                        // draining so active page/speedtest flows can proceed.
-                        if (stream != null && !stream.tryOfferIncoming(frame.payload)) {
+                        // Apply real backpressure before resorting to killing a
+                        // stream. offerIncoming blocks up to
+                        // INBOUND_STREAM_BACKPRESSURE_WAIT_MS for the consumer to
+                        // drain; a fast download routinely fills the per-stream
+                        // 256 KiB queue for a few ms while the app-side socket
+                        // flow-controls. The previous non-blocking tryOfferIncoming
+                        // hard-killed the stream on that transient overflow, which
+                        // reset downloads mid-transfer (graph showed partial RX,
+                        // speed test reported failure). We only fall through to the
+                        // kill below if the stream stays full for the whole window —
+                        // i.e. a genuinely stuck consumer, not a transient spike.
+                        if (stream != null && !stream.offerIncoming(frame.payload)) {
                             synchronized(stateLock) {
                                 streams.remove(frame.streamId)
                                 pendingOpen.remove(frame.streamId)

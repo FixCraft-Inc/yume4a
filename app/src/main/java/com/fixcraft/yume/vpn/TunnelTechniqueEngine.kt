@@ -462,5 +462,12 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
 }
 
 private fun nativeDirectTcpOpenConcurrency(maxActiveTcpRelays: Int): Int {
-    return (maxActiveTcpRelays.coerceAtLeast(1) / 4).coerceIn(4, 8)
+    // OPEN frames are tiny and multiplexed over the single TLS carrier — there
+    // is no real SYN storm on the wire — so the previous /4 cap of 4..8 was the
+    // direct cause of native-direct feeling slower than tun2socks: a page with
+    // dozens of subresources serialized its connects into RTT-gated waves of 8
+    // while tun2socks (no opener limiter) fanned them all out at once. Widen to
+    // /2 (12..24) so connect latency tracks tun2socks without pinning the single
+    // lwIP TUN worker.
+    return (maxActiveTcpRelays.coerceAtLeast(1) / 2).coerceIn(12, 24)
 }
