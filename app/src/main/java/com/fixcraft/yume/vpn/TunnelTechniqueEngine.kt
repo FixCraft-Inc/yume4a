@@ -105,7 +105,7 @@ data class Tun2SocksRuntimeConfig(
 data class NativeDirectRuntimeConfig(
     override val performanceProfile: PerformanceProfile,
     val bridgeTuning: Tun2SocksRuntimeConfig,
-    val engineStatus: NativeDirectEngineStatus = NativeDirectEngineStatus.CompatibilityBridgeFallback,
+    val engineStatus: NativeDirectEngineStatus = NativeDirectEngineStatus.Tun2SocksFallback,
     val nativeQueueCapacity: Int,
     val tcpOpenConcurrency: Int,
     val tcpFlowWindowBytes: Int,
@@ -119,11 +119,11 @@ data class NativeDirectRuntimeConfig(
         appendLine("Profile: $NATIVE_DIRECT_FIXED_TUNING_LABEL")
         appendLine(
             "Status: " + when (engineStatus) {
-                NativeDirectEngineStatus.CompatibilityBridgeFallback ->
-                    "legacy bridge fallback"
+                NativeDirectEngineStatus.Tun2SocksFallback ->
+                    "tun2socks fallback when packet-native is unavailable"
 
                 NativeDirectEngineStatus.PacketNative ->
-                    "direct Yume stream tunnel backend"
+                    "packet-native data plane"
             }
         )
         appendLine("Native queue: $nativeQueueCapacity")
@@ -131,7 +131,7 @@ data class NativeDirectRuntimeConfig(
         appendLine("Native TCP active streams: ${bridgeTuning.maxActiveTcpRelays}")
         appendLine("Native TCP flow window: ${tcpFlowWindowBytes / 1024} KiB")
         appendLine("Native UDP flow buffer: ${udpFlowBufferBytes / 1024} KiB")
-        appendLine("UDP policy: DNS only; non-DNS UDP gets ICMP port-unreachable so apps fall back to TCP")
+        appendLine("Packet path: IPv4 packets batched on one encrypted Yume stream when server supports packet_bulk_v1")
         appendLine("IPv6 policy: ${if (ipv6FailClosed) "blocked" else "enabled"}")
         appendLine()
         appendLine("Applied tunnel tuning")
@@ -244,7 +244,7 @@ object NativeDirectTechniqueEngine : TunnelTechniqueEngine {
     override val isAvailable: Boolean = BuildConfig.ENABLE_NATIVE_DIRECT_BETA
 
     override fun runtimeConfig(profile: PerformanceProfile): TunnelRuntimeConfig {
-        val bridgeTuning = nativeDirectBridgeTuning()
+        val bridgeTuning = nativeDirectFallbackTuning()
         return NativeDirectRuntimeConfig(
             performanceProfile = PerformanceProfile.Balanced,
             bridgeTuning = bridgeTuning,
@@ -422,12 +422,12 @@ private fun stableBridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeCon
     }
 }
 
-private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
+private fun nativeDirectFallbackTuning(): Tun2SocksRuntimeConfig {
     return Tun2SocksRuntimeConfig(
         performanceProfile = PerformanceProfile.Balanced,
-        // Current native-direct is still the route-core/lwIP compatibility
-        // bridge. Keep fan-out lower than tun2socks so SYN storms do not pin
-        // the single TUN/lwIP worker and starve upload ACKs.
+        // Fallback tuning used only when the server cannot open packet_bulk_v1.
+        // Keep fan-out lower than regular tun2socks so fallback startup stays
+        // predictable on phones with slower CPUs.
         maxActiveTcpRelays = 32,
         relayAcquireTimeoutMs = 10_000L,
         relayAcquireSliceMs = 100L,
@@ -435,16 +435,10 @@ private fun nativeDirectBridgeTuning(): Tun2SocksRuntimeConfig {
         tcpEvictionGraceMs = 6_000L,
         tcpEvictionBatchSize = 6,
         bridgeChunkBytes = 64 * 1024,
-        // routeTcpBufferBytes sizes the socketpair/ring buffer between
-        // lwIP and the Yume stream relay. Keep it larger than lwIP's
-        // TCP_WND so short OPEN latency or TLS write stalls do not
-        // immediately push back into the app-facing TCP connection.
+        // routeTcpBufferBytes sizes the fallback route-core handoff.
         routeTcpBufferBytes = 1024 * 1024,
-        // tcpStreamBufferBytes is the per-stream BufferedChunkQueue
-        // cap on the Kotlin side. The route-core / lwIP / TUN
-        // consumer chain is the slow link in native-direct mode. Keep enough
-        // slack for short server bursts, but cap worst-case Java heap growth so
-        // ART does not enter blocking GC during speedtest/ad-network fan-out.
+        // tcpStreamBufferBytes caps Kotlin-side burst absorption for fallback
+        // streams without letting Java heap growth dominate speed tests.
         tcpStreamBufferBytes = 1024 * 1024,
         udpStreamBufferBytes = 256 * 1024,
         outboundFrameQueueCapacity = 192,

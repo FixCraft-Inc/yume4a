@@ -32,6 +32,13 @@ class YumePacketBulkTest {
     @Test
     fun canAppendPacketTracksBatchLimits() {
         assertTrue(YumePacketBulk.canAppendPacket(0, 0, 1500))
+        assertTrue(
+            YumePacketBulk.canAppendPacket(
+                currentEncodedBytes = YumePacketBulk.HEADER_BYTES + 1_200,
+                currentPacketCount = 1,
+                nextPacketBytes = 1_200,
+            )
+        )
         assertFalse(
             YumePacketBulk.canAppendPacket(
                 currentEncodedBytes = YumePacketBulk.HEADER_BYTES,
@@ -39,6 +46,14 @@ class YumePacketBulkTest {
                 nextPacketBytes = 1,
             )
         )
+        assertFalse(
+            YumePacketBulk.canAppendPacket(
+                currentEncodedBytes = YumePacketBulk.DEFAULT_MAX_BATCH_BYTES - 1,
+                currentPacketCount = 1,
+                nextPacketBytes = 1,
+            )
+        )
+        assertFalse(YumePacketBulk.canAppendPacket(YumePacketBulk.HEADER_BYTES, 0, 0))
         assertFalse(YumePacketBulk.canAppendPacket(0, 0, YumePacketBulk.MAX_PACKET_BYTES + 1))
     }
 

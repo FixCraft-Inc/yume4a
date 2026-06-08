@@ -408,7 +408,7 @@ class AppStrings private constructor(
     val runtimeTitle = t("Runtime")
     val runtimeStatusLabel = t("Runtime status")
     val runtimeAppliedBridgeTuningTitle = t("Applied tunnel tuning")
-    val runtimeCompatibilityBridgeFallbackStatus = t("legacy bridge fallback")
+    val runtimeTun2SocksFallbackStatus = t("tun2socks fallback when packet-native is unavailable")
     val runtimeNativeQueueLabel = t("Native queue")
     val runtimeNativeTcpFlowWindowLabel = t("Native TCP flow window")
     val runtimeNativeUdpFlowBufferLabel = t("Native UDP flow buffer")
@@ -435,7 +435,7 @@ class AppStrings private constructor(
     val runtimeUdp443PolicyLabel = t("UDP 443 policy")
     val runtimeForcedTcpFallback = t("forced TCP fallback")
     val runtimeBridgeBackedBetaStatus = t("bridge-backed beta path with technique-specific tuning")
-    val runtimePacketNativeStatus = t("direct Yume stream tunnel backend")
+    val runtimePacketNativeStatus = t("packet-native data plane")
     val eventLogTitle = t("Event log")
     val noSessionEventsRecorded = t("No session events recorded.")
     val none = t("None")
@@ -451,7 +451,7 @@ class AppStrings private constructor(
     val authKeyUnavailable = t("Selected auth key is unavailable")
     val serverSaved = t("Server saved")
     val embeddedAnonymCaCannotBeRemoved = t("The embedded Anonym CA cannot be removed")
-    val nativeDirectUnavailable = t("Native direct beta is disabled in this build until the packet-native engine is ready.")
+    val nativeDirectUnavailable = t("Packet-native routing is disabled in this build.")
     val socks5ProxyTitle = t("SOCKS5 proxy")
     val socks5ProxySubtitle = t("Only apps configured with this local proxy use Yume.")
     val socks5ListenPortLabel = t("Listen port")
@@ -570,7 +570,7 @@ class AppStrings private constructor(
 
     fun connectionTechniqueDescription(technique: ConnectionTechnique): String = when (technique) {
         ConnectionTechnique.Tun2SocksStable -> t("Stable VPN routing through tun2socks.")
-        ConnectionTechnique.NativeDirectBeta -> t("Direct Yume TCP streams. UDP falls back to TCP; IPv6 is blocked.")
+        ConnectionTechnique.NativeDirectBeta -> t("Packet-native IPv4 over one Yume TLS carrier when the server supports it.")
         ConnectionTechnique.Socks5ProxyOnly -> t("Local proxy for apps you configure manually.")
     }
 

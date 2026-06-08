@@ -864,8 +864,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 add(
                     "${strings.runtimeStatusLabel}: ${
                         when (runtimeConfig.engineStatus) {
-                            com.fixcraft.yume.vpn.NativeDirectEngineStatus.CompatibilityBridgeFallback ->
-                                strings.runtimeCompatibilityBridgeFallbackStatus
+                            com.fixcraft.yume.vpn.NativeDirectEngineStatus.Tun2SocksFallback ->
+                                strings.runtimeTun2SocksFallbackStatus
 
                             com.fixcraft.yume.vpn.NativeDirectEngineStatus.PacketNative ->
                                 strings.runtimePacketNativeStatus

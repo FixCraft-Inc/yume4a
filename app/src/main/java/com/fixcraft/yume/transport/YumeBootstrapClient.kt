@@ -233,6 +233,21 @@ data class YumeServerBootstrap(
     val hopEnabled: Boolean,
     val hopIntervalMs: Int,
     val serverTimeMs: Long,
+    val capabilities: Set<String> = emptySet(),
+) {
+    val supportsPacketBulk: Boolean
+        get() = YumePacketBulk.CAPABILITY in capabilities
+}
+
+internal data class YumePacketAssignment(
+    val ipv4: String,
+    val mtu: Int,
+    val dnsServers: List<String>,
+)
+
+internal data class YumePacketStreamOpen(
+    val stream: YumePacketStream,
+    val assignment: YumePacketAssignment,
 )
 
 private interface YumeInboundStream {
@@ -398,6 +413,64 @@ class YumeUdpStream internal constructor(
     }
 }
 
+internal class YumePacketStream internal constructor(
+    private val session: YumeBootstrapSession,
+    override val streamId: Int,
+    maxBufferedBytes: Int,
+) : YumeInboundStream {
+    private val incomingBatches = BufferedChunkQueue(maxBufferedBytes)
+    private val closedReason = CompletableDeferred<String?>()
+
+    override val isClosed: Boolean
+        get() = closedReason.isCompleted
+
+    suspend fun readPacketBatch(): YumePacketBulk.Batch? {
+        val result = incomingBatches.receiveCatching()
+        result.exceptionOrNull()?.let { throwable ->
+            throw if (throwable is Exception) {
+                throwable
+            } else {
+                IOException("The Yume packet stream failed", throwable)
+            }
+        }
+        val payload = result.getOrNull() ?: return null
+        return YumePacketBulk.decode(payload)
+    }
+
+    suspend fun writePacketBatch(batch: YumePacketBulk.Batch) {
+        session.sendDataQueued(streamId, YumePacketBulk.encode(batch))
+    }
+
+    suspend fun close(reason: String = "") {
+        if (closedReason.isCompleted) {
+            return
+        }
+        try {
+            session.closeStream(streamId, reason)
+        } finally {
+            closeFromRemote(reason.ifBlank { null })
+        }
+    }
+
+    override suspend fun offerIncoming(data: ByteArray): Boolean = incomingBatches.trySendWithBackpressure(data)
+
+    override fun tryOfferIncoming(data: ByteArray): Boolean = incomingBatches.trySend(data)
+
+    override fun finishIncomingFromRemote(reason: String?) = closeFromRemote(reason)
+
+    override fun closeFromRemote(reason: String?) {
+        if (closedReason.complete(reason)) {
+            incomingBatches.close()
+        }
+    }
+
+    override fun fail(cause: Throwable) {
+        if (closedReason.complete(cause.message)) {
+            incomingBatches.close(cause)
+        }
+    }
+}
+
 class YumeBootstrapSession internal constructor(
     private val transport: YumeTransportSocket,
     val bootstrap: YumeServerBootstrap,
@@ -422,7 +495,7 @@ class YumeBootstrapSession internal constructor(
     // session out and the VPN re-auths mid-test. 32 slots is plenty:
     // we usually have at most a few in-flight control frames.
     private val controlFrames = Channel<PendingWrite>(32)
-    private val pendingOpen = mutableMapOf<Int, CompletableDeferred<Unit>>()
+    private val pendingOpen = mutableMapOf<Int, CompletableDeferred<OpenAck>>()
     private val pendingPongs = ArrayDeque<CompletableDeferred<Unit>>()
     private val pendingControl = mutableMapOf<String, CompletableDeferred<JSONObject>>()
     private val streams = mutableMapOf<Int, YumeInboundStream>()
@@ -698,6 +771,53 @@ class YumeBootstrapSession internal constructor(
         )
     }
 
+    internal suspend fun openPacketBulkStream(
+        timeoutMs: Int = DEFAULT_STREAM_TIMEOUT_MS,
+    ): YumePacketStreamOpen {
+        if (!bootstrap.supportsPacketBulk) {
+            throw YumeBootstrapException("The Yume server did not advertise ${YumePacketBulk.CAPABILITY}")
+        }
+        val stream: YumePacketStream
+        val waiter: CompletableDeferred<OpenAck>
+        synchronized(stateLock) {
+            ensureOpenLocked()
+            val streamId = allocateStreamIdLocked()
+            stream = YumePacketStream(this, streamId, YumePacketBulk.DEFAULT_MAX_BATCH_BYTES * 4)
+            waiter = CompletableDeferred()
+            streams[streamId] = stream
+            pendingOpen[streamId] = waiter
+        }
+        try {
+            val openPayload = JSONObject()
+                .put("proto", YumePacketBulk.OPEN_PROTO)
+                .toString()
+                .toByteArray(StandardCharsets.UTF_8)
+            sendFrame(
+                YumeFrame(
+                    type = YumeFrameType.OPEN,
+                    streamId = stream.streamId,
+                    payload = openPayload,
+                )
+            )
+            val ack = withTimeout(timeoutMs.toLong()) {
+                waiter.await()
+            }
+            val assignment = parsePacketAssignment(ack.payload)
+            return YumePacketStreamOpen(stream, assignment)
+        } catch (throwable: Exception) {
+            synchronized(stateLock) {
+                pendingOpen.remove(stream.streamId)
+                streams.remove(stream.streamId)
+            }
+            stream.fail(throwable)
+            throw if (throwable is YumeBootstrapException) {
+                throwable
+            } else {
+                YumeBootstrapException("Failed to open the packet-native Yume stream", throwable)
+            }
+        }
+    }
+
     suspend fun sendControlRequest(
         request: JSONObject,
         timeoutMs: Int = DEFAULT_CONTROL_TIMEOUT_MS,
@@ -742,7 +862,7 @@ class YumeBootstrapSession internal constructor(
     ): T {
         require(port in 1..65535) { "port out of range" }
         val stream: T
-        val waiter: CompletableDeferred<Unit>
+        val waiter: CompletableDeferred<OpenAck>
         synchronized(stateLock) {
             ensureOpenLocked()
             val streamId = allocateStreamIdLocked()
@@ -813,7 +933,7 @@ class YumeBootstrapSession internal constructor(
 
     private fun scheduleOpenTimeout(
         stream: YumeInboundStream,
-        waiter: CompletableDeferred<Unit>,
+        waiter: CompletableDeferred<OpenAck>,
         proto: String,
         host: String,
         port: Int,
@@ -847,6 +967,39 @@ class YumeBootstrapSession internal constructor(
                 )
             }
         }
+    }
+
+    private fun parsePacketAssignment(payload: ByteArray): YumePacketAssignment {
+        val json = try {
+            JSONObject(String(payload, StandardCharsets.UTF_8))
+        } catch (throwable: Exception) {
+            throw YumeBootstrapException("The Yume server returned an invalid packet assignment", throwable)
+        }
+        val proto = json.optString("proto").trim()
+        if (proto != YumePacketBulk.OPEN_PROTO) {
+            throw YumeBootstrapException("The Yume server returned an unexpected packet stream proto: $proto")
+        }
+        val ipv4 = json.optString("ipv4").trim()
+        if (ipv4.isEmpty()) {
+            throw YumeBootstrapException("The Yume server did not assign an IPv4 tunnel address")
+        }
+        val mtu = json.optInt("mtu", 0)
+        if (mtu !in 576..YumePacketBulk.MAX_PACKET_BYTES) {
+            throw YumeBootstrapException("The Yume server assigned an invalid packet MTU: $mtu")
+        }
+        val dnsJson = json.optJSONArray("dns")
+        val dnsServers = buildList {
+            if (dnsJson != null) {
+                for (index in 0 until dnsJson.length()) {
+                    dnsJson.optString(index).trim().takeIf { it.isNotEmpty() }?.let(::add)
+                }
+            }
+        }
+        return YumePacketAssignment(
+            ipv4 = ipv4,
+            mtu = mtu,
+            dnsServers = dnsServers,
+        )
     }
 
     suspend fun probeExitIp(
@@ -1028,7 +1181,7 @@ class YumeBootstrapSession internal constructor(
                             streams[frame.streamId]
                         }
                         if (ok) {
-                            waiter?.complete(Unit)
+                            waiter?.complete(OpenAck(frame.payload))
                         } else {
                             synchronized(stateLock) {
                                 streams.remove(frame.streamId)
@@ -1462,7 +1615,7 @@ class YumeBootstrapSession internal constructor(
     private fun shutdown(cause: Throwable) {
         val streamsToFail: List<YumeInboundStream>
         val controlToFail: List<CompletableDeferred<JSONObject>>
-        val opensToFail: List<CompletableDeferred<Unit>>
+        val opensToFail: List<CompletableDeferred<OpenAck>>
         val pongsToFail: List<CompletableDeferred<Unit>>
         synchronized(stateLock) {
             if (closeState != CloseState.Open) {
@@ -1630,6 +1783,8 @@ class YumeBootstrapSession internal constructor(
             const val HEADER_SIZE = 8
         }
     }
+
+    private data class OpenAck(val payload: ByteArray)
 
     private fun allocateStreamIdLocked(): Int {
         repeat(255) {
@@ -2137,7 +2292,17 @@ object YumeBootstrapClient {
             hopEnabled = json.optBoolean("hop_enabled", false),
             hopIntervalMs = json.optInt("hop_interval_ms", 0),
             serverTimeMs = json.optLong("server_time_ms", 0L),
+            capabilities = parseCapabilities(json),
         )
+    }
+
+    private fun parseCapabilities(json: JSONObject): Set<String> {
+        val array = json.optJSONArray("capabilities") ?: return emptySet()
+        return buildSet {
+            for (index in 0 until array.length()) {
+                array.optString(index).trim().takeIf { it.isNotEmpty() }?.let(::add)
+            }
+        }
     }
 
     private fun verifyAnonymProof(

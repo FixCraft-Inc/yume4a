@@ -39,6 +39,8 @@ import com.fixcraft.yume.transport.YumeBootstrapException
 import com.fixcraft.yume.transport.YumeBootstrapSession
 import com.fixcraft.yume.transport.YumeBootstrapSessionPool
 import com.fixcraft.yume.transport.YumeNativeTransport
+import com.fixcraft.yume.transport.YumePacketAssignment
+import com.fixcraft.yume.transport.YumePacketStreamOpen
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -281,11 +283,12 @@ class YumeVpnService : VpnService() {
             return
         }
         val appSettings = appSettingsStore.settings.value
-        val techniqueEngine = resolveTechniqueEngine(appSettings)
-        val runtimeConfig = techniqueEngine.runtimeConfig(appSettings.performanceProfile)
-        val tun2SocksConfig = effectiveTun2SocksConfig(runtimeConfig)
-        val nativeDirectConfig = runtimeConfig as? NativeDirectRuntimeConfig
-        val tunnelCount = vpnTunnelCount(appSettings)
+        var techniqueEngine = resolveTechniqueEngine(appSettings)
+        var runtimeConfig = techniqueEngine.runtimeConfig(appSettings.performanceProfile)
+        var tun2SocksConfig = effectiveTun2SocksConfig(runtimeConfig)
+        var nativeDirectConfig = runtimeConfig as? NativeDirectRuntimeConfig
+        var tunnelCount = vpnTunnelCount(appSettings)
+        var packetNativeOpen: YumePacketStreamOpen? = null
         ensureSessionActive(generation)
         activeProfile = profile
         val caSummary = secureMaterialStore.getSummary(profile.anonymCaMaterialId)
@@ -378,6 +381,52 @@ class YumeVpnService : VpnService() {
             val exitIpResult = initialRelayProbe.second
             val relayExitIp = requireVerifiedRelayCanary(session, bootstrap, exitIpResult)
             ensureSessionActive(generation)
+            if (runtimeConfig is NativeDirectRuntimeConfig) {
+                val nativeConfig = runtimeConfig as NativeDirectRuntimeConfig
+                if (!bootstrap.supportsPacketBulk) {
+                    YumeVpnRuntime.appendLog(
+                        VpnLogLevel.Warn,
+                        "Server did not advertise packet_bulk_v1; using tun2socks stable for Android routing.",
+                    )
+                    val fallbackConfig = Tun2SocksTechniqueEngine.runtimeConfig(appSettings.performanceProfile) as Tun2SocksRuntimeConfig
+                    techniqueEngine = Tun2SocksTechniqueEngine
+                    runtimeConfig = fallbackConfig
+                    tun2SocksConfig = fallbackConfig
+                    nativeDirectConfig = null
+                    tunnelCount = vpnTunnelCount(appSettings)
+                } else {
+                    packetNativeOpen = runCatching {
+                        session.openPacketBulkStream()
+                    }.fold(
+                        onSuccess = { opened ->
+                            YumeVpnRuntime.appendLog(
+                                VpnLogLevel.Info,
+                                "Packet-native stream opened: IPv4=${opened.assignment.ipv4}, MTU=${opened.assignment.mtu}, DNS=${opened.assignment.dnsServers.joinToString(", ").ifBlank { "server default" }}.",
+                            )
+                            runtimeConfig = nativeConfig.copy(engineStatus = NativeDirectEngineStatus.PacketNative)
+                            nativeDirectConfig = runtimeConfig as NativeDirectRuntimeConfig
+                            tun2SocksConfig = effectiveTun2SocksConfig(runtimeConfig)
+                            tunnelCount = 1
+                            opened
+                        },
+                        onFailure = { throwable ->
+                            YumeVpnRuntime.appendLog(
+                                VpnLogLevel.Warn,
+                                "Packet-native OPEN failed (${throwable.message ?: throwable.javaClass.simpleName}); using tun2socks stable for Android routing.",
+                            )
+                            val fallbackConfig = Tun2SocksTechniqueEngine.runtimeConfig(appSettings.performanceProfile) as Tun2SocksRuntimeConfig
+                            techniqueEngine = Tun2SocksTechniqueEngine
+                            runtimeConfig = fallbackConfig
+                            tun2SocksConfig = fallbackConfig
+                            nativeDirectConfig = null
+                            tunnelCount = vpnTunnelCount(appSettings)
+                            null
+                        },
+                    )
+                }
+                activeTun2SocksConfig = tun2SocksConfig
+                activeNativeDirectConfig = nativeDirectConfig
+            }
             awaitPreRoutingStability(session, generation)
             rebuildVpnTunnelPool(
                 primary = session,
@@ -390,12 +439,16 @@ class YumeVpnService : VpnService() {
             val systemProbeTargets = prepareSystemProbeTargets()
 
             if (tunInterface == null) {
-                tunInterface = buildVpnInterface(profile)
+                tunInterface = buildVpnInterface(profile, packetNativeOpen?.assignment)
                     ?: throw IOException("Android denied the VPN interface")
                 updateUnderlyingNetworks()
+                val interfaceMtu = packetNativeOpen?.assignment?.mtu ?: profile.mtu
+                val interfaceDns = packetNativeOpen?.assignment?.dnsServers?.takeIf { it.isNotEmpty() }
+                    ?: effectiveVpnDnsServers(profile)
+                val interfaceAddress = packetNativeOpen?.assignment?.ipv4 ?: VPN_IPV4_ADDRESS
                 YumeVpnRuntime.appendLog(
                     VpnLogLevel.Info,
-                    "Android VPN interface up (IPv4-only). Local DNS=$MAPDNS_ADDRESS, upstream=${effectiveVpnDnsServers(profile).joinToString(", ")}, MTU=${profile.mtu}. IPv6 is not routed by Yume yet.",
+                    "Android VPN interface up (IPv4-only). Address=$interfaceAddress, DNS=${interfaceDns.joinToString(", ")}, MTU=$interfaceMtu. IPv6 is not routed by Yume yet.",
                 )
             }
 
@@ -404,6 +457,7 @@ class YumeVpnService : VpnService() {
                 techniqueEngine = techniqueEngine,
                 runtimeConfig = runtimeConfig,
                 profile = profile,
+                packetNativeOpen = packetNativeOpen,
             )
             val dataPlane = techniqueBootstrap.dataPlane
             val proxyAddress = techniqueBootstrap.proxyAddress
@@ -922,8 +976,12 @@ class YumeVpnService : VpnService() {
         return exitIp
     }
 
-    private fun buildVpnInterface(profile: ServerProfile): ParcelFileDescriptor? {
-        val dnsServers = vpnInterfaceDnsServers()
+    private fun buildVpnInterface(
+        profile: ServerProfile,
+        packetAssignment: YumePacketAssignment? = null,
+    ): ParcelFileDescriptor? {
+        val dnsServers = packetAssignment?.dnsServers?.filter(::isIpv4AddressLiteral)?.takeIf { it.isNotEmpty() }
+            ?: vpnInterfaceDnsServers()
         val ignoredDnsServers = profile.dnsServers.filterNot(::isIpv4AddressLiteral)
         if (ignoredDnsServers.isNotEmpty()) {
             YumeVpnRuntime.appendLog(
@@ -931,12 +989,14 @@ class YumeVpnService : VpnService() {
                 "Ignoring IPv6 DNS servers on Android until Yume ships native IPv6 relay support: ${ignoredDnsServers.joinToString(", ")}.",
             )
         }
+        val tunnelAddress = packetAssignment?.ipv4 ?: VPN_IPV4_ADDRESS
+        val mtu = packetAssignment?.mtu ?: profile.mtu
         val builder = Builder()
             .setSession("Yume ${profile.name}")
             .setConfigureIntent(buildConfigureIntent())
             .setBlocking(false)
-            .setMtu(profile.mtu)
-            .addAddress(VPN_IPV4_ADDRESS, VPN_IPV4_PREFIX_LENGTH)
+            .setMtu(mtu)
+            .addAddress(tunnelAddress, VPN_IPV4_PREFIX_LENGTH)
             .addRoute("0.0.0.0", 0)
         if (CAPTURE_IPV6_IN_ANDROID_VPN) {
             builder
@@ -997,16 +1057,6 @@ class YumeVpnService : VpnService() {
         )
     }
 
-    private suspend fun ensureNativeDirectTunnelRunning(profile: ServerProfile) {
-        ensureTunBridgeRunning(
-            profile = profile,
-            proxyHost = LOOPBACK_HOST,
-            proxyPort = NATIVE_DIRECT_PLACEHOLDER_PORT,
-            routeLabel = NATIVE_DIRECT_ROUTE_LABEL,
-            activationLog = "Systemwide TUN routing is active through the native-direct Yume tunnel backend with direct Yume TCP streams, DNS mapping, and no local SOCKS5 gateway.",
-        )
-    }
-
     private suspend fun ensureTunBridgeRunning(
         profile: ServerProfile,
         proxyHost: String,
@@ -1064,27 +1114,24 @@ class YumeVpnService : VpnService() {
         techniqueEngine: TunnelTechniqueEngine,
         runtimeConfig: TunnelRuntimeConfig,
         profile: ServerProfile,
+        packetNativeOpen: YumePacketStreamOpen? = null,
     ): TechniqueBootstrapResult {
         return when (runtimeConfig) {
             is NativeDirectRuntimeConfig -> {
-                configureNativeDirectTransport(enabled = true, runtimeConfig = runtimeConfig)
+                val packetOpen = packetNativeOpen
+                    ?: error("packet-native stream is required for native-direct routing")
+                configureNativeDirectTransport(enabled = false)
                 YumeVpnRuntime.appendLog(
                     VpnLogLevel.Info,
-                    "Native direct beta: TCP routes straight through Yume, IPv4-only, non-DNS UDP is fast-failed with ICMP so apps fall back to TCP, no local SOCKS5 gateway.",
+                    "Packet-native routing: Android TUN IPv4 packets are batched inside the existing encrypted Yume DATA stream; no local SOCKS5 or tun2socks path is used.",
                 )
 
-                val proxyAddress = NATIVE_DIRECT_ROUTE_LABEL
-                val packetEngine = NativeDirectTunnelPacketEngine(
-                    queueCapacity = runtimeConfig.nativeQueueCapacity,
-                    tcpFlowWindowBytes = runtimeConfig.tcpFlowWindowBytes,
-                    udpFlowBufferBytes = runtimeConfig.udpFlowBufferBytes,
-                    startBridge = { ensureNativeDirectTunnelRunning(profile) },
-                    stopBridge = {
-                        runCatching { tun2SocksBridge.stopTunnel() }
-                        tun2SocksActive = false
-                    },
-                    setBridgeVerificationMode = ::setProxyWarmupMode,
-                    statsReader = ::readActiveTechniqueStats,
+                val proxyAddress = PACKET_NATIVE_ROUTE_LABEL
+                val tun = tunInterface ?: throw IOException("Android VPN interface is unavailable")
+                val packetEngine = PacketNativeTunnelPacketEngine(
+                    tun = tun,
+                    packetOpen = packetOpen,
+                    log = { level, message -> YumeVpnRuntime.appendLog(level, message) },
                 )
 
                 TechniqueBootstrapResult(
@@ -1274,6 +1321,9 @@ class YumeVpnService : VpnService() {
         val routeLabel = currentTrafficPathLabel()
         val systemProbeTargets = prepareSystemProbeTargets()
         setTechniqueVerificationMode(true)
+        if (activeTechniqueDataPlane?.technique == ConnectionTechnique.NativeDirectBeta) {
+            restartPacketNativeDataPlane(session)
+        }
         val initialVerification = runCatching {
             verifySystemTrafficFlow(
                 relayExitIpResult = verifiedRelayExitIpResult,
@@ -1295,6 +1345,28 @@ class YumeVpnService : VpnService() {
         }
         setTechniqueVerificationMode(false)
         markTrafficFlowing(profile, bootstrap, verifiedRelayExitIpResult, initialVerification, routeLabel)
+    }
+
+    private suspend fun restartPacketNativeDataPlane(session: YumeBootstrapSession) {
+        val runtimeConfig = activeNativeDirectConfig
+            ?: throw IOException("packet-native runtime config is unavailable")
+        val tun = tunInterface ?: throw IOException("Android VPN interface is unavailable")
+        val packetOpen = session.openPacketBulkStream()
+        val oldDataPlane = activeTechniqueDataPlane
+        runCatching { oldDataPlane?.stop() }
+        val packetEngine = PacketNativeTunnelPacketEngine(
+            tun = tun,
+            packetOpen = packetOpen,
+            log = { level, message -> YumeVpnRuntime.appendLog(level, message) },
+        )
+        val dataPlane = NativeDirectTechniqueDataPlane(
+            runtimeConfig.copy(engineStatus = NativeDirectEngineStatus.PacketNative),
+            packetEngine,
+        )
+        activeTechniqueDataPlane = dataPlane
+        localProxyAddress = PACKET_NATIVE_ROUTE_LABEL
+        dataPlane.setVerificationMode(true)
+        dataPlane.start()
     }
 
     private fun markTrafficFlowing(
@@ -1872,7 +1944,7 @@ class YumeVpnService : VpnService() {
 
     private suspend fun currentTrafficPathLabel(): String {
         return if (activeTechniqueDataPlane?.technique == ConnectionTechnique.NativeDirectBeta) {
-            NATIVE_DIRECT_ROUTE_LABEL
+            PACKET_NATIVE_ROUTE_LABEL
         } else {
             ensureSocksProxyStarted()
         }
@@ -1881,7 +1953,7 @@ class YumeVpnService : VpnService() {
     private fun buildRoutingSummary(): String {
         return when (activeTechniqueDataPlane?.technique) {
             ConnectionTechnique.NativeDirectBeta ->
-                "Systemwide Android VpnService IPv4 routing through native-direct Yume TCP streams. UDP falls back to TCP; IPv6 is not routed by Yume yet."
+                "Systemwide Android VpnService IPv4 routing through packet-native Yume batches on one TLS carrier. IPv6 is not routed by Yume yet."
 
             else ->
                 "${BuildConfig.YUME_ROUTING_MODE} (IPv4 relay; IPv6 not routed by Yume yet)"
@@ -2211,6 +2283,9 @@ class YumeVpnService : VpnService() {
     }
 
     private fun readActiveTechniqueStats(): TechniqueStats? {
+        if (activeTechniqueDataPlane?.technique == ConnectionTechnique.NativeDirectBeta) {
+            activeTechniqueDataPlane?.stats()?.let { return it }
+        }
         if (!tun2SocksActive) {
             return null
         }
@@ -2424,8 +2499,7 @@ class YumeVpnService : VpnService() {
         private const val SYSTEM_PROBE_READ_HEADROOM_MS = 0
         private const val MAX_SYSTEM_PROBE_CONNECT_ATTEMPTS = 2
         private const val WARMUP_BYPASS_OBSERVATION_MAX_AGE_MS = 30_000L
-        private const val NATIVE_DIRECT_PLACEHOLDER_PORT = 9
-        private const val NATIVE_DIRECT_ROUTE_LABEL = "native-direct"
+        private const val PACKET_NATIVE_ROUTE_LABEL = "packet-native"
         private val RELAY_PROBE_TARGETS = listOf(
             Triple("ifconfig.me", "/ip", 80),
             Triple("api.ipify.org", "/", 80),
