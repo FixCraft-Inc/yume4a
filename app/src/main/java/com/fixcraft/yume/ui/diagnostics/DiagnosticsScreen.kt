@@ -37,6 +37,7 @@ import com.fixcraft.yume.transport.YumePerfDebug
 fun DiagnosticsScreen(
     uiState: MainUiState,
     diagnosticsReport: String,
+    onSetSelfDpiEnabled: (Boolean) -> Unit,
 ) {
     val strings = appStrings()
     val context = LocalContext.current
@@ -116,14 +117,6 @@ fun DiagnosticsScreen(
         }
 
         item {
-            // Throughput-diagnostic toggle. When ON, the active
-            // YumeBootstrapSession logs a one-line per-second
-            // throughput report covering encrypt CPU, SSL CPU,
-            // frame rate, channel backpressure etc. — visible in
-            // logcat (tag YumePerf) AND in the VPN log feed below.
-            // Use this when troubleshooting slow throughput to
-            // identify whether the bottleneck is encryption, SSL,
-            // or backpressure, before changing any code.
             var perfOn by remember { mutableStateOf(YumePerfDebug.enabled) }
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)),
@@ -154,6 +147,41 @@ fun DiagnosticsScreen(
                                 perfOn = it
                                 YumePerfDebug.enabled = it
                             },
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = strings.selfDpiTitle,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = strings.selfDpiDescription,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            if (uiState.appSettings.selfDpiEnabled) strings.toggleEnabled else strings.toggleDisabled,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Switch(
+                            checked = uiState.appSettings.selfDpiEnabled,
+                            onCheckedChange = onSetSelfDpiEnabled,
                         )
                     }
                 }

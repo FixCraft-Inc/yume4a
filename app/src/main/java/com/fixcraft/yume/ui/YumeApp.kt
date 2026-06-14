@@ -134,6 +134,7 @@ fun YumeApp(
     onSelectLanguage: (AppLanguage) -> Unit,
     onSelectLogLanguage: (LogLanguage) -> Unit,
     onSetAdvancedMode: (Boolean) -> Unit,
+    onSetSelfDpiEnabled: (Boolean) -> Unit,
     onDeleteDownloadedLanguage: (AppLanguage.AutoTranslated) -> Unit,
     languagePreparationState: LanguagePreparationUiState?,
     busyState: BusyUiState?,
@@ -296,6 +297,7 @@ fun YumeApp(
                     DiagnosticsScreen(
                         uiState = uiState,
                         diagnosticsReport = diagnosticsReport,
+                        onSetSelfDpiEnabled = onSetSelfDpiEnabled,
                     )
                 }
             }

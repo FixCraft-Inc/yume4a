@@ -281,6 +281,7 @@ data class AppSettings(
     val language: AppLanguage = AppLanguage.SystemDefault,
     val logLanguage: LogLanguage = LogLanguage.FollowApp,
     val advancedMode: Boolean = false,
+    val selfDpiEnabled: Boolean = false,
     val socks5ProxySettings: Socks5ProxySettings = Socks5ProxySettings(),
 ) {
     fun effectiveLogLanguage(): LogLanguage =
@@ -324,6 +325,10 @@ class AppSettingsStore private constructor(context: Context) {
         persist(_settings.value.copy(advancedMode = enabled))
     }
 
+    fun updateSelfDpiEnabled(enabled: Boolean) {
+        persist(_settings.value.copy(selfDpiEnabled = enabled))
+    }
+
     fun updateSocks5ProxySettings(settings: Socks5ProxySettings) {
         val sanitized = settings.copy(
             port = settings.normalizedPort,
@@ -350,6 +355,7 @@ class AppSettingsStore private constructor(context: Context) {
         val storedLanguage = AppLanguage.fromWireValue(vaultStore.getString(KEY_LANGUAGE))
         val storedLogLanguage = LogLanguage.fromWireValue(vaultStore.getString(KEY_LOG_LANGUAGE))
         val storedAdvancedMode = vaultStore.getString(KEY_ADVANCED_MODE)?.toBooleanStrictOrNull() ?: false
+        val storedSelfDpi = vaultStore.getString(KEY_SELF_DPI_ENABLED)?.toBooleanStrictOrNull() ?: false
         val storedSocks5Port = vaultStore.getString(KEY_SOCKS5_PORT)?.toIntOrNull()
             ?: Socks5ProxySettings.DEFAULT_SOCKS5_PORT
         val storedSocks5BindMode = Socks5BindMode.fromWireValue(vaultStore.getString(KEY_SOCKS5_BIND_MODE))
@@ -365,6 +371,7 @@ class AppSettingsStore private constructor(context: Context) {
             language = storedLanguage,
             logLanguage = storedLogLanguage,
             advancedMode = storedAdvancedMode,
+            selfDpiEnabled = storedSelfDpi,
             socks5ProxySettings = Socks5ProxySettings(
                 port = storedSocks5Port,
                 bindMode = storedSocks5BindMode,
@@ -382,6 +389,7 @@ class AppSettingsStore private constructor(context: Context) {
         vaultStore.putString(KEY_LANGUAGE, settings.language.wireValue)
         vaultStore.putString(KEY_LOG_LANGUAGE, settings.logLanguage.wireValue)
         vaultStore.putString(KEY_ADVANCED_MODE, settings.advancedMode.toString())
+        vaultStore.putString(KEY_SELF_DPI_ENABLED, settings.selfDpiEnabled.toString())
         vaultStore.putString(KEY_SOCKS5_PORT, settings.socks5ProxySettings.normalizedPort.toString())
         vaultStore.putString(KEY_SOCKS5_BIND_MODE, settings.socks5ProxySettings.bindMode.wireValue)
         vaultStore.putString(KEY_SOCKS5_BIND_ADDRESS, settings.socks5ProxySettings.normalizedCustomBindAddress)
@@ -399,7 +407,8 @@ class AppSettingsStore private constructor(context: Context) {
             !legacyPrefs.contains(KEY_AMOLED_DARK_THEME) &&
             !legacyPrefs.contains(KEY_LANGUAGE) &&
             !legacyPrefs.contains(KEY_LOG_LANGUAGE) &&
-            !legacyPrefs.contains(KEY_ADVANCED_MODE)
+            !legacyPrefs.contains(KEY_ADVANCED_MODE) &&
+            !legacyPrefs.contains(KEY_SELF_DPI_ENABLED)
         ) {
             return
         }
@@ -413,6 +422,9 @@ class AppSettingsStore private constructor(context: Context) {
         legacyPrefs.getString(KEY_LOG_LANGUAGE, null)?.let { vaultStore.putString(KEY_LOG_LANGUAGE, it) }
         if (legacyPrefs.contains(KEY_ADVANCED_MODE)) {
             vaultStore.putString(KEY_ADVANCED_MODE, legacyPrefs.getBoolean(KEY_ADVANCED_MODE, false).toString())
+        }
+        if (legacyPrefs.contains(KEY_SELF_DPI_ENABLED)) {
+            vaultStore.putString(KEY_SELF_DPI_ENABLED, legacyPrefs.getBoolean(KEY_SELF_DPI_ENABLED, false).toString())
         }
         legacyPrefs.edit { clear() }
     }
@@ -434,6 +446,7 @@ class AppSettingsStore private constructor(context: Context) {
         private const val KEY_LANGUAGE = "language"
         private const val KEY_LOG_LANGUAGE = "log_language"
         private const val KEY_ADVANCED_MODE = "advanced_mode"
+        private const val KEY_SELF_DPI_ENABLED = "self_dpi_enabled"
         private const val KEY_SOCKS5_PORT = "socks5_port"
         private const val KEY_SOCKS5_BIND_MODE = "socks5_bind_mode"
         private const val KEY_SOCKS5_BIND_ADDRESS = "socks5_bind_address"

@@ -444,6 +444,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _noticeMessage.value = if (enabled) strings.advancedModeOn else strings.advancedModeOff
     }
 
+    fun updateSelfDpiEnabled(enabled: Boolean) {
+        appSettingsStore.updateSelfDpiEnabled(enabled)
+    }
+
     suspend fun enableAppDataPassword(password: String, confirmPassword: String): String? {
         val strings = strings()
         if (password.isBlank()) {
@@ -733,6 +737,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ?.ifBlank { strings.unknown }
             ?: strings.unknown
         val buildFingerprint = Build.FINGERPRINT?.takeIf { it.isNotBlank() } ?: strings.unknown
+        fun formatBps(value: Double): String {
+            val mbps = value * 8.0 / 1_000_000.0
+            return "%.2f Mbps".format(java.util.Locale.US, mbps)
+        }
         return buildString {
             appendLine(strings.diagnosticsReportHeader)
             appendLine(strings.appVersion("${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"))
@@ -761,6 +769,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     "${strings.logLanguageLabel}: ${
                         strings.logLanguageSummary(current.appSettings.effectiveLogLanguage())
                     }"
+                )
+            }
+            appendLine("${strings.selfDpiTitle}: ${if (current.appSettings.selfDpiEnabled) strings.on else strings.off}")
+            YumeVpnRuntime.traffic.value.samples.lastOrNull()?.let { latest ->
+                appendLine(
+                    "${strings.rawThroughputLabel}: rx=${formatBps(latest.rawRxRateBps)}, tx=${formatBps(latest.rawTxRateBps)}"
+                )
+                appendLine(
+                    "${strings.smoothedThroughputLabel}: rx=${formatBps(latest.rxRateBps)}, tx=${formatBps(latest.txRateBps)}"
                 )
             }
             appendLine(

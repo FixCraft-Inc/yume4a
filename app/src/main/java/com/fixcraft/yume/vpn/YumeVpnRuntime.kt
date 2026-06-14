@@ -11,6 +11,8 @@ data class TrafficSample(
     val txBytes: Long,
     val rxRateBps: Double,
     val txRateBps: Double,
+    val rawRxRateBps: Double,
+    val rawTxRateBps: Double,
 )
 
 data class TrafficHistory(
@@ -46,7 +48,7 @@ object YumeVpnRuntime {
         val rxRate = smoothTrafficRate(rawRxRate, last?.rxRateBps)
         val txRate = smoothTrafficRate(rawTxRate, last?.txRateBps)
 
-        val sample = TrafficSample(now, rxBytes, txBytes, rxRate, txRate)
+        val sample = TrafficSample(now, rxBytes, txBytes, rxRate, txRate, rawRxRate, rawTxRate)
         val next = (current.samples + sample).takeLast(MAX_TRAFFIC_SAMPLES)
         _traffic.value = TrafficHistory(next, rxBytes, txBytes)
     }
@@ -86,19 +88,58 @@ object YumeVpnRuntime {
     }
 
     fun appendLog(level: VpnLogLevel, message: String) {
-        val entry = VpnLogEntry(level = level, message = message)
+        val now = System.currentTimeMillis()
+        var output = message
+        if (level != VpnLogLevel.Error) {
+            val key = "${level.name}|$message"
+            val shouldDrop = synchronized(logLimiterLock) {
+                val existing = recentLogMessages[key]
+                if (existing != null && now - existing.lastSeenMs < DUPLICATE_LOG_WINDOW_MS) {
+                    existing.lastSeenMs = now
+                    existing.suppressed += 1
+                    true
+                } else {
+                    if (existing != null && existing.suppressed > 0) {
+                        output = "$message (suppressed ${existing.suppressed} repeats)"
+                    }
+                    recentLogMessages[key] = LogLimiterEntry(now, 0)
+                    if (recentLogMessages.size > MAX_LOG_LIMITER_KEYS) {
+                        val oldest = recentLogMessages.minByOrNull { it.value.lastSeenMs }?.key
+                        if (oldest != null) {
+                            recentLogMessages.remove(oldest)
+                        }
+                    }
+                    false
+                }
+            }
+            if (shouldDrop) {
+                return
+            }
+        }
+
+        val entry = VpnLogEntry(level = level, message = output)
         when (level) {
-            VpnLogLevel.Info -> Log.i(TAG, message)
-            VpnLogLevel.Warn -> Log.w(TAG, message)
-            VpnLogLevel.Error -> Log.e(TAG, message)
+            VpnLogLevel.Info -> Log.i(TAG, output)
+            VpnLogLevel.Warn -> Log.w(TAG, output)
+            VpnLogLevel.Error -> Log.e(TAG, output)
         }
         _state.value = _state.value.copy(
             eventLog = (_state.value.eventLog + entry).takeLast(MAX_LOG_ENTRIES)
         )
     }
 
+    private data class LogLimiterEntry(
+        var lastSeenMs: Long,
+        var suppressed: Int,
+    )
+
+    private val logLimiterLock = Any()
+    private val recentLogMessages = LinkedHashMap<String, LogLimiterEntry>()
+
     private const val TAG = "YumeVpn"
     private const val MAX_LOG_ENTRIES = 120
+    private const val MAX_LOG_LIMITER_KEYS = 96
+    private const val DUPLICATE_LOG_WINDOW_MS = 5_000L
     // 900 samples @ 1 s = 15 minutes window — matches the longest range
     // the home-screen chart can render. ~22 KB at full fill, fine in
     // memory for a foreground VPN service.

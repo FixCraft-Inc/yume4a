@@ -231,6 +231,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onSelectLogLanguage = viewModel::updateLogLanguage,
                     onSetAdvancedMode = viewModel::updateAdvancedMode,
+                    onSetSelfDpiEnabled = viewModel::updateSelfDpiEnabled,
                     onDeleteDownloadedLanguage = viewModel::deleteDownloadedLanguage,
                     languagePreparationState = languagePreparationState,
                     busyState = uiState.busyState ?: transientBusyState,

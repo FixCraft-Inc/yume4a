@@ -39,6 +39,7 @@ import com.fixcraft.yume.transport.YumeBootstrapException
 import com.fixcraft.yume.transport.YumeBootstrapSession
 import com.fixcraft.yume.transport.YumeBootstrapSessionPool
 import com.fixcraft.yume.transport.YumeNativeTransport
+import com.fixcraft.yume.transport.YumePacketBulk
 import com.fixcraft.yume.transport.YumePacketAssignment
 import com.fixcraft.yume.transport.YumePacketStreamOpen
 import kotlinx.coroutines.CancellationException
@@ -427,6 +428,12 @@ class YumeVpnService : VpnService() {
                 activeTun2SocksConfig = tun2SocksConfig
                 activeNativeDirectConfig = nativeDirectConfig
             }
+            emitSelfDpiWarnings(
+                settings = appSettings,
+                profile = profile,
+                runtimeConfig = runtimeConfig,
+                packetNativeOpen = packetNativeOpen,
+            )
             awaitPreRoutingStability(session, generation)
             rebuildVpnTunnelPool(
                 primary = session,
@@ -1042,6 +1049,49 @@ class YumeVpnService : VpnService() {
             VpnLogLevel.Info,
             "Authenticated Yume control path passed the pre-routing stability check.",
         )
+    }
+
+    private fun emitSelfDpiWarnings(
+        settings: AppSettings,
+        profile: ServerProfile,
+        runtimeConfig: TunnelRuntimeConfig,
+        packetNativeOpen: YumePacketStreamOpen?,
+    ) {
+        if (!settings.selfDpiEnabled) {
+            return
+        }
+        val technique = runtimeConfig.technique.canonicalLabel()
+        val nativeStatus = (runtimeConfig as? NativeDirectRuntimeConfig)?.engineStatus
+        val carrier = if (profile.obfuscation) "http2" else "raw-auth"
+        val profileName = profile.tlsStealthProfile.ifBlank { ServerProfile.DEFAULT_TLS_STEALTH_PROFILE }
+        YumeVpnRuntime.appendLog(
+            VpnLogLevel.Info,
+            "Self-DPI carrier metadata: tlsProfile=$profileName carrier=$carrier port=${profile.port} technique=$technique packetNative=${packetNativeOpen != null} nativeStatus=${nativeStatus?.name ?: "n/a"}.",
+        )
+        if (!profile.obfuscation) {
+            YumeVpnRuntime.appendLog(
+                VpnLogLevel.Warn,
+                "Self-DPI: HTTPS masking is disabled for this server profile; AUTH starts immediately after TLS.",
+            )
+        }
+        if (profile.port != 443) {
+            YumeVpnRuntime.appendLog(
+                VpnLogLevel.Warn,
+                "Self-DPI: non-443 server port weakens browser/CDN cover traffic assumptions.",
+            )
+        }
+        if (settings.connectionTechnique == ConnectionTechnique.NativeDirectBeta && packetNativeOpen == null) {
+            YumeVpnRuntime.appendLog(
+                VpnLogLevel.Warn,
+                "Self-DPI: native-direct requested but this session is using tun2socks fallback.",
+            )
+        }
+        if (packetNativeOpen != null) {
+            YumeVpnRuntime.appendLog(
+                VpnLogLevel.Info,
+                "Self-DPI packet-native stats: batchLimit=${YumePacketBulk.MAX_PACKETS_PER_BATCH} packets/${YumePacketBulk.DEFAULT_MAX_BATCH_BYTES / 1024} KiB flush=${YumePacketBulk.DEFAULT_FLUSH_DELAY_MICROS}us queue=256 batches.",
+            )
+        }
     }
 
     private suspend fun ensureTun2SocksRunning(profile: ServerProfile, proxyAddress: String) {

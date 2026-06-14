@@ -13,6 +13,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -58,8 +59,10 @@ internal class PacketNativeTunnelPacketEngine(
     private val rxBytes = AtomicLong(0)
     private var readJob: Job? = null
     private var writeJob: Job? = null
+    private var sendJob: Job? = null
     private var tunRead: ParcelFileDescriptor? = null
     private var tunWrite: ParcelFileDescriptor? = null
+    private val outboundBatches = Channel<YumePacketBulk.Batch>(OUTBOUND_BATCH_QUEUE_CAPACITY)
 
     override suspend fun start() {
         if (!running.compareAndSet(false, true)) {
@@ -75,6 +78,9 @@ internal class PacketNativeTunnelPacketEngine(
         writeJob = scope.launch {
             runYumeToTun(output)
         }
+        sendJob = scope.launch {
+            runYumeBatchWriter()
+        }
         log(
             VpnLogLevel.Info,
             "Packet-native Android data plane is active: one Yume TLS carrier, IPv4 ${packetOpen.assignment.ipv4}, MTU ${packetOpen.assignment.mtu}.",
@@ -86,8 +92,10 @@ internal class PacketNativeTunnelPacketEngine(
             return
         }
         runCatching { packetOpen.stream.closeFromRemote("packet-native stopped") }
+        outboundBatches.close()
         readJob?.cancel()
         writeJob?.cancel()
+        sendJob?.cancel()
         scope.cancel()
         runCatching { tunRead?.close() }
         runCatching { tunWrite?.close() }
@@ -115,7 +123,7 @@ internal class PacketNativeTunnelPacketEngine(
             status = NativeDirectEngineStatus.PacketNative,
             packetEngineActive = running.get(),
             ipv6FailClosed = true,
-            queueCapacity = YumePacketBulk.MAX_PACKETS_PER_BATCH,
+            queueCapacity = OUTBOUND_BATCH_QUEUE_CAPACITY,
         )
     }
 
@@ -222,19 +230,34 @@ internal class PacketNativeTunnelPacketEngine(
         }
     }
 
+    private suspend fun runYumeBatchWriter() {
+        try {
+            for (batch in outboundBatches) {
+                currentCoroutineContext().ensureActive()
+                packetOpen.stream.writePacketBatch(batch)
+                txPackets.addAndGet(batch.packets.size.toLong())
+                txBytes.addAndGet(batch.packets.sumOf { it.size }.toLong())
+            }
+        } catch (_: CancellationException) {
+        } catch (throwable: Throwable) {
+            if (running.get()) {
+                log(VpnLogLevel.Error, "Packet-native upstream writer stopped: ${throwable.message ?: throwable.javaClass.simpleName}.")
+                stop()
+            }
+        }
+    }
+
     private suspend fun sendPacketBatch(sequence: Long, packets: MutableList<ByteArray>): Long {
         if (packets.isEmpty()) {
             return sequence
         }
         val batchPackets = packets.toList()
-        packetOpen.stream.writePacketBatch(
+        outboundBatches.send(
             YumePacketBulk.Batch(
                 sequence = sequence,
                 packets = batchPackets,
             )
         )
-        txPackets.addAndGet(batchPackets.size.toLong())
-        txBytes.addAndGet(batchPackets.sumOf { it.size }.toLong())
         return if (sequence == Long.MAX_VALUE) 0L else sequence + 1L
     }
 
@@ -290,6 +313,10 @@ internal class PacketNativeTunnelPacketEngine(
             message.contains("try again") ||
             message.contains("would block") ||
             message.contains("temporarily unavailable")
+    }
+
+    private companion object {
+        const val OUTBOUND_BATCH_QUEUE_CAPACITY = 256
     }
 }
 

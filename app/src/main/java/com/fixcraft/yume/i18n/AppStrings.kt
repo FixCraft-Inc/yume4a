@@ -283,6 +283,14 @@ class AppStrings private constructor(
         "libyumetransport.so is not shipped for this device's ABI. The " +
             "Java SSLSocket path is used regardless of this switch."
     )
+    val selfDpiTitle = t("Self-DPI warnings")
+    val selfDpiDescription = t(
+        "Warns when local carrier metadata stops matching the selected disguise profile. " +
+            "Inspects TLS/profile, HTTPS masking, padding, jitter, packet-native batch stats, " +
+            "and raw versus smoothed throughput; it does not inspect app payloads."
+    )
+    val rawThroughputLabel = t("Raw throughput")
+    val smoothedThroughputLabel = t("Smoothed throughput")
     val yumeStatusTitle = t("Yume status")
     val briefLabel = t("Brief")
     val clientLabel = t("Client")
