@@ -9,13 +9,58 @@ import kotlin.math.max
 internal data class YumeLocalSelfTestReport(
     val rows: List<YumeLocalSelfTestRow>,
     val elapsedMs: Long,
-)
+) {
+    fun toPlainText(): String = buildString {
+        appendLine("Yume Android local self-test")
+        appendLine("elapsed_ms=$elapsedMs")
+        for (row in rows) {
+            append(row.name)
+            append(": ok=")
+            append(row.ok)
+            append(" metric=\"")
+            append(row.metric)
+            append('"')
+            row.value?.let {
+                append(" value=")
+                append(formatSelfTestRaw(it))
+            }
+            if (row.unit.isNotBlank()) {
+                append(" unit=\"")
+                append(row.unit)
+                append('"')
+            }
+            row.bytes?.let {
+                append(" bytes=")
+                append(it)
+            }
+            row.operations?.let {
+                append(" ops=")
+                append(it)
+            }
+            row.seconds?.let {
+                append(" seconds=")
+                append(formatSelfTestRaw(it))
+            }
+            if (row.detail.isNotBlank()) {
+                append(" detail=\"")
+                append(row.detail.replace("\"", "'"))
+                append('"')
+            }
+            appendLine()
+        }
+    }.trimEnd()
+}
 
 internal data class YumeLocalSelfTestRow(
     val name: String,
     val metric: String,
     val detail: String,
     val ok: Boolean = true,
+    val value: Double? = null,
+    val unit: String = "",
+    val bytes: Long? = null,
+    val operations: Int? = null,
+    val seconds: Double? = null,
 )
 
 internal object YumeLocalSelfTest {
@@ -178,6 +223,10 @@ internal object YumeLocalSelfTest {
             name = "hop-hkdf",
             metric = "${formatNumber(opsPerSecond)} ops/s",
             detail = "$count derived hop keys, guard=${guard and 0xFF}",
+            value = opsPerSecond,
+            unit = "ops/s",
+            operations = count,
+            seconds = seconds,
         )
     }
 
@@ -193,6 +242,10 @@ internal object YumeLocalSelfTest {
             name = name,
             metric = "${formatNumber(mibPerSecond)} MiB/s",
             detail = detail,
+            value = mibPerSecond,
+            unit = "MiB/s",
+            bytes = bytes,
+            seconds = seconds,
         )
     }
 
@@ -232,4 +285,8 @@ internal object YumeLocalSelfTest {
         val packetCodecBytes: Int,
         val hkdfOps: Int,
     )
+}
+
+private fun formatSelfTestRaw(value: Double): String {
+    return String.format(Locale.US, "%.6f", value)
 }

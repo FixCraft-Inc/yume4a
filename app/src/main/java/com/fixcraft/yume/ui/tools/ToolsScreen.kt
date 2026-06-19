@@ -1,5 +1,8 @@
 package com.fixcraft.yume.ui.tools
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -27,6 +30,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -38,6 +42,8 @@ import com.fixcraft.yume.diagnostics.YumeLocalSelfTestRow
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.appDialogProperties
 import com.fixcraft.yume.ui.appDialogWidth
+import com.fixcraft.yume.vpn.VpnLogLevel
+import com.fixcraft.yume.vpn.YumeVpnRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -115,6 +121,10 @@ fun ToolsScreen() {
                                 onSuccess = { report ->
                                     selfTestReport = report
                                     selfTestError = null
+                                    YumeVpnRuntime.appendLog(
+                                        VpnLogLevel.Info,
+                                        "Local self-test completed:\n${report.toPlainText()}",
+                                    )
                                 },
                                 onFailure = { throwable ->
                                     selfTestError = throwable.message ?: strings.toolOperationFailed
@@ -296,6 +306,11 @@ private fun LocalSelfTestCard(
     onRun: () -> Unit,
 ) {
     val strings = appStrings()
+    val context = LocalContext.current
+    val clipboardManager = remember(context) {
+        context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    }
+    var copied by remember(report) { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
@@ -340,6 +355,24 @@ private fun LocalSelfTestCard(
                         }
                         LocalSelfTestRow(row)
                     }
+                }
+                OutlinedButton(
+                    onClick = {
+                        clipboardManager.setPrimaryClip(
+                            ClipData.newPlainText("Yume Android local self-test", current.toPlainText()),
+                        )
+                        copied = true
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(strings.copyLocalSelfTestReport)
+                }
+                if (copied) {
+                    Text(
+                        text = strings.localSelfTestCopied,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
             if (!error.isNullOrBlank()) {
