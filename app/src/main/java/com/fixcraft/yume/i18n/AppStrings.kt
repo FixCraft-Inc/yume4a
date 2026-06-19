@@ -151,6 +151,12 @@ class AppStrings private constructor(
     val aboutGroupTitle = t("About")
     val creditsTitle = t("Credits")
     val toolsTitle = t("Tools")
+    val localSelfTestTitle = t("Local self-test")
+    val localSelfTestDetail = t("Measures this device's Yume hot paths without contacting a server.")
+    val runLocalSelfTestButton = t("Run local self-test")
+    val rerunLocalSelfTestButton = t("Re-run local self-test")
+    val localSelfTestRunning = t("Running local self-test")
+    val localSelfTestNoResults = t("No local self-test results yet.")
     val textToolsTitle = t("Text tools")
     val textToolsDetail = t("Encrypt or decrypt text with BaseFWX-compatible modes.")
     val toolInputLabel = t("Input")
@@ -748,6 +754,10 @@ class AppStrings private constructor(
 
     fun processingText(actionLabel: String, modeLabel: String): String {
         return tf("%s with %s.", actionLabel, modeLabel)
+    }
+
+    fun localSelfTestCompleted(elapsed: String): String {
+        return tf("Completed in %s", elapsed)
     }
 
     fun logAndroidNeedsVpnPermission(): String = t("Android needs VPN permission before Yume can create the interface.")

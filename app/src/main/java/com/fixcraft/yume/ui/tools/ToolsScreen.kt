@@ -14,6 +14,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -31,12 +32,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.fixcraft.yume.crypto.BaseFwxCompat
+import com.fixcraft.yume.diagnostics.YumeLocalSelfTest
+import com.fixcraft.yume.diagnostics.YumeLocalSelfTestReport
+import com.fixcraft.yume.diagnostics.YumeLocalSelfTestRow
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.appDialogProperties
 import com.fixcraft.yume.ui.appDialogWidth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.Locale
 
 private enum class BaseFwxTextMode {
     FwxAes,
@@ -54,6 +59,8 @@ fun ToolsScreen() {
     var output by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var busyDetail by remember { mutableStateOf<String?>(null) }
+    var selfTestReport by remember { mutableStateOf<YumeLocalSelfTestReport?>(null) }
+    var selfTestError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     busyDetail?.let { detail ->
@@ -91,6 +98,33 @@ fun ToolsScreen() {
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        item {
+            LocalSelfTestCard(
+                report = selfTestReport,
+                error = selfTestError,
+                busy = busyDetail != null,
+                onRun = {
+                    if (busyDetail == null) {
+                        scope.launch {
+                            busyDetail = strings.localSelfTestRunning
+                            val result = withContext(Dispatchers.Default) {
+                                runCatching { YumeLocalSelfTest.runQuick() }
+                            }
+                            busyDetail = null
+                            result.fold(
+                                onSuccess = { report ->
+                                    selfTestReport = report
+                                    selfTestError = null
+                                },
+                                onFailure = { throwable ->
+                                    selfTestError = throwable.message ?: strings.toolOperationFailed
+                                },
+                            )
+                        }
+                    }
+                },
+            )
+        }
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -251,6 +285,110 @@ fun ToolsScreen() {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun LocalSelfTestCard(
+    report: YumeLocalSelfTestReport?,
+    error: String?,
+    busy: Boolean,
+    onRun: () -> Unit,
+) {
+    val strings = appStrings()
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = strings.localSelfTestTitle,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                text = strings.localSelfTestDetail,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(
+                onClick = onRun,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !busy,
+            ) {
+                Text(if (report == null) strings.runLocalSelfTestButton else strings.rerunLocalSelfTestButton)
+            }
+            if (report == null && error.isNullOrBlank()) {
+                Text(
+                    text = strings.localSelfTestNoResults,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            report?.let { current ->
+                Text(
+                    text = strings.localSelfTestCompleted(current.elapsedLabel()),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    current.rows.forEachIndexed { index, row ->
+                        if (index > 0) {
+                            HorizontalDivider()
+                        }
+                        LocalSelfTestRow(row)
+                    }
+                }
+            }
+            if (!error.isNullOrBlank()) {
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocalSelfTestRow(row: YumeLocalSelfTestRow) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = row.name,
+                style = MaterialTheme.typography.titleSmall,
+                color = if (row.ok) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
+            )
+            Text(
+                text = row.detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            text = row.metric,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (row.ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+            textAlign = TextAlign.End,
+        )
+    }
+}
+
+private fun YumeLocalSelfTestReport.elapsedLabel(): String {
+    return if (elapsedMs < 1_000L) {
+        "$elapsedMs ms"
+    } else {
+        String.format(Locale.US, "%.2f s", elapsedMs / 1_000.0)
     }
 }
 
