@@ -99,7 +99,7 @@ internal object LanguageJa : LanguageBundle {
         "Notification settings" to "通知設定",
         "Notifications" to "通知",
         "Battery optimization" to "バッテリー最適化",
-        "Native direct beta" to "Native direct beta",
+        "Packet-native fast path" to "Packet-native fast path",
         "Dynamic colors" to "ダイナミックカラー",
         "Allowed" to "許可済み",
         "Permission required" to "権限が必要",
@@ -200,6 +200,17 @@ internal object LanguageJa : LanguageBundle {
             to "このデバイスの ABI 向けに libyumetransport.so は同梱されて " +
                 "いません。このスイッチの状態に関わらず Java SSLSocket の " +
                 "経路が使用されます。",
+        "Self-DPI warnings" to "Self-DPI 警告",
+        "Warns when local carrier metadata stops matching the selected disguise profile. " +
+            "Inspects TLS/profile, HTTPS masking, padding, jitter, packet-native batch stats, " +
+            "and raw versus smoothed throughput; it does not inspect app payloads."
+            to "ローカルのキャリア メタデータが選択中の偽装プロファイルと " +
+                "一致しなくなったときに警告します。TLS/プロファイル、HTTPS " +
+                "マスク、padding、jitter、packet-native batch 統計、raw と " +
+                "smoothed のスループットを確認します。アプリのペイロードは " +
+                "検査しません。",
+        "Raw throughput" to "Raw throughput",
+        "Smoothed throughput" to "Smoothed throughput",
         "Yume status" to "Yume の状態",
         "Brief" to "概要",
         "Client" to "クライアント",

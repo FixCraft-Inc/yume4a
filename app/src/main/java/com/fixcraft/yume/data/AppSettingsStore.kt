@@ -33,7 +33,7 @@ enum class ConnectionTechnique(
 
 fun ConnectionTechnique.canonicalLabel(): String = when (this) {
     ConnectionTechnique.Tun2SocksStable -> "Tun2Socks stable"
-    ConnectionTechnique.NativeDirectBeta -> "Native direct beta"
+    ConnectionTechnique.NativeDirectBeta -> "Packet-native fast path"
     ConnectionTechnique.Socks5ProxyOnly -> "SOCKS5 proxy only"
 }
 

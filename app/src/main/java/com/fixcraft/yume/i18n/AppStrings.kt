@@ -178,7 +178,7 @@ class AppStrings private constructor(
     val notificationSettingsButton = t("Notification settings")
     val notificationsLabel = t("Notifications")
     val batteryOptimizationLabel = t("Battery optimization")
-    val nativeDirectBetaLabel = t("Native direct beta")
+    val nativeDirectBetaLabel = t("Packet-native fast path")
     val dynamicColorsLabel = t("Dynamic colors")
     val allowed = t("Allowed")
     val permissionRequired = t("Permission required")

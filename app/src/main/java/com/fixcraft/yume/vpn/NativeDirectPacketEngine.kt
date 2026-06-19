@@ -70,6 +70,8 @@ internal class PacketNativeTunnelPacketEngine(
         }
         tunRead = ParcelFileDescriptor.dup(tun.fileDescriptor)
         tunWrite = ParcelFileDescriptor.dup(tun.fileDescriptor)
+        // YumeVpnService creates the VPN fd with Builder.setBlocking(false);
+        // the EAGAIN path below enforces the packet batch flush deadline.
         val input = FileInputStream(requireNotNull(tunRead).fileDescriptor)
         val output = FileOutputStream(requireNotNull(tunWrite).fileDescriptor)
         readJob = scope.launch {

@@ -99,7 +99,7 @@ internal object LanguageRu : LanguageBundle {
         "Notification settings" to "Настройки уведомлений",
         "Notifications" to "Уведомления",
         "Battery optimization" to "Оптимизация батареи",
-        "Native direct beta" to "Native direct beta",
+        "Packet-native fast path" to "Packet-native fast path",
         "Dynamic colors" to "Динамические цвета",
         "Allowed" to "Разрешены",
         "Permission required" to "Нужно разрешение",
@@ -202,6 +202,17 @@ internal object LanguageRu : LanguageBundle {
             to "libyumetransport.so не поставляется для ABI этого " +
                 "устройства. Используется путь Java SSLSocket независимо " +
                 "от состояния этого переключателя.",
+        "Self-DPI warnings" to "Предупреждения Self-DPI",
+        "Warns when local carrier metadata stops matching the selected disguise profile. " +
+            "Inspects TLS/profile, HTTPS masking, padding, jitter, packet-native batch stats, " +
+            "and raw versus smoothed throughput; it does not inspect app payloads."
+            to "Предупреждает, когда локальные метаданные канала перестают " +
+                "соответствовать выбранному профилю маскировки. Проверяет " +
+                "TLS/профиль, HTTPS-маскировку, padding, jitter, статистику " +
+                "packet-native batch и raw/smoothed пропускную способность; " +
+                "полезную нагрузку приложений не проверяет.",
+        "Raw throughput" to "Raw throughput",
+        "Smoothed throughput" to "Smoothed throughput",
         "Yume status" to "Статус Yume",
         "Brief" to "Кратко",
         "Client" to "Клиент",

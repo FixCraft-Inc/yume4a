@@ -116,7 +116,8 @@ android {
         buildConfigField("String", "YUME_PROTOCOL_VERSION", "\"$yumeProtocolVersion\"")
         buildConfigField("String", "BASEFWX_ENGINE_VERSION", "\"$basefwxEngineVersion\"")
         buildConfigField("String", "YUME_PROTECTION_POLICY", "\"Auto (highest available)\"")
-        // Native-direct still drops active streams under browser/speedtest fan-out.
+        // Packet-native is gated by server packet_bulk_v1 support and falls
+        // back to tun2socks stable when unavailable.
         buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "false")
         buildConfigField(
             "String",
@@ -154,6 +155,9 @@ android {
             buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "true")
         }
         release {
+            // Despite the legacy flag name, this enables the packet-native
+            // fast path. Runtime code falls back to tun2socks stable if the
+            // authenticated server does not negotiate packet_bulk_v1.
             buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "true")
             isMinifyEnabled = true
             isShrinkResources = true
