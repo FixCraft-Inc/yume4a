@@ -627,10 +627,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun disconnect() {
+        val labels = strings()
+        YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Disconnect requested from UI.")
+        YumeVpnRuntime.update { current ->
+            when (current.phase) {
+                VpnPhase.Idle, VpnPhase.Error -> current
+                else -> current.copy(
+                    phase = VpnPhase.Disconnecting,
+                    headline = labels.disconnectingHeadline,
+                    detail = "Closing active Yume session.",
+                )
+            }
+        }
         // The active service is whichever one was started for the
         // current technique; dispatch to both so we don't need to track
-        // it explicitly. Each service short-circuits when it has no
-        // active session.
+        // it explicitly. Each service tolerates a no-op disconnect.
         YumeVpnService.startDisconnect(getApplication())
         YumeSocks5ProxyService.startDisconnect(getApplication())
     }
@@ -840,6 +851,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         fun buildBridgeLines(config: com.fixcraft.yume.vpn.Tun2SocksRuntimeConfig): List<String> = listOf(
             "${strings.techniqueLabel}: ${strings.connectionTechniqueName(config.technique)}",
             "${strings.profileLabel}: ${strings.performanceProfileName(config.performanceProfile)}",
+            "${strings.runtimeIpv6PolicyLabel}: ${strings.runtimeIpv6FailClosedStatus}",
+            "${strings.runtimeDnsPolicyLabel}: ${strings.runtimeIpv4OnlyDnsPolicy}",
             "${strings.runtimeTcpRelaysLabel}: ${config.maxActiveTcpRelays}",
             "${strings.runtimeRelayAcquireTimeoutLabel}: ${formatMs(config.relayAcquireTimeoutMs)}",
             "${strings.runtimeRelayAcquireSliceLabel}: ${formatMs(config.relayAcquireSliceMs)}",

@@ -430,6 +430,8 @@ class AppStrings private constructor(
     val runtimeNativeUdpFlowBufferLabel = t("Native UDP flow buffer")
     val runtimeIpv6PolicyLabel = t("IPv6 policy")
     val runtimeIpv6FailClosedStatus = t("blocked")
+    val runtimeDnsPolicyLabel = t("DNS policy")
+    val runtimeIpv4OnlyDnsPolicy = t("IPv4-only; AAAA/SVCB/HTTPS records are stripped")
     val runtimeTcpRelaysLabel = t("TCP relays")
     val runtimeRelayAcquireTimeoutLabel = t("Relay acquire timeout")
     val runtimeRelayAcquireSliceLabel = t("Relay acquire slice")

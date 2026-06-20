@@ -608,7 +608,7 @@ class YumeSocks5ProxyService : Service() {
     }
 
     private fun disconnect(message: String) {
-        if (disconnectJob?.isActive == true || YumeVpnRuntime.state.value.phase == VpnPhase.Disconnecting) {
+        if (disconnectJob?.isActive == true) {
             return
         }
         shutdownRequested = true
