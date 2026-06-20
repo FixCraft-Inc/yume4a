@@ -72,7 +72,8 @@ internal object YumeLocalSelfTest {
     fun runQuick(): YumeLocalSelfTestReport = run(
         Workload(
             copyBytes = 64 * MIB,
-            streamBytes = 32 * MIB,
+            streamSingleBytes = 32 * MIB,
+            streamManyBytes = 256 * MIB,
             manyStreams = 64,
             cryptoBytes = 32 * MIB,
             packetCodecBytes = 32 * MIB,
@@ -83,7 +84,8 @@ internal object YumeLocalSelfTest {
     internal fun runSmokeForTest(): YumeLocalSelfTestReport = run(
         Workload(
             copyBytes = 128 * KIB,
-            streamBytes = 128 * KIB,
+            streamSingleBytes = 128 * KIB,
+            streamManyBytes = 256 * KIB,
             manyStreams = 4,
             cryptoBytes = 128 * KIB,
             packetCodecBytes = 128 * KIB,
@@ -95,8 +97,8 @@ internal object YumeLocalSelfTest {
         val start = System.nanoTime()
         val rows = mutableListOf<YumeLocalSelfTestRow>()
         rows += capture("copy-floor") { runCopyFloor(workload.copyBytes) }
-        rows += capture("stream-copy-1") { runStreamCopy(workload.streamBytes, streams = 1) }
-        rows += capture("stream-copy-many") { runStreamCopy(workload.streamBytes, streams = workload.manyStreams) }
+        rows += capture("stream-copy-1") { runStreamCopy(workload.streamSingleBytes, streams = 1) }
+        rows += capture("stream-copy-many") { runStreamCopy(workload.streamManyBytes, streams = workload.manyStreams) }
         rows += capture("aes-gcm-encrypt") { runAesGcmEncrypt(workload.cryptoBytes) }
         rows += capture("aes-gcm-decrypt") { runAesGcmDecrypt(workload.cryptoBytes) }
         rows += capture("packet-bulk-encode") { runPacketBulkEncode(workload.packetCodecBytes) }
@@ -377,7 +379,8 @@ internal object YumeLocalSelfTest {
 
     private data class Workload(
         val copyBytes: Int,
-        val streamBytes: Int,
+        val streamSingleBytes: Int,
+        val streamManyBytes: Int,
         val manyStreams: Int,
         val cryptoBytes: Int,
         val packetCodecBytes: Int,
