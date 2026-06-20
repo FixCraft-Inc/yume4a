@@ -4,6 +4,8 @@ import com.fixcraft.basefwx.Crypto
 import com.fixcraft.yume.transport.YumePacketBulk
 import java.nio.charset.StandardCharsets
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
 import kotlin.math.max
 
 internal data class YumeLocalSelfTestReport(
@@ -70,6 +72,8 @@ internal object YumeLocalSelfTest {
     fun runQuick(): YumeLocalSelfTestReport = run(
         Workload(
             copyBytes = 64 * MIB,
+            streamBytes = 32 * MIB,
+            manyStreams = 64,
             cryptoBytes = 32 * MIB,
             packetCodecBytes = 32 * MIB,
             hkdfOps = 5_000,
@@ -79,6 +83,8 @@ internal object YumeLocalSelfTest {
     internal fun runSmokeForTest(): YumeLocalSelfTestReport = run(
         Workload(
             copyBytes = 128 * KIB,
+            streamBytes = 128 * KIB,
+            manyStreams = 4,
             cryptoBytes = 128 * KIB,
             packetCodecBytes = 128 * KIB,
             hkdfOps = 32,
@@ -89,6 +95,8 @@ internal object YumeLocalSelfTest {
         val start = System.nanoTime()
         val rows = mutableListOf<YumeLocalSelfTestRow>()
         rows += capture("copy-floor") { runCopyFloor(workload.copyBytes) }
+        rows += capture("stream-copy-1") { runStreamCopy(workload.streamBytes, streams = 1) }
+        rows += capture("stream-copy-many") { runStreamCopy(workload.streamBytes, streams = workload.manyStreams) }
         rows += capture("aes-gcm-encrypt") { runAesGcmEncrypt(workload.cryptoBytes) }
         rows += capture("aes-gcm-decrypt") { runAesGcmDecrypt(workload.cryptoBytes) }
         rows += capture("packet-bulk-encode") { runPacketBulkEncode(workload.packetCodecBytes) }
@@ -125,6 +133,53 @@ internal object YumeLocalSelfTest {
             bytes = iterations.toLong() * src.size,
             seconds = seconds,
             detail = "64 KiB array copy, guard=${guard and 0xFF}",
+        )
+    }
+
+    private fun runStreamCopy(totalBytes: Int, streams: Int): YumeLocalSelfTestRow {
+        val streamCount = max(1, streams)
+        val perStreamBytes = splitBytes(totalBytes, streamCount)
+        val src = patternedBytes(32 * KIB)
+        val startFlag = AtomicBoolean(false)
+        val secondsByStream = DoubleArray(streamCount)
+        val guards = IntArray(streamCount)
+        val workers = List(streamCount) { streamIndex ->
+            thread(start = false, name = "yume-selftest-stream-$streamIndex") {
+                val dst = ByteArray(src.size)
+                while (!startFlag.get()) {
+                    Thread.yield()
+                }
+                val started = System.nanoTime()
+                var copied = 0
+                var guard = 0
+                val target = perStreamBytes[streamIndex]
+                while (copied < target) {
+                    val chunk = minOf(src.size, target - copied)
+                    src.copyInto(dst, endIndex = chunk)
+                    guard = guard xor dst[(copied / max(1, chunk)) and (dst.size - 1)].toInt()
+                    copied += chunk
+                }
+                secondsByStream[streamIndex] = (System.nanoTime() - started).toDouble() / 1_000_000_000.0
+                guards[streamIndex] = guard
+            }
+        }
+        workers.forEach { it.start() }
+        val started = System.nanoTime()
+        startFlag.set(true)
+        workers.forEach { it.join() }
+        val aggregateSeconds = (System.nanoTime() - started).toDouble() / 1_000_000_000.0
+        val streamRates = secondsByStream.mapIndexed { index, seconds ->
+            (perStreamBytes[index].toDouble() / MIB.toDouble()) / seconds.coerceAtLeast(0.000_001)
+        }
+        val stats = miniStats(streamRates)
+        val instability = if (stats.median > 0.0) ((stats.max - stats.min) / stats.median) * 100.0 else 0.0
+        val guard = guards.fold(0) { acc, value -> acc xor value } and 0xFF
+        val measuredBytes = perStreamBytes.fold(0L) { acc, value -> acc + value.toLong() }
+        return throughputRow(
+            name = if (streamCount == 1) "stream-copy-1" else "stream-copy-many",
+            bytes = measuredBytes,
+            seconds = aggregateSeconds,
+            detail = "streams=$streamCount per_stream_mib_s min=${formatNumber(stats.min)} median=${formatNumber(stats.median)} p95=${formatNumber(stats.p95)} max=${formatNumber(stats.max)} instability=${formatNumber(instability)}% guard=$guard",
         )
     }
 
@@ -269,6 +324,47 @@ internal object YumeLocalSelfTest {
         return max(1, totalBytes / max(1, chunkBytes))
     }
 
+    private fun splitBytes(totalBytes: Int, streams: Int): IntArray {
+        val count = max(1, streams)
+        val out = IntArray(count) { totalBytes / count }
+        var remaining = totalBytes % count
+        var index = 0
+        while (remaining > 0) {
+            out[index] += 1
+            remaining -= 1
+            index = (index + 1) % count
+        }
+        return out
+    }
+
+    private data class MiniStats(
+        val min: Double,
+        val median: Double,
+        val p95: Double,
+        val max: Double,
+    )
+
+    private fun miniStats(values: List<Double>): MiniStats {
+        if (values.isEmpty()) return MiniStats(0.0, 0.0, 0.0, 0.0)
+        val sorted = values.sorted()
+        fun pick(q: Double): Double {
+            val raw = kotlin.math.ceil(q * sorted.size.toDouble()).toInt() - 1
+            return sorted[raw.coerceIn(0, sorted.lastIndex)]
+        }
+        val mid = sorted.size / 2
+        val median = if (sorted.size % 2 == 0) {
+            (sorted[mid - 1] + sorted[mid]) / 2.0
+        } else {
+            sorted[mid]
+        }
+        return MiniStats(
+            min = sorted.first(),
+            median = median,
+            p95 = pick(0.95),
+            max = sorted.last(),
+        )
+    }
+
     private fun timedSeconds(block: () -> Unit): Double {
         val start = System.nanoTime()
         block()
@@ -281,6 +377,8 @@ internal object YumeLocalSelfTest {
 
     private data class Workload(
         val copyBytes: Int,
+        val streamBytes: Int,
+        val manyStreams: Int,
         val cryptoBytes: Int,
         val packetCodecBytes: Int,
         val hkdfOps: Int,

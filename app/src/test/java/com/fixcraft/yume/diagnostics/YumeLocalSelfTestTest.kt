@@ -12,6 +12,8 @@ class YumeLocalSelfTestTest {
         assertEquals(
             listOf(
                 "copy-floor",
+                "stream-copy-1",
+                "stream-copy-many",
                 "aes-gcm-encrypt",
                 "aes-gcm-decrypt",
                 "packet-bulk-encode",
