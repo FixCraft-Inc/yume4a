@@ -13,6 +13,13 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
+private const val SELF_TEST_GLOBAL_MODEL = "yume-global-v1"
+private const val SELF_TEST_ANDROID_MODEL = "yume-android-v1"
+private const val SELF_TEST_CHECKSUM_FIELD = "checksum"
+private const val SELF_TEST_HKDF_INFO_PREFIX = "yume-hop-v1:"
+
+private fun selfTestChecksum(value: Int): String = "$SELF_TEST_CHECKSUM_FIELD=${value and 0xFF}"
+
 internal data class YumeLocalSelfTestReport(
     val rows: List<YumeLocalSelfTestRow>,
     val elapsedMs: Long,
@@ -28,12 +35,12 @@ internal data class YumeLocalSelfTestReport(
         appendLine("mode=${mode.id}")
         appendLine("elapsed_ms=$elapsedMs")
         globalScore?.let {
-            appendLine("GLOBAL ${formatSelfTestInteger(it)} grade=${benchmarkGrade(it)} model=yume-global-v5")
-            appendLine("global_score=$it global_grade=${benchmarkGrade(it)}")
+            appendLine("GLOBAL ${formatSelfTestInteger(it)} ${benchmarkGrade(it, BenchmarkScoreTrack.Global)} model=$SELF_TEST_GLOBAL_MODEL")
+            appendLine("global_score=$it global_grade=${benchmarkGrade(it, BenchmarkScoreTrack.Global)}")
         }
         leagueScore?.let {
-            appendLine("LEAGUE ${formatSelfTestInteger(it)} grade=${benchmarkGrade(it)} model=yume-android-v5")
-            appendLine("league_score=$it league_grade=${benchmarkGrade(it)}")
+            appendLine("LEAGUE ${formatSelfTestInteger(it)} ${benchmarkGrade(it, BenchmarkScoreTrack.AndroidLeague)} model=$SELF_TEST_ANDROID_MODEL")
+            appendLine("league_score=$it league_grade=${benchmarkGrade(it, BenchmarkScoreTrack.AndroidLeague)}")
         }
         for (row in rows) {
             append(row.name)
@@ -123,6 +130,7 @@ internal object YumeLocalSelfTest {
             streamSingleBytes = 32 * MIB,
             streamManyBytes = 256 * MIB,
             manyStreams = 64,
+            memoryBandwidthBytes = 64 * MIB,
             cryptoBytes = 32 * MIB,
             packetCodecBytes = 32 * MIB,
             hkdfOps = 5_000,
@@ -144,11 +152,12 @@ internal object YumeLocalSelfTest {
             streamSingleBytes = 256 * MIB,
             streamManyBytes = 1024 * MIB,
             manyStreams = 64,
-            cryptoBytes = 512 * MIB,
-            packetCodecBytes = 512 * MIB,
-            hkdfOps = 100_000,
-            diskBytes = 256 * MIB,
-            sustainedMixMs = 30_000,
+            memoryBandwidthBytes = 1024 * MIB,
+            cryptoBytes = 1024 * MIB,
+            packetCodecBytes = 1024 * MIB,
+            hkdfOps = 250_000,
+            diskBytes = 512 * MIB,
+            sustainedMixMs = 90_000,
             scoreEnabled = true,
         ),
         mode = YumeLocalSelfTestMode.Full,
@@ -162,6 +171,7 @@ internal object YumeLocalSelfTest {
             streamSingleBytes = 128 * KIB,
             streamManyBytes = 256 * KIB,
             manyStreams = 4,
+            memoryBandwidthBytes = 128 * KIB,
             cryptoBytes = 128 * KIB,
             packetCodecBytes = 128 * KIB,
             hkdfOps = 32,
@@ -182,15 +192,21 @@ internal object YumeLocalSelfTest {
     ): YumeLocalSelfTestReport {
         val start = System.nanoTime()
         val rows = mutableListOf<YumeLocalSelfTestRow>()
+        val hotThreads = if (workload.scoreEnabled) {
+            Runtime.getRuntime().availableProcessors().coerceAtLeast(1).coerceAtMost(64)
+        } else {
+            1
+        }
         val steps = mutableListOf(
             WorkStep("copy-floor", 0.25) { _ -> runCopyFloor(workload.copyBytes) },
             WorkStep("stream-copy-1", 0.35) { _ -> runStreamCopy(workload.streamSingleBytes, streams = 1) },
             WorkStep("stream-copy-many", 0.70) { _ -> runStreamCopy(workload.streamManyBytes, streams = workload.manyStreams) },
-            WorkStep("aes-gcm-encrypt", 2.20) { _ -> runAesGcmEncrypt(workload.cryptoBytes) },
-            WorkStep("aes-gcm-decrypt", 2.20) { _ -> runAesGcmDecrypt(workload.cryptoBytes) },
-            WorkStep("packet-bulk-encode", 0.90) { _ -> runPacketBulkEncode(workload.packetCodecBytes) },
-            WorkStep("packet-bulk-decode", 0.90) { _ -> runPacketBulkDecode(workload.packetCodecBytes) },
-            WorkStep("hop-hkdf", 0.80) { _ -> runHopHkdf(workload.hkdfOps) },
+            WorkStep("memory-bandwidth", 1.00) { _ -> runMemoryBandwidth(workload.memoryBandwidthBytes, hotThreads) },
+            WorkStep("aes-gcm-encrypt", 2.20) { _ -> runAesGcmEncrypt(workload.cryptoBytes, hotThreads) },
+            WorkStep("aes-gcm-decrypt", 2.20) { _ -> runAesGcmDecrypt(workload.cryptoBytes, hotThreads) },
+            WorkStep("packet-bulk-encode", 0.90) { _ -> runPacketBulkEncode(workload.packetCodecBytes, hotThreads) },
+            WorkStep("packet-bulk-decode", 0.90) { _ -> runPacketBulkDecode(workload.packetCodecBytes, hotThreads) },
+            WorkStep("hop-hkdf", 0.80) { _ -> runHopHkdf(workload.hkdfOps, hotThreads) },
         )
         if (workload.diskBytes > 0 && cacheDir != null) {
             steps += WorkStep("disk-write", 1.40) { _ -> runDiskWrite(cacheDir, workload.diskBytes) }
@@ -253,7 +269,7 @@ internal object YumeLocalSelfTest {
             name = "copy-floor",
             bytes = iterations.toLong() * src.size,
             seconds = seconds,
-            detail = "64 KiB array copy, guard=${guard and 0xFF}",
+            detail = "64 KiB array copy, ${selfTestChecksum(guard)}",
         )
     }
 
@@ -300,105 +316,237 @@ internal object YumeLocalSelfTest {
             name = if (streamCount == 1) "stream-copy-1" else "stream-copy-many",
             bytes = measuredBytes,
             seconds = aggregateSeconds,
-            detail = "streams=$streamCount per_stream_mib_s min=${formatNumber(stats.min)} median=${formatNumber(stats.median)} p95=${formatNumber(stats.p95)} max=${formatNumber(stats.max)} instability=${formatNumber(instability)}% guard=$guard",
+            detail = "streams=$streamCount per_stream_mib_s min=${formatNumber(stats.min)} median=${formatNumber(stats.median)} p95=${formatNumber(stats.p95)} max=${formatNumber(stats.max)} instability=${formatNumber(instability)}% ${selfTestChecksum(guard)}",
         )
     }
 
-    private fun runAesGcmEncrypt(totalBytes: Int): YumeLocalSelfTestRow {
-        val key = Crypto.randomBytes(32)
-        val aad = "yume-android-selftest".toByteArray(StandardCharsets.US_ASCII)
-        val plaintext = patternedBytes(64 * KIB)
-        var guard = 0
-        val iterations = iterationsFor(totalBytes, plaintext.size)
-        val seconds = timedSeconds {
-            repeat(iterations) {
-                val encrypted = Crypto.aesGcmEncrypt(key, plaintext, aad)
-                guard = guard xor encrypted[encrypted.lastIndex].toInt()
+    private fun runMemoryBandwidth(totalBytes: Int, workerCount: Int): YumeLocalSelfTestRow {
+        val perWorkerBytes = splitBytes(totalBytes, workerCount)
+        val chunkSize = if (totalBytes >= 512 * MIB) 2 * MIB else 256 * KIB
+        val startFlag = AtomicBoolean(false)
+        val copiedByWorker = LongArray(workerCount)
+        val guards = IntArray(workerCount)
+        val workers = List(workerCount) { workerIndex ->
+            thread(start = false, name = "yume-selftest-memory-$workerIndex") {
+                val src = patternedBytes(chunkSize, seed = 41 + workerIndex)
+                val dst = ByteArray(src.size)
+                while (!startFlag.get()) {
+                    Thread.yield()
+                }
+                val target = perWorkerBytes[workerIndex]
+                var copied = 0
+                var guard = 0
+                while (copied < target) {
+                    val chunk = minOf(src.size, target - copied)
+                    src.copyInto(dst, endIndex = chunk)
+                    guard = guard xor dst[(copied / max(1, chunk)) and (dst.size - 1)].toInt()
+                    copied += chunk
+                }
+                copiedByWorker[workerIndex] = copied.toLong()
+                guards[workerIndex] = guard
             }
         }
+        workers.forEach { it.start() }
+        val started = System.nanoTime()
+        startFlag.set(true)
+        workers.forEach { it.join() }
+        val seconds = (System.nanoTime() - started).toDouble() / 1_000_000_000.0
+        val copied = copiedByWorker.sum()
+        val guard = guards.fold(0) { acc, value -> acc xor value } and 0xFF
+        return throughputRow(
+            name = "memory-bandwidth",
+            bytes = copied,
+            seconds = seconds,
+            detail = "parallel memory copy, threads=$workerCount, chunk_kib=${chunkSize / KIB}, ${selfTestChecksum(guard)}",
+        )
+    }
+
+    private fun runAesGcmEncrypt(totalBytes: Int, workerCount: Int): YumeLocalSelfTestRow {
+        val perWorkerBytes = splitBytes(totalBytes, workerCount)
+        val startFlag = AtomicBoolean(false)
+        val bytesByWorker = LongArray(workerCount)
+        val guards = IntArray(workerCount)
+        val workers = List(workerCount) { workerIndex ->
+            thread(start = false, name = "yume-selftest-aead-enc-$workerIndex") {
+                val key = Crypto.randomBytes(32)
+                val aad = "yume-android-selftest".toByteArray(StandardCharsets.US_ASCII)
+                val plaintext = patternedBytes(64 * KIB, seed = 21 + workerIndex)
+                val iterations = iterationsFor(perWorkerBytes[workerIndex], plaintext.size)
+                var localGuard = 0
+                while (!startFlag.get()) {
+                    Thread.yield()
+                }
+                repeat(iterations) {
+                    val encrypted = Crypto.aesGcmEncrypt(key, plaintext, aad)
+                    localGuard = localGuard xor encrypted[encrypted.lastIndex].toInt()
+                }
+                bytesByWorker[workerIndex] = iterations.toLong() * plaintext.size
+                guards[workerIndex] = localGuard
+            }
+        }
+        workers.forEach { it.start() }
+        val started = System.nanoTime()
+        startFlag.set(true)
+        workers.forEach { it.join() }
+        val seconds = (System.nanoTime() - started).toDouble() / 1_000_000_000.0
+        val bytes = bytesByWorker.sum()
+        val guard = guards.fold(0) { acc, value -> acc xor value }
         return throughputRow(
             name = "aes-gcm-encrypt",
-            bytes = iterations.toLong() * plaintext.size,
+            bytes = bytes,
             seconds = seconds,
-            detail = "BaseFWX AES-GCM, 64 KiB chunks, guard=${guard and 0xFF}",
+            detail = "BaseFWX AES-GCM, 64 KiB chunks, threads=$workerCount, ${selfTestChecksum(guard)}",
         )
     }
 
-    private fun runAesGcmDecrypt(totalBytes: Int): YumeLocalSelfTestRow {
-        val key = Crypto.randomBytes(32)
-        val aad = "yume-android-selftest".toByteArray(StandardCharsets.US_ASCII)
-        val plaintext = patternedBytes(64 * KIB)
-        val encrypted = Crypto.aesGcmEncrypt(key, plaintext, aad)
-        var guard = 0
-        val iterations = iterationsFor(totalBytes, plaintext.size)
-        val seconds = timedSeconds {
-            repeat(iterations) {
-                val decrypted = Crypto.aesGcmDecrypt(key, encrypted, aad)
-                guard = guard xor decrypted[it and (decrypted.size - 1)].toInt()
+    private fun runAesGcmDecrypt(totalBytes: Int, workerCount: Int): YumeLocalSelfTestRow {
+        val perWorkerBytes = splitBytes(totalBytes, workerCount)
+        val startFlag = AtomicBoolean(false)
+        val bytesByWorker = LongArray(workerCount)
+        val guards = IntArray(workerCount)
+        val workers = List(workerCount) { workerIndex ->
+            thread(start = false, name = "yume-selftest-aead-dec-$workerIndex") {
+                val key = Crypto.randomBytes(32)
+                val aad = "yume-android-selftest".toByteArray(StandardCharsets.US_ASCII)
+                val plaintext = patternedBytes(64 * KIB, seed = 21 + workerIndex)
+                val encrypted = Crypto.aesGcmEncrypt(key, plaintext, aad)
+                val iterations = iterationsFor(perWorkerBytes[workerIndex], plaintext.size)
+                var localGuard = 0
+                while (!startFlag.get()) {
+                    Thread.yield()
+                }
+                repeat(iterations) {
+                    val decrypted = Crypto.aesGcmDecrypt(key, encrypted, aad)
+                    localGuard = localGuard xor decrypted[it and (decrypted.size - 1)].toInt()
+                }
+                bytesByWorker[workerIndex] = iterations.toLong() * plaintext.size
+                guards[workerIndex] = localGuard
             }
         }
+        workers.forEach { it.start() }
+        val started = System.nanoTime()
+        startFlag.set(true)
+        workers.forEach { it.join() }
+        val seconds = (System.nanoTime() - started).toDouble() / 1_000_000_000.0
+        val bytes = bytesByWorker.sum()
+        val guard = guards.fold(0) { acc, value -> acc xor value }
         return throughputRow(
             name = "aes-gcm-decrypt",
-            bytes = iterations.toLong() * plaintext.size,
+            bytes = bytes,
             seconds = seconds,
-            detail = "BaseFWX AES-GCM, 64 KiB chunks, guard=${guard and 0xFF}",
+            detail = "BaseFWX AES-GCM, 64 KiB chunks, threads=$workerCount, ${selfTestChecksum(guard)}",
         )
     }
 
-    private fun runPacketBulkEncode(totalBytes: Int): YumeLocalSelfTestRow {
-        val batch = packetBatch()
-        val encodedBytes = YumePacketBulk.encodedSize(batch)
-        val iterations = iterationsFor(totalBytes, encodedBytes)
-        var guard = 0
-        val seconds = timedSeconds {
-            repeat(iterations) {
-                val encoded = YumePacketBulk.encode(batch.copy(sequence = it.toLong()))
-                guard = guard xor encoded[encoded.lastIndex].toInt()
+    private fun runPacketBulkEncode(totalBytes: Int, workerCount: Int): YumeLocalSelfTestRow {
+        val perWorkerBytes = splitBytes(totalBytes, workerCount)
+        val startFlag = AtomicBoolean(false)
+        val bytesByWorker = LongArray(workerCount)
+        val guards = IntArray(workerCount)
+        val workers = List(workerCount) { workerIndex ->
+            thread(start = false, name = "yume-selftest-packet-enc-$workerIndex") {
+                val batch = packetBatch()
+                val encodedBytes = YumePacketBulk.encodedSize(batch)
+                val iterations = iterationsFor(perWorkerBytes[workerIndex], encodedBytes)
+                var localGuard = 0
+                while (!startFlag.get()) {
+                    Thread.yield()
+                }
+                repeat(iterations) {
+                    val sequence = (workerIndex.toLong() shl 48) or it.toLong()
+                    val encoded = YumePacketBulk.encode(batch.copy(sequence = sequence))
+                    localGuard = localGuard xor encoded[encoded.lastIndex].toInt()
+                }
+                bytesByWorker[workerIndex] = iterations.toLong() * encodedBytes
+                guards[workerIndex] = localGuard
             }
         }
+        workers.forEach { it.start() }
+        val started = System.nanoTime()
+        startFlag.set(true)
+        workers.forEach { it.join() }
+        val seconds = (System.nanoTime() - started).toDouble() / 1_000_000_000.0
+        val bytes = bytesByWorker.sum()
+        val guard = guards.fold(0) { acc, value -> acc xor value }
         return throughputRow(
             name = "packet-bulk-encode",
-            bytes = iterations.toLong() * encodedBytes,
+            bytes = bytes,
             seconds = seconds,
-            detail = "${batch.packets.size} packets/batch, guard=${guard and 0xFF}",
+            detail = "${YumePacketBulk.MAX_PACKETS_PER_BATCH} packets/batch, threads=$workerCount, ${selfTestChecksum(guard)}",
         )
     }
 
-    private fun runPacketBulkDecode(totalBytes: Int): YumeLocalSelfTestRow {
-        val batch = packetBatch()
-        val encoded = YumePacketBulk.encode(batch)
-        val iterations = iterationsFor(totalBytes, encoded.size)
-        var guard = 0
-        val seconds = timedSeconds {
-            repeat(iterations) {
-                val decoded = YumePacketBulk.decode(encoded)
-                guard = guard xor decoded.packets.last().last().toInt()
+    private fun runPacketBulkDecode(totalBytes: Int, workerCount: Int): YumeLocalSelfTestRow {
+        val perWorkerBytes = splitBytes(totalBytes, workerCount)
+        val startFlag = AtomicBoolean(false)
+        val bytesByWorker = LongArray(workerCount)
+        val guards = IntArray(workerCount)
+        val workers = List(workerCount) { workerIndex ->
+            thread(start = false, name = "yume-selftest-packet-dec-$workerIndex") {
+                val batch = packetBatch()
+                val encoded = YumePacketBulk.encode(batch)
+                val iterations = iterationsFor(perWorkerBytes[workerIndex], encoded.size)
+                var localGuard = 0
+                while (!startFlag.get()) {
+                    Thread.yield()
+                }
+                repeat(iterations) {
+                    val decoded = YumePacketBulk.decode(encoded)
+                    localGuard = localGuard xor decoded.packets.last().last().toInt()
+                }
+                bytesByWorker[workerIndex] = iterations.toLong() * encoded.size
+                guards[workerIndex] = localGuard
             }
         }
+        workers.forEach { it.start() }
+        val started = System.nanoTime()
+        startFlag.set(true)
+        workers.forEach { it.join() }
+        val seconds = (System.nanoTime() - started).toDouble() / 1_000_000_000.0
+        val bytes = bytesByWorker.sum()
+        val guard = guards.fold(0) { acc, value -> acc xor value }
         return throughputRow(
             name = "packet-bulk-decode",
-            bytes = iterations.toLong() * encoded.size,
+            bytes = bytes,
             seconds = seconds,
-            detail = "${batch.packets.size} packets/batch, guard=${guard and 0xFF}",
+            detail = "${YumePacketBulk.MAX_PACKETS_PER_BATCH} packets/batch, threads=$workerCount, ${selfTestChecksum(guard)}",
         )
     }
 
-    private fun runHopHkdf(ops: Int): YumeLocalSelfTestRow {
-        val key = Crypto.randomBytes(32)
-        var guard = 0
-        val count = max(1, ops)
-        val seconds = timedSeconds {
-            repeat(count) {
-                val info = "yume-hop-v1:$it".toByteArray(StandardCharsets.US_ASCII)
-                val derived = Crypto.hkdfSha256(key, info, 32)
-                guard = guard xor derived[0].toInt()
+    private fun runHopHkdf(ops: Int, workerCount: Int): YumeLocalSelfTestRow {
+        val perWorkerOps = splitBytes(max(1, ops), workerCount)
+        val startFlag = AtomicBoolean(false)
+        val opsByWorker = IntArray(workerCount)
+        val guards = IntArray(workerCount)
+        val workers = List(workerCount) { workerIndex ->
+            thread(start = false, name = "yume-selftest-hkdf-$workerIndex") {
+                val key = Crypto.randomBytes(32)
+                val count = perWorkerOps[workerIndex]
+                var localGuard = 0
+                while (!startFlag.get()) {
+                    Thread.yield()
+                }
+                repeat(count) {
+                    val info = "$SELF_TEST_HKDF_INFO_PREFIX$workerIndex:$it".toByteArray(StandardCharsets.US_ASCII)
+                    val derived = Crypto.hkdfSha256(key, info, 32)
+                    localGuard = localGuard xor derived[0].toInt()
+                }
+                opsByWorker[workerIndex] = count
+                guards[workerIndex] = localGuard
             }
         }
+        workers.forEach { it.start() }
+        val started = System.nanoTime()
+        startFlag.set(true)
+        workers.forEach { it.join() }
+        val seconds = (System.nanoTime() - started).toDouble() / 1_000_000_000.0
+        val count = opsByWorker.sum()
+        val guard = guards.fold(0) { acc, value -> acc xor value }
         val opsPerSecond = count / seconds.coerceAtLeast(0.000_001)
         return YumeLocalSelfTestRow(
             name = "hop-hkdf",
             metric = "${formatNumber(opsPerSecond)} ops/s",
-            detail = "$count derived hop keys, guard=${guard and 0xFF}",
+            detail = "$count derived hop keys, threads=$workerCount, ${selfTestChecksum(guard)}",
             value = opsPerSecond,
             unit = "ops/s",
             operations = count,
@@ -429,7 +577,7 @@ internal object YumeLocalSelfTest {
             name = "disk-write",
             bytes = iterations.toLong() * chunk.size,
             seconds = seconds,
-            detail = "cache file write, 64 KiB chunks, fsync, guard=${guard and 0xFF}",
+            detail = "cache file write, 64 KiB chunks, fsync, ${selfTestChecksum(guard)}",
         )
     }
 
@@ -509,7 +657,7 @@ internal object YumeLocalSelfTest {
             name = "sustained-mix",
             bytes = bytes,
             seconds = seconds,
-            detail = "${targetMs}ms mixed BaseFWX AES-GCM + packet bulk + HKDF, rounds=$rounds, threads=$workerCount, guard=${guard and 0xFF}",
+            detail = "${targetMs}ms mixed BaseFWX AES-GCM + packet bulk + HKDF, rounds=$rounds, threads=$workerCount, ${selfTestChecksum(guard)}",
         )
     }
 
@@ -609,20 +757,21 @@ internal object YumeLocalSelfTest {
             Component("copy-floor", 250_000.0, 100_000.0),
             Component("stream-copy-1", 80_000.0, 150_000.0),
             Component("stream-copy-many", 120_000.0, 150_000.0),
+            Component("memory-bandwidth", 180_000.0, 600_000.0),
             Component("aes-gcm-encrypt", 6_000.0, 1_300_000.0),
             Component("aes-gcm-decrypt", 6_000.0, 1_300_000.0),
             Component("packet-bulk-encode", 12_000.0, 1_100_000.0),
             Component("packet-bulk-decode", 12_000.0, 1_100_000.0),
             Component("hop-hkdf", 2_500_000.0, 800_000.0),
             Component("disk-write", 3_500.0, 100_000.0),
-            Component("sustained-mix", 12_000.0, 3_900_000.0),
+            Component("sustained-mix", 14_000.0, 4_300_000.0),
         )
         var earned = 0.0
         var possible = 0.0
         for (component in components) {
             val row = rows.firstOrNull { it.ok && it.name == component.name } ?: continue
             val value = row.value ?: continue
-            val reference = if (global) component.reference * 2.0 else component.reference
+            val reference = if (global) component.reference * 6.0 else component.reference
             val normalized = scoreScale(value / reference)
             earned += normalized * component.weight
             possible += component.weight
@@ -638,6 +787,7 @@ internal object YumeLocalSelfTest {
         val streamSingleBytes: Int,
         val streamManyBytes: Int,
         val manyStreams: Int,
+        val memoryBandwidthBytes: Int,
         val cryptoBytes: Int,
         val packetCodecBytes: Int,
         val hkdfOps: Int,
@@ -655,7 +805,7 @@ internal object YumeLocalSelfTest {
     private fun scoreScale(ratio: Double): Double {
         if (ratio <= 0.0) return 0.0
         if (ratio <= 1.0) return ratio.pow(0.95)
-        return ratio.pow(0.68)
+        return ratio.pow(1.15)
     }
 }
 
@@ -667,32 +817,52 @@ private fun formatSelfTestInteger(value: Long): String {
     return String.format(Locale.US, "%,d", value)
 }
 
-internal fun benchmarkGrade(score: Long): String = when {
-    score >= 120_000_000L -> "SSS+"
-    score >= 80_000_000L -> "SSS"
-    score >= 55_000_000L -> "SSS-"
-    score >= 38_000_000L -> "SS+"
-    score >= 26_000_000L -> "SS"
-    score >= 18_000_000L -> "SS-"
-    score >= 12_000_000L -> "S+"
-    score >= 8_000_000L -> "S"
-    score >= 5_500_000L -> "S-"
-    score >= 3_800_000L -> "AAA+"
-    score >= 3_000_000L -> "AAA"
-    score >= 2_350_000L -> "AAA-"
-    score >= 2_000_000L -> "A+"
-    score >= 1_750_000L -> "A"
-    score >= 1_500_000L -> "A-"
-    score >= 1_200_000L -> "B+"
-    score >= 900_000L -> "B"
-    score >= 650_000L -> "B-"
-    score >= 460_000L -> "C+"
-    score >= 300_000L -> "C"
-    score >= 190_000L -> "C-"
-    score >= 140_000L -> "D+"
-    score >= 85_000L -> "D"
-    score >= 50_000L -> "D-"
-    score >= 25_000L -> "F+"
-    score >= 10_000L -> "F"
-    else -> "F-"
+internal enum class BenchmarkScoreTrack {
+    Global,
+    AndroidLeague,
+}
+
+private data class BenchmarkGradeCutoff(
+    val global: Long,
+    val league: Long,
+    val grade: String,
+)
+
+private val benchmarkGradeCutoffs = listOf(
+    BenchmarkGradeCutoff(50_000_000L, 24_000_000L, "SSS+"),
+    BenchmarkGradeCutoff(35_000_000L, 17_000_000L, "SSS"),
+    BenchmarkGradeCutoff(24_000_000L, 12_000_000L, "SSS-"),
+    BenchmarkGradeCutoff(17_000_000L, 8_500_000L, "SS+"),
+    BenchmarkGradeCutoff(12_000_000L, 6_000_000L, "SS"),
+    BenchmarkGradeCutoff(8_500_000L, 4_200_000L, "SS-"),
+    BenchmarkGradeCutoff(6_000_000L, 3_000_000L, "S+"),
+    BenchmarkGradeCutoff(4_200_000L, 2_200_000L, "S"),
+    BenchmarkGradeCutoff(3_000_000L, 1_600_000L, "S-"),
+    BenchmarkGradeCutoff(2_100_000L, 1_150_000L, "AAA+"),
+    BenchmarkGradeCutoff(1_500_000L, 850_000L, "AAA"),
+    BenchmarkGradeCutoff(1_050_000L, 620_000L, "AAA-"),
+    BenchmarkGradeCutoff(750_000L, 450_000L, "A+"),
+    BenchmarkGradeCutoff(520_000L, 320_000L, "A"),
+    BenchmarkGradeCutoff(360_000L, 230_000L, "A-"),
+    BenchmarkGradeCutoff(250_000L, 165_000L, "B+"),
+    BenchmarkGradeCutoff(175_000L, 115_000L, "B"),
+    BenchmarkGradeCutoff(120_000L, 80_000L, "B-"),
+    BenchmarkGradeCutoff(80_000L, 55_000L, "C+"),
+    BenchmarkGradeCutoff(50_000L, 36_000L, "C"),
+    BenchmarkGradeCutoff(32_000L, 23_000L, "C-"),
+    BenchmarkGradeCutoff(20_000L, 15_000L, "D+"),
+    BenchmarkGradeCutoff(12_000L, 9_000L, "D"),
+    BenchmarkGradeCutoff(7_000L, 5_000L, "D-"),
+    BenchmarkGradeCutoff(3_500L, 2_500L, "F+"),
+    BenchmarkGradeCutoff(1_500L, 1_000L, "F"),
+)
+
+internal fun benchmarkGrade(score: Long, track: BenchmarkScoreTrack = BenchmarkScoreTrack.Global): String {
+    for (cutoff in benchmarkGradeCutoffs) {
+        val threshold = if (track == BenchmarkScoreTrack.Global) cutoff.global else cutoff.league
+        if (score >= threshold) {
+            return cutoff.grade
+        }
+    }
+    return "F-"
 }
