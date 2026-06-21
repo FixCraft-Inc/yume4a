@@ -167,7 +167,7 @@ fun ToolsScreen() {
                                     selfTestError = null
                                     YumeVpnRuntime.appendLog(
                                         VpnLogLevel.Info,
-                                        "Local self-test completed:\n${report.toPlainText()}",
+                                        "Local benchmark completed:\n${report.toPlainText()}",
                                     )
                                 },
                                 onFailure = { throwable ->
@@ -355,7 +355,13 @@ private fun LocalSelfTestCard(
         context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     }
     var copied by remember(report) { mutableStateOf(false) }
-    var detailsExpanded by remember(report) { mutableStateOf(false) }
+    var detailsOpen by remember(report) { mutableStateOf(false) }
+    if (detailsOpen && report != null) {
+        BenchmarkDetailsDialog(
+            report = report,
+            onDismiss = { detailsOpen = false },
+        )
+    }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
@@ -406,32 +412,32 @@ private fun LocalSelfTestCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                current.score?.let { score ->
+                current.globalScore?.let { score ->
                     Text(
-                        text = strings.benchmarkScoreValue(score, benchmarkGrade(score)),
+                        text = strings.benchmarkScoreValue("GLOBAL", score, benchmarkGrade(score)),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary,
                     )
-                } ?: Text(
-                    text = strings.quickBenchmarkNoScore,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                }
+                current.leagueScore?.let { score ->
+                    Text(
+                        text = strings.benchmarkScoreValue("LEAGUE", score, benchmarkGrade(score)),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                if (current.globalScore == null && current.leagueScore == null) {
+                    Text(
+                        text = strings.quickBenchmarkNoScore,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 OutlinedButton(
-                    onClick = { detailsExpanded = !detailsExpanded },
+                    onClick = { detailsOpen = true },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(if (detailsExpanded) strings.hideBenchmarkDetails else strings.showBenchmarkDetails)
-                }
-                if (detailsExpanded) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        current.rows.forEachIndexed { index, row ->
-                            if (index > 0) {
-                                HorizontalDivider()
-                            }
-                            LocalSelfTestRow(row)
-                        }
-                    }
+                    Text(strings.showBenchmarkDetails)
                 }
                 OutlinedButton(
                     onClick = {
@@ -458,6 +464,65 @@ private fun LocalSelfTestCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BenchmarkDetailsDialog(
+    report: YumeLocalSelfTestReport,
+    onDismiss: () -> Unit,
+) {
+    val strings = appStrings()
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = appDialogProperties,
+    ) {
+        Card(modifier = Modifier.appDialogWidth()) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = strings.showBenchmarkDetails,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                report.globalScore?.let { score ->
+                    Text(
+                        text = strings.benchmarkScoreValue("GLOBAL", score, benchmarkGrade(score)),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                report.leagueScore?.let { score ->
+                    Text(
+                        text = strings.benchmarkScoreValue("LEAGUE", score, benchmarkGrade(score)),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 560.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    report.rows.forEachIndexed { index, row ->
+                        item {
+                            if (index > 0) {
+                                HorizontalDivider()
+                            }
+                            LocalSelfTestRow(row)
+                        }
+                    }
+                }
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(strings.close)
+                }
             }
         }
     }

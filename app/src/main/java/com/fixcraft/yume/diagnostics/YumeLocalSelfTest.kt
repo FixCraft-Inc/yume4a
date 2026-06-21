@@ -18,16 +18,23 @@ internal data class YumeLocalSelfTestReport(
     val rows: List<YumeLocalSelfTestRow>,
     val elapsedMs: Long,
     val mode: YumeLocalSelfTestMode,
-    val score: Long? = null,
+    val globalScore: Long? = null,
+    val leagueScore: Long? = null,
 ) {
+    val score: Long?
+        get() = globalScore
+
     fun toPlainText(): String = buildString {
         appendLine("Yume Android local benchmark")
         appendLine("mode=${mode.id}")
         appendLine("elapsed_ms=$elapsedMs")
-        score?.let {
-            appendLine("TOTAL ${formatSelfTestInteger(it)} grade=${benchmarkGrade(it)} model=yume-bench-v3")
-            appendLine("score_model=yume-bench-v3")
-            appendLine("score=$it grade=${benchmarkGrade(it)}")
+        globalScore?.let {
+            appendLine("GLOBAL ${formatSelfTestInteger(it)} grade=${benchmarkGrade(it)} model=yume-global-v4")
+            appendLine("global_score=$it global_grade=${benchmarkGrade(it)}")
+        }
+        leagueScore?.let {
+            appendLine("LEAGUE ${formatSelfTestInteger(it)} grade=${benchmarkGrade(it)} model=yume-android-v4")
+            appendLine("league_score=$it league_grade=${benchmarkGrade(it)}")
         }
         for (row in rows) {
             append(row.name)
@@ -210,12 +217,14 @@ internal object YumeLocalSelfTest {
         }
         onProgress(YumeLocalSelfTestProgress("complete", 1f))
         val elapsedMs = ((System.nanoTime() - start) / 1_000_000L).coerceAtLeast(0L)
-        val score = if (workload.scoreEnabled) computeScore(rows) else null
+        val globalScore = if (workload.scoreEnabled) computeScore(rows, global = true) else null
+        val leagueScore = if (workload.scoreEnabled) computeScore(rows, global = false) else null
         return YumeLocalSelfTestReport(
             rows = rows,
             elapsedMs = elapsedMs,
             mode = mode,
-            score = score,
+            globalScore = globalScore,
+            leagueScore = leagueScore,
         )
     }
 
@@ -561,7 +570,7 @@ internal object YumeLocalSelfTest {
         return String.format(Locale.US, "%,.1f", value)
     }
 
-    private fun computeScore(rows: List<YumeLocalSelfTestRow>): Long? {
+    private fun computeScore(rows: List<YumeLocalSelfTestRow>, global: Boolean): Long? {
         data class Component(val name: String, val reference: Double, val weight: Double)
         val components = listOf(
             Component("copy-floor", 250_000.0, 100_000.0),
@@ -580,7 +589,8 @@ internal object YumeLocalSelfTest {
         for (component in components) {
             val row = rows.firstOrNull { it.ok && it.name == component.name } ?: continue
             val value = row.value ?: continue
-            val normalized = scoreScale(value / component.reference)
+            val reference = if (global) component.reference * 10.0 else component.reference
+            val normalized = scoreScale(value / reference)
             earned += normalized * component.weight
             possible += component.weight
         }

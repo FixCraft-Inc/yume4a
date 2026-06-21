@@ -164,9 +164,10 @@ class AppStrings private constructor(
     val localSelfTestNoResults = t("No local self-test results yet.")
     val showBenchmarkDetails = t("Show detailed stats")
     val hideBenchmarkDetails = t("Hide detailed stats")
-    val quickBenchmarkNoScore = t("Quick mode does not compute an overall score.")
-    fun benchmarkScoreValue(score: Long, grade: String) =
-        t("Score {score} · {grade}")
+    val quickBenchmarkNoScore = t("Full mode computes GLOBAL and LEAGUE scores.")
+    fun benchmarkScoreValue(label: String, score: Long, grade: String) =
+        t("{label} {score} · {grade}")
+            .replace("{label}", label)
             .replace("{score}", "%,d".format(java.util.Locale.US, score))
             .replace("{grade}", grade)
     fun benchmarkProgressValue(label: String, percent: Int) =
