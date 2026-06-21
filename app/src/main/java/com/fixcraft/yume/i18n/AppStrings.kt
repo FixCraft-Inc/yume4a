@@ -155,7 +155,8 @@ class AppStrings private constructor(
     val localSelfTestDetail = t("Measures this device's Yume hot paths without contacting a server.")
     val runLocalSelfTestButton = t("Run local self-test")
     val rerunLocalSelfTestButton = t("Re-run local self-test")
-    val runFullBenchmarkButton = t("Run full benchmark")
+    val runQuickBenchmarkButton = t("Quick test")
+    val runFullBenchmarkButton = t("Full benchmark")
     val copyLocalSelfTestReport = t("Copy local self-test report")
     val localSelfTestRunning = t("Running local self-test")
     val localBenchmarkRunning = t("Running full benchmark")
@@ -164,11 +165,14 @@ class AppStrings private constructor(
     val showBenchmarkDetails = t("Show detailed stats")
     val hideBenchmarkDetails = t("Hide detailed stats")
     val quickBenchmarkNoScore = t("Quick mode does not compute an overall score.")
-    fun benchmarkScoreValue(score: Int, max: Int, grade: String) =
-        t("Score: {score}/{max} (grade {grade})")
+    fun benchmarkScoreValue(score: Long, grade: String) =
+        t("Score: {score} (grade {grade})")
             .replace("{score}", "%,d".format(java.util.Locale.US, score))
-            .replace("{max}", "%,d".format(java.util.Locale.US, max))
             .replace("{grade}", grade)
+    fun benchmarkProgressValue(label: String, percent: Int) =
+        t("{label}: {percent}%")
+            .replace("{label}", label)
+            .replace("{percent}", percent.coerceIn(0, 100).toString())
     val textToolsTitle = t("Text tools")
     val textToolsDetail = t("Encrypt or decrypt text with BaseFWX-compatible modes.")
     val toolInputLabel = t("Input")

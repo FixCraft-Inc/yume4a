@@ -3,6 +3,9 @@ package com.fixcraft.yume.ui.tools
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -18,11 +21,13 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -38,6 +44,7 @@ import androidx.compose.ui.window.Dialog
 import com.fixcraft.yume.crypto.BaseFwxCompat
 import com.fixcraft.yume.diagnostics.YumeLocalSelfTest
 import com.fixcraft.yume.diagnostics.YumeLocalSelfTestMode
+import com.fixcraft.yume.diagnostics.YumeLocalSelfTestProgress
 import com.fixcraft.yume.diagnostics.YumeLocalSelfTestReport
 import com.fixcraft.yume.diagnostics.YumeLocalSelfTestRow
 import com.fixcraft.yume.diagnostics.benchmarkGrade
@@ -68,9 +75,14 @@ fun ToolsScreen() {
     var output by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var busyDetail by remember { mutableStateOf<String?>(null) }
+    var benchmarkRunning by remember { mutableStateOf(false) }
+    var selfTestProgress by remember { mutableStateOf<YumeLocalSelfTestProgress?>(null) }
     var selfTestReport by remember { mutableStateOf<YumeLocalSelfTestReport?>(null) }
     var selfTestError by remember { mutableStateOf<String?>(null) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val scope = rememberCoroutineScope()
+
+    BenchmarkWakeLock(benchmarkRunning)
 
     busyDetail?.let { detail ->
         Dialog(
@@ -80,20 +92,35 @@ fun ToolsScreen() {
             Card(
                 modifier = Modifier.appDialogWidth(),
             ) {
-                Row(
+                Column(
                     modifier = Modifier.padding(20.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
-                    CircularProgressIndicator()
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            text = strings.workingTitle,
-                            style = MaterialTheme.typography.titleMedium,
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CircularProgressIndicator()
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = strings.workingTitle,
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                text = detail,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    selfTestProgress?.let { progress ->
+                        LinearProgressIndicator(
+                            progress = { progress.fraction.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth(),
                         )
                         Text(
-                            text = detail,
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = strings.benchmarkProgressValue(progress.label, progress.percent),
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -119,10 +146,21 @@ fun ToolsScreen() {
                                 YumeLocalSelfTestMode.Quick -> strings.localSelfTestRunning
                                 YumeLocalSelfTestMode.Full -> strings.localBenchmarkRunning
                             }
-                            val result = withContext(Dispatchers.Default) {
-                                runCatching { YumeLocalSelfTest.run(benchmarkMode, context.cacheDir) }
+                            benchmarkRunning = true
+                            selfTestProgress = YumeLocalSelfTestProgress("preparing", 0f)
+                            val result = try {
+                                withContext(Dispatchers.Default) {
+                                    runCatching {
+                                        YumeLocalSelfTest.run(benchmarkMode, context.cacheDir) { progress ->
+                                            mainHandler.post { selfTestProgress = progress }
+                                        }
+                                    }
+                                }
+                            } finally {
+                                benchmarkRunning = false
+                                selfTestProgress = null
+                                busyDetail = null
                             }
-                            busyDetail = null
                             result.fold(
                                 onSuccess = { report ->
                                     selfTestReport = report
@@ -344,7 +382,7 @@ private fun LocalSelfTestCard(
                     modifier = Modifier.weight(1f),
                     enabled = !busy,
                 ) {
-                    Text(if (report == null) strings.runLocalSelfTestButton else strings.rerunLocalSelfTestButton)
+                    Text(strings.runQuickBenchmarkButton)
                 }
                 FilledTonalButton(
                     onClick = { onRun(YumeLocalSelfTestMode.Full) },
@@ -370,7 +408,7 @@ private fun LocalSelfTestCard(
                 )
                 current.score?.let { score ->
                     Text(
-                        text = strings.benchmarkScoreValue(score, current.scoreMax, benchmarkGrade(score)),
+                        text = strings.benchmarkScoreValue(score, benchmarkGrade(score)),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -420,6 +458,30 @@ private fun LocalSelfTestCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BenchmarkWakeLock(active: Boolean) {
+    val context = LocalContext.current
+    val view = LocalView.current
+    DisposableEffect(active, context, view) {
+        if (!active) {
+            onDispose {}
+        } else {
+            val previousKeepScreenOn = view.keepScreenOn
+            view.keepScreenOn = true
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            val wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Yume:LocalBenchmark")
+            wakeLock?.setReferenceCounted(false)
+            wakeLock?.acquire(2L * 60L * 60L * 1000L)
+            onDispose {
+                view.keepScreenOn = previousKeepScreenOn
+                if (wakeLock?.isHeld == true) {
+                    wakeLock.release()
+                }
             }
         }
     }

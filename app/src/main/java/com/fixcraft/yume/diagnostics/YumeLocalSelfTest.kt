@@ -10,20 +10,21 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import kotlin.math.max
 import kotlin.math.pow
+import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 internal data class YumeLocalSelfTestReport(
     val rows: List<YumeLocalSelfTestRow>,
     val elapsedMs: Long,
     val mode: YumeLocalSelfTestMode,
-    val score: Int? = null,
-    val scoreMax: Int = 10_000_000,
+    val score: Long? = null,
 ) {
     fun toPlainText(): String = buildString {
         appendLine("Yume Android local self-test")
         appendLine("mode=${mode.id}")
         appendLine("elapsed_ms=$elapsedMs")
         score?.let {
-            appendLine("score=$it/$scoreMax grade=${benchmarkGrade(it)}")
+            appendLine("score=$it grade=${benchmarkGrade(it)}")
         }
         for (row in rows) {
             append(row.name)
@@ -80,18 +81,34 @@ internal enum class YumeLocalSelfTestMode(val id: String) {
     Full("full"),
 }
 
+internal data class YumeLocalSelfTestProgress(
+    val label: String,
+    val fraction: Float,
+) {
+    val percent: Int
+        get() = (fraction.coerceIn(0f, 1f) * 100f).roundToInt().coerceIn(0, 100)
+}
+
 internal object YumeLocalSelfTest {
     private const val KIB = 1024
     private const val MIB = 1024 * KIB
+    private const val REFERENCE_SCORE = 10_000_000.0
 
-    fun run(mode: YumeLocalSelfTestMode, cacheDir: File? = null): YumeLocalSelfTestReport {
+    fun run(
+        mode: YumeLocalSelfTestMode,
+        cacheDir: File? = null,
+        onProgress: (YumeLocalSelfTestProgress) -> Unit = {},
+    ): YumeLocalSelfTestReport {
         return when (mode) {
-            YumeLocalSelfTestMode.Quick -> runQuick(cacheDir)
-            YumeLocalSelfTestMode.Full -> runFull(cacheDir)
+            YumeLocalSelfTestMode.Quick -> runQuick(cacheDir, onProgress)
+            YumeLocalSelfTestMode.Full -> runFull(cacheDir, onProgress)
         }
     }
 
-    fun runQuick(cacheDir: File? = null): YumeLocalSelfTestReport = run(
+    fun runQuick(
+        cacheDir: File? = null,
+        onProgress: (YumeLocalSelfTestProgress) -> Unit = {},
+    ): YumeLocalSelfTestReport = run(
         Workload(
             copyBytes = 64 * MIB,
             streamSingleBytes = 32 * MIB,
@@ -106,9 +123,13 @@ internal object YumeLocalSelfTest {
         ),
         mode = YumeLocalSelfTestMode.Quick,
         cacheDir = cacheDir,
+        onProgress = onProgress,
     )
 
-    fun runFull(cacheDir: File? = null): YumeLocalSelfTestReport = run(
+    fun runFull(
+        cacheDir: File? = null,
+        onProgress: (YumeLocalSelfTestProgress) -> Unit = {},
+    ): YumeLocalSelfTestReport = run(
         Workload(
             copyBytes = 512 * MIB,
             streamSingleBytes = 256 * MIB,
@@ -123,6 +144,7 @@ internal object YumeLocalSelfTest {
         ),
         mode = YumeLocalSelfTestMode.Full,
         cacheDir = cacheDir,
+        onProgress = onProgress,
     )
 
     internal fun runSmokeForTest(): YumeLocalSelfTestReport = run(
@@ -140,29 +162,45 @@ internal object YumeLocalSelfTest {
         ),
         mode = YumeLocalSelfTestMode.Quick,
         cacheDir = null,
+        onProgress = {},
     )
 
     private fun run(
         workload: Workload,
         mode: YumeLocalSelfTestMode,
         cacheDir: File?,
+        onProgress: (YumeLocalSelfTestProgress) -> Unit,
     ): YumeLocalSelfTestReport {
         val start = System.nanoTime()
         val rows = mutableListOf<YumeLocalSelfTestRow>()
-        rows += capture("copy-floor") { runCopyFloor(workload.copyBytes) }
-        rows += capture("stream-copy-1") { runStreamCopy(workload.streamSingleBytes, streams = 1) }
-        rows += capture("stream-copy-many") { runStreamCopy(workload.streamManyBytes, streams = workload.manyStreams) }
-        rows += capture("aes-gcm-encrypt") { runAesGcmEncrypt(workload.cryptoBytes) }
-        rows += capture("aes-gcm-decrypt") { runAesGcmDecrypt(workload.cryptoBytes) }
-        rows += capture("packet-bulk-encode") { runPacketBulkEncode(workload.packetCodecBytes) }
-        rows += capture("packet-bulk-decode") { runPacketBulkDecode(workload.packetCodecBytes) }
-        rows += capture("hop-hkdf") { runHopHkdf(workload.hkdfOps) }
+        val steps = mutableListOf(
+            WorkStep("copy-floor") { _ -> runCopyFloor(workload.copyBytes) },
+            WorkStep("stream-copy-1") { _ -> runStreamCopy(workload.streamSingleBytes, streams = 1) },
+            WorkStep("stream-copy-many") { _ -> runStreamCopy(workload.streamManyBytes, streams = workload.manyStreams) },
+            WorkStep("aes-gcm-encrypt") { _ -> runAesGcmEncrypt(workload.cryptoBytes) },
+            WorkStep("aes-gcm-decrypt") { _ -> runAesGcmDecrypt(workload.cryptoBytes) },
+            WorkStep("packet-bulk-encode") { _ -> runPacketBulkEncode(workload.packetCodecBytes) },
+            WorkStep("packet-bulk-decode") { _ -> runPacketBulkDecode(workload.packetCodecBytes) },
+            WorkStep("hop-hkdf") { _ -> runHopHkdf(workload.hkdfOps) },
+        )
         if (workload.diskBytes > 0 && cacheDir != null) {
-            rows += capture("disk-write") { runDiskWrite(cacheDir, workload.diskBytes) }
+            steps += WorkStep("disk-write") { _ -> runDiskWrite(cacheDir, workload.diskBytes) }
         }
         if (workload.sustainedMixMs > 0) {
-            rows += capture("sustained-mix") { runSustainedMix(workload.sustainedMixMs) }
+            steps += WorkStep("sustained-mix") { progress -> runSustainedMix(workload.sustainedMixMs, progress) }
         }
+        val totalSteps = steps.size.coerceAtLeast(1)
+        fun publish(index: Int, label: String, stageFraction: Double = 0.0) {
+            val fraction = ((index.toDouble() + stageFraction.coerceIn(0.0, 1.0)) / totalSteps.toDouble())
+                .coerceIn(0.0, 1.0)
+            onProgress(YumeLocalSelfTestProgress(label, fraction.toFloat()))
+        }
+        steps.forEachIndexed { index, step ->
+            publish(index, step.name)
+            rows += capture(step.name) { step.block { stageFraction -> publish(index, step.name, stageFraction) } }
+            publish(index, step.name, 1.0)
+        }
+        onProgress(YumeLocalSelfTestProgress("complete", 1f))
         val elapsedMs = ((System.nanoTime() - start) / 1_000_000L).coerceAtLeast(0L)
         val score = if (workload.scoreEnabled) computeScore(rows) else null
         return YumeLocalSelfTestReport(
@@ -379,16 +417,23 @@ internal object YumeLocalSelfTest {
         )
     }
 
-    private fun runSustainedMix(targetMs: Long): YumeLocalSelfTestRow {
+    private fun runSustainedMix(
+        targetMs: Long,
+        onProgress: (Double) -> Unit = {},
+    ): YumeLocalSelfTestRow {
         val key = Crypto.randomBytes(32)
         val aad = "yume-android-selftest".toByteArray(StandardCharsets.US_ASCII)
         val plaintext = patternedBytes(64 * KIB)
         val batch = packetBatch()
         val encodedPacketBytes = YumePacketBulk.encodedSize(batch)
-        val deadline = System.nanoTime() + targetMs.coerceAtLeast(1L) * 1_000_000L
+        val targetNs = targetMs.coerceAtLeast(1L) * 1_000_000L
+        val started = System.nanoTime()
+        val deadline = started + targetNs
+        var nextProgressNs = started
         var guard = 0
         var rounds = 0
         var bytes = 0L
+        var now = started
         val seconds = timedSeconds {
             do {
                 val encrypted = Crypto.aesGcmEncrypt(key, plaintext, aad)
@@ -402,8 +447,14 @@ internal object YumeLocalSelfTest {
                 bytes += plaintext.size.toLong() * 2L
                 bytes += encodedPacketBytes.toLong() * 2L
                 rounds += 1
-            } while (System.nanoTime() < deadline)
+                now = System.nanoTime()
+                if (now >= nextProgressNs) {
+                    onProgress((now - started).toDouble() / targetNs.toDouble())
+                    nextProgressNs = now + 500_000_000L
+                }
+            } while (now < deadline)
         }
+        onProgress(1.0)
         return throughputRow(
             name = "sustained-mix",
             bytes = bytes,
@@ -502,7 +553,7 @@ internal object YumeLocalSelfTest {
         return String.format(Locale.US, "%,.1f", value)
     }
 
-    private fun computeScore(rows: List<YumeLocalSelfTestRow>): Int? {
+    private fun computeScore(rows: List<YumeLocalSelfTestRow>): Long? {
         data class Component(val name: String, val reference: Double, val weight: Double)
         val components = listOf(
             Component("copy-floor", 50_000.0, 500_000.0),
@@ -521,13 +572,14 @@ internal object YumeLocalSelfTest {
         for (component in components) {
             val row = rows.firstOrNull { it.ok && it.name == component.name } ?: continue
             val value = row.value ?: continue
-            val normalized = ((value / component.reference).coerceAtLeast(0.0).pow(0.55))
-                .coerceIn(0.0, 1.35) / 1.35
+            val normalized = (value / component.reference).coerceAtLeast(0.0).pow(0.55)
             earned += normalized * component.weight
             possible += component.weight
         }
         if (possible <= 0.0) return null
-        return ((earned / possible).coerceIn(0.0, 1.0) * 10_000_000.0).toInt()
+        return ((earned / possible).coerceAtLeast(0.0) * REFERENCE_SCORE)
+            .roundToLong()
+            .coerceAtLeast(0L)
     }
 
     private data class Workload(
@@ -542,16 +594,43 @@ internal object YumeLocalSelfTest {
         val sustainedMixMs: Long,
         val scoreEnabled: Boolean,
     )
+
+    private data class WorkStep(
+        val name: String,
+        val block: ((Double) -> Unit) -> YumeLocalSelfTestRow,
+    )
 }
 
 private fun formatSelfTestRaw(value: Double): String {
     return String.format(Locale.US, "%.6f", value)
 }
 
-internal fun benchmarkGrade(score: Int): String = when {
-    score >= 8_500_000 -> "S"
-    score >= 7_000_000 -> "A"
-    score >= 5_500_000 -> "B"
-    score >= 4_000_000 -> "C"
-    else -> "D"
+internal fun benchmarkGrade(score: Long): String = when {
+    score >= 20_000_000L -> "SSS+"
+    score >= 17_000_000L -> "SSS"
+    score >= 14_000_000L -> "SSS-"
+    score >= 12_000_000L -> "SS+"
+    score >= 10_000_000L -> "SS"
+    score >= 8_500_000L -> "SS-"
+    score >= 7_250_000L -> "S+"
+    score >= 6_250_000L -> "S"
+    score >= 5_250_000L -> "S-"
+    score >= 4_500_000L -> "AAA+"
+    score >= 3_800_000L -> "AAA"
+    score >= 3_200_000L -> "AAA-"
+    score >= 2_700_000L -> "A+"
+    score >= 2_200_000L -> "A"
+    score >= 1_800_000L -> "A-"
+    score >= 1_400_000L -> "B+"
+    score >= 1_000_000L -> "B"
+    score >= 750_000L -> "B-"
+    score >= 550_000L -> "C+"
+    score >= 375_000L -> "C"
+    score >= 250_000L -> "C-"
+    score >= 160_000L -> "D+"
+    score >= 100_000L -> "D"
+    score >= 50_000L -> "D-"
+    score >= 25_000L -> "F+"
+    score >= 10_000L -> "F"
+    else -> "F-"
 }
