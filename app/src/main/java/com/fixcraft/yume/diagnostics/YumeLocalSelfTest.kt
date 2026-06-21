@@ -2,19 +2,29 @@ package com.fixcraft.yume.diagnostics
 
 import com.fixcraft.basefwx.Crypto
 import com.fixcraft.yume.transport.YumePacketBulk
+import java.io.File
+import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import kotlin.math.max
+import kotlin.math.pow
 
 internal data class YumeLocalSelfTestReport(
     val rows: List<YumeLocalSelfTestRow>,
     val elapsedMs: Long,
+    val mode: YumeLocalSelfTestMode,
+    val score: Int? = null,
+    val scoreMax: Int = 10_000_000,
 ) {
     fun toPlainText(): String = buildString {
         appendLine("Yume Android local self-test")
+        appendLine("mode=${mode.id}")
         appendLine("elapsed_ms=$elapsedMs")
+        score?.let {
+            appendLine("score=$it/$scoreMax grade=${benchmarkGrade(it)}")
+        }
         for (row in rows) {
             append(row.name)
             append(": ok=")
@@ -65,11 +75,23 @@ internal data class YumeLocalSelfTestRow(
     val seconds: Double? = null,
 )
 
+internal enum class YumeLocalSelfTestMode(val id: String) {
+    Quick("quick"),
+    Full("full"),
+}
+
 internal object YumeLocalSelfTest {
     private const val KIB = 1024
     private const val MIB = 1024 * KIB
 
-    fun runQuick(): YumeLocalSelfTestReport = run(
+    fun run(mode: YumeLocalSelfTestMode, cacheDir: File? = null): YumeLocalSelfTestReport {
+        return when (mode) {
+            YumeLocalSelfTestMode.Quick -> runQuick(cacheDir)
+            YumeLocalSelfTestMode.Full -> runFull(cacheDir)
+        }
+    }
+
+    fun runQuick(cacheDir: File? = null): YumeLocalSelfTestReport = run(
         Workload(
             copyBytes = 64 * MIB,
             streamSingleBytes = 32 * MIB,
@@ -78,7 +100,29 @@ internal object YumeLocalSelfTest {
             cryptoBytes = 32 * MIB,
             packetCodecBytes = 32 * MIB,
             hkdfOps = 5_000,
-        )
+            diskBytes = 0,
+            sustainedMixMs = 0,
+            scoreEnabled = false,
+        ),
+        mode = YumeLocalSelfTestMode.Quick,
+        cacheDir = cacheDir,
+    )
+
+    fun runFull(cacheDir: File? = null): YumeLocalSelfTestReport = run(
+        Workload(
+            copyBytes = 512 * MIB,
+            streamSingleBytes = 256 * MIB,
+            streamManyBytes = 1024 * MIB,
+            manyStreams = 64,
+            cryptoBytes = 512 * MIB,
+            packetCodecBytes = 512 * MIB,
+            hkdfOps = 100_000,
+            diskBytes = 256 * MIB,
+            sustainedMixMs = 30_000,
+            scoreEnabled = true,
+        ),
+        mode = YumeLocalSelfTestMode.Full,
+        cacheDir = cacheDir,
     )
 
     internal fun runSmokeForTest(): YumeLocalSelfTestReport = run(
@@ -90,10 +134,19 @@ internal object YumeLocalSelfTest {
             cryptoBytes = 128 * KIB,
             packetCodecBytes = 128 * KIB,
             hkdfOps = 32,
-        )
+            diskBytes = 0,
+            sustainedMixMs = 0,
+            scoreEnabled = false,
+        ),
+        mode = YumeLocalSelfTestMode.Quick,
+        cacheDir = null,
     )
 
-    private fun run(workload: Workload): YumeLocalSelfTestReport {
+    private fun run(
+        workload: Workload,
+        mode: YumeLocalSelfTestMode,
+        cacheDir: File?,
+    ): YumeLocalSelfTestReport {
         val start = System.nanoTime()
         val rows = mutableListOf<YumeLocalSelfTestRow>()
         rows += capture("copy-floor") { runCopyFloor(workload.copyBytes) }
@@ -104,8 +157,20 @@ internal object YumeLocalSelfTest {
         rows += capture("packet-bulk-encode") { runPacketBulkEncode(workload.packetCodecBytes) }
         rows += capture("packet-bulk-decode") { runPacketBulkDecode(workload.packetCodecBytes) }
         rows += capture("hop-hkdf") { runHopHkdf(workload.hkdfOps) }
+        if (workload.diskBytes > 0 && cacheDir != null) {
+            rows += capture("disk-write") { runDiskWrite(cacheDir, workload.diskBytes) }
+        }
+        if (workload.sustainedMixMs > 0) {
+            rows += capture("sustained-mix") { runSustainedMix(workload.sustainedMixMs) }
+        }
         val elapsedMs = ((System.nanoTime() - start) / 1_000_000L).coerceAtLeast(0L)
-        return YumeLocalSelfTestReport(rows = rows, elapsedMs = elapsedMs)
+        val score = if (workload.scoreEnabled) computeScore(rows) else null
+        return YumeLocalSelfTestReport(
+            rows = rows,
+            elapsedMs = elapsedMs,
+            mode = mode,
+            score = score,
+        )
     }
 
     private fun capture(name: String, block: () -> YumeLocalSelfTestRow): YumeLocalSelfTestRow {
@@ -287,6 +352,66 @@ internal object YumeLocalSelfTest {
         )
     }
 
+    private fun runDiskWrite(cacheDir: File, totalBytes: Int): YumeLocalSelfTestRow {
+        val dir = File(cacheDir, "yume-selftest").also { it.mkdirs() }
+        val file = File.createTempFile("disk-write-", ".bin", dir)
+        val chunk = patternedBytes(64 * KIB)
+        val iterations = iterationsFor(totalBytes, chunk.size)
+        var guard = 0
+        val seconds = try {
+            timedSeconds {
+                FileOutputStream(file).use { out ->
+                    repeat(iterations) {
+                        out.write(chunk)
+                        guard = guard xor chunk[it and (chunk.size - 1)].toInt()
+                    }
+                    out.fd.sync()
+                }
+            }
+        } finally {
+            file.delete()
+        }
+        return throughputRow(
+            name = "disk-write",
+            bytes = iterations.toLong() * chunk.size,
+            seconds = seconds,
+            detail = "cache file write, 64 KiB chunks, fsync, guard=${guard and 0xFF}",
+        )
+    }
+
+    private fun runSustainedMix(targetMs: Long): YumeLocalSelfTestRow {
+        val key = Crypto.randomBytes(32)
+        val aad = "yume-android-selftest".toByteArray(StandardCharsets.US_ASCII)
+        val plaintext = patternedBytes(64 * KIB)
+        val batch = packetBatch()
+        val encodedPacketBytes = YumePacketBulk.encodedSize(batch)
+        val deadline = System.nanoTime() + targetMs.coerceAtLeast(1L) * 1_000_000L
+        var guard = 0
+        var rounds = 0
+        var bytes = 0L
+        val seconds = timedSeconds {
+            do {
+                val encrypted = Crypto.aesGcmEncrypt(key, plaintext, aad)
+                val decrypted = Crypto.aesGcmDecrypt(key, encrypted, aad)
+                val encoded = YumePacketBulk.encode(batch.copy(sequence = rounds.toLong()))
+                val decoded = YumePacketBulk.decode(encoded)
+                val derived = Crypto.hkdfSha256(key, "yume-sustain:$rounds".toByteArray(StandardCharsets.US_ASCII), 32)
+                guard = guard xor decrypted[rounds and (decrypted.size - 1)].toInt()
+                guard = guard xor decoded.packets.last().last().toInt()
+                guard = guard xor derived[0].toInt()
+                bytes += plaintext.size.toLong() * 2L
+                bytes += encodedPacketBytes.toLong() * 2L
+                rounds += 1
+            } while (System.nanoTime() < deadline)
+        }
+        return throughputRow(
+            name = "sustained-mix",
+            bytes = bytes,
+            seconds = seconds,
+            detail = "${targetMs}ms mixed BaseFWX AES-GCM + packet bulk + HKDF, rounds=$rounds, guard=${guard and 0xFF}",
+        )
+    }
+
     private fun throughputRow(
         name: String,
         bytes: Long,
@@ -377,6 +502,34 @@ internal object YumeLocalSelfTest {
         return String.format(Locale.US, "%,.1f", value)
     }
 
+    private fun computeScore(rows: List<YumeLocalSelfTestRow>): Int? {
+        data class Component(val name: String, val reference: Double, val weight: Double)
+        val components = listOf(
+            Component("copy-floor", 50_000.0, 500_000.0),
+            Component("stream-copy-1", 10_000.0, 900_000.0),
+            Component("stream-copy-many", 2_500.0, 1_000_000.0),
+            Component("aes-gcm-encrypt", 800.0, 1_300_000.0),
+            Component("aes-gcm-decrypt", 800.0, 1_300_000.0),
+            Component("packet-bulk-encode", 2_500.0, 1_000_000.0),
+            Component("packet-bulk-decode", 2_500.0, 1_000_000.0),
+            Component("hop-hkdf", 300_000.0, 1_000_000.0),
+            Component("disk-write", 800.0, 900_000.0),
+            Component("sustained-mix", 1_000.0, 1_100_000.0),
+        )
+        var earned = 0.0
+        var possible = 0.0
+        for (component in components) {
+            val row = rows.firstOrNull { it.ok && it.name == component.name } ?: continue
+            val value = row.value ?: continue
+            val normalized = ((value / component.reference).coerceAtLeast(0.0).pow(0.55))
+                .coerceIn(0.0, 1.35) / 1.35
+            earned += normalized * component.weight
+            possible += component.weight
+        }
+        if (possible <= 0.0) return null
+        return ((earned / possible).coerceIn(0.0, 1.0) * 10_000_000.0).toInt()
+    }
+
     private data class Workload(
         val copyBytes: Int,
         val streamSingleBytes: Int,
@@ -385,9 +538,20 @@ internal object YumeLocalSelfTest {
         val cryptoBytes: Int,
         val packetCodecBytes: Int,
         val hkdfOps: Int,
+        val diskBytes: Int,
+        val sustainedMixMs: Long,
+        val scoreEnabled: Boolean,
     )
 }
 
 private fun formatSelfTestRaw(value: Double): String {
     return String.format(Locale.US, "%.6f", value)
+}
+
+internal fun benchmarkGrade(score: Int): String = when {
+    score >= 8_500_000 -> "S"
+    score >= 7_000_000 -> "A"
+    score >= 5_500_000 -> "B"
+    score >= 4_000_000 -> "C"
+    else -> "D"
 }

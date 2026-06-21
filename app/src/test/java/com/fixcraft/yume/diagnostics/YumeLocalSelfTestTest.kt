@@ -25,9 +25,12 @@ class YumeLocalSelfTestTest {
         assertTrue(report.rows.all { it.ok })
         assertTrue(report.rows.all { it.metric.isNotBlank() })
         assertTrue(report.elapsedMs >= 0L)
+        assertEquals(YumeLocalSelfTestMode.Quick, report.mode)
+        assertEquals(null, report.score)
 
         val text = report.toPlainText()
         assertTrue(text.contains("Yume Android local self-test"))
+        assertTrue(text.contains("mode=quick"))
         assertTrue(text.contains("elapsed_ms="))
         assertTrue(text.contains("copy-floor: ok=true"))
         assertTrue(text.contains("seconds="))

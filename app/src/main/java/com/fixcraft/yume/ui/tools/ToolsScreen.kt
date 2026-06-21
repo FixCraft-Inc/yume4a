@@ -37,8 +37,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.fixcraft.yume.crypto.BaseFwxCompat
 import com.fixcraft.yume.diagnostics.YumeLocalSelfTest
+import com.fixcraft.yume.diagnostics.YumeLocalSelfTestMode
 import com.fixcraft.yume.diagnostics.YumeLocalSelfTestReport
 import com.fixcraft.yume.diagnostics.YumeLocalSelfTestRow
+import com.fixcraft.yume.diagnostics.benchmarkGrade
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.appDialogProperties
 import com.fixcraft.yume.ui.appDialogWidth
@@ -59,6 +61,7 @@ private enum class BaseFwxTextMode {
 @Composable
 fun ToolsScreen() {
     val strings = appStrings()
+    val context = LocalContext.current
     var mode by remember { mutableStateOf(BaseFwxTextMode.FwxAes) }
     var input by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -109,12 +112,15 @@ fun ToolsScreen() {
                 report = selfTestReport,
                 error = selfTestError,
                 busy = busyDetail != null,
-                onRun = {
+                onRun = { benchmarkMode ->
                     if (busyDetail == null) {
                         scope.launch {
-                            busyDetail = strings.localSelfTestRunning
+                            busyDetail = when (benchmarkMode) {
+                                YumeLocalSelfTestMode.Quick -> strings.localSelfTestRunning
+                                YumeLocalSelfTestMode.Full -> strings.localBenchmarkRunning
+                            }
                             val result = withContext(Dispatchers.Default) {
-                                runCatching { YumeLocalSelfTest.runQuick() }
+                                runCatching { YumeLocalSelfTest.run(benchmarkMode, context.cacheDir) }
                             }
                             busyDetail = null
                             result.fold(
@@ -303,7 +309,7 @@ private fun LocalSelfTestCard(
     report: YumeLocalSelfTestReport?,
     error: String?,
     busy: Boolean,
-    onRun: () -> Unit,
+    onRun: (YumeLocalSelfTestMode) -> Unit,
 ) {
     val strings = appStrings()
     val context = LocalContext.current
@@ -311,6 +317,7 @@ private fun LocalSelfTestCard(
         context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     }
     var copied by remember(report) { mutableStateOf(false) }
+    var detailsExpanded by remember(report) { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
@@ -328,12 +335,24 @@ private fun LocalSelfTestCard(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Button(
-                onClick = onRun,
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !busy,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(if (report == null) strings.runLocalSelfTestButton else strings.rerunLocalSelfTestButton)
+                Button(
+                    onClick = { onRun(YumeLocalSelfTestMode.Quick) },
+                    modifier = Modifier.weight(1f),
+                    enabled = !busy,
+                ) {
+                    Text(if (report == null) strings.runLocalSelfTestButton else strings.rerunLocalSelfTestButton)
+                }
+                FilledTonalButton(
+                    onClick = { onRun(YumeLocalSelfTestMode.Full) },
+                    modifier = Modifier.weight(1f),
+                    enabled = !busy,
+                ) {
+                    Text(strings.runFullBenchmarkButton)
+                }
             }
             if (report == null && error.isNullOrBlank()) {
                 Text(
@@ -344,16 +363,36 @@ private fun LocalSelfTestCard(
             }
             report?.let { current ->
                 Text(
-                    text = strings.localSelfTestCompleted(current.elapsedLabel()),
+                    text = strings.localSelfTestCompleted(current.elapsedLabel()) +
+                        " (${current.mode.id})",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    current.rows.forEachIndexed { index, row ->
-                        if (index > 0) {
-                            HorizontalDivider()
+                current.score?.let { score ->
+                    Text(
+                        text = strings.benchmarkScoreValue(score, current.scoreMax, benchmarkGrade(score)),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                } ?: Text(
+                    text = strings.quickBenchmarkNoScore,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(
+                    onClick = { detailsExpanded = !detailsExpanded },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (detailsExpanded) strings.hideBenchmarkDetails else strings.showBenchmarkDetails)
+                }
+                if (detailsExpanded) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        current.rows.forEachIndexed { index, row ->
+                            if (index > 0) {
+                                HorizontalDivider()
+                            }
+                            LocalSelfTestRow(row)
                         }
-                        LocalSelfTestRow(row)
                     }
                 }
                 OutlinedButton(
