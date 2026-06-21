@@ -166,7 +166,7 @@ class AppStrings private constructor(
     val hideBenchmarkDetails = t("Hide detailed stats")
     val quickBenchmarkNoScore = t("Quick mode does not compute an overall score.")
     fun benchmarkScoreValue(score: Long, grade: String) =
-        t("Score: {score} (grade {grade})")
+        t("Score {score} · {grade}")
             .replace("{score}", "%,d".format(java.util.Locale.US, score))
             .replace("{grade}", grade)
     fun benchmarkProgressValue(label: String, percent: Int) =

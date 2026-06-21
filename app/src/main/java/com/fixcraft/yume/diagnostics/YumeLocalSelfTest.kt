@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -24,6 +25,7 @@ internal data class YumeLocalSelfTestReport(
         appendLine("mode=${mode.id}")
         appendLine("elapsed_ms=$elapsedMs")
         score?.let {
+            appendLine("score_model=yume-bench-v2")
             appendLine("score=$it grade=${benchmarkGrade(it)}")
         }
         for (row in rows) {
@@ -556,23 +558,23 @@ internal object YumeLocalSelfTest {
     private fun computeScore(rows: List<YumeLocalSelfTestRow>): Long? {
         data class Component(val name: String, val reference: Double, val weight: Double)
         val components = listOf(
-            Component("copy-floor", 50_000.0, 500_000.0),
-            Component("stream-copy-1", 10_000.0, 900_000.0),
-            Component("stream-copy-many", 2_500.0, 1_000_000.0),
-            Component("aes-gcm-encrypt", 800.0, 1_300_000.0),
-            Component("aes-gcm-decrypt", 800.0, 1_300_000.0),
-            Component("packet-bulk-encode", 2_500.0, 1_000_000.0),
-            Component("packet-bulk-decode", 2_500.0, 1_000_000.0),
-            Component("hop-hkdf", 300_000.0, 1_000_000.0),
-            Component("disk-write", 800.0, 900_000.0),
-            Component("sustained-mix", 1_000.0, 1_100_000.0),
+            Component("copy-floor", 100_000.0, 250_000.0),
+            Component("stream-copy-1", 35_000.0, 300_000.0),
+            Component("stream-copy-many", 30_000.0, 350_000.0),
+            Component("aes-gcm-encrypt", 2_500.0, 1_400_000.0),
+            Component("aes-gcm-decrypt", 2_500.0, 1_400_000.0),
+            Component("packet-bulk-encode", 5_500.0, 1_200_000.0),
+            Component("packet-bulk-decode", 5_500.0, 1_200_000.0),
+            Component("hop-hkdf", 900_000.0, 900_000.0),
+            Component("disk-write", 1_800.0, 250_000.0),
+            Component("sustained-mix", 3_000.0, 2_750_000.0),
         )
         var earned = 0.0
         var possible = 0.0
         for (component in components) {
             val row = rows.firstOrNull { it.ok && it.name == component.name } ?: continue
             val value = row.value ?: continue
-            val normalized = (value / component.reference).coerceAtLeast(0.0).pow(0.55)
+            val normalized = scoreScale(value / component.reference)
             earned += normalized * component.weight
             possible += component.weight
         }
@@ -599,6 +601,12 @@ internal object YumeLocalSelfTest {
         val name: String,
         val block: ((Double) -> Unit) -> YumeLocalSelfTestRow,
     )
+
+    private fun scoreScale(ratio: Double): Double {
+        if (ratio <= 0.0) return 0.0
+        if (ratio <= 1.0) return ratio.pow(0.70)
+        return 1.0 + ln(ratio) * 0.22
+    }
 }
 
 private fun formatSelfTestRaw(value: Double): String {
@@ -606,31 +614,31 @@ private fun formatSelfTestRaw(value: Double): String {
 }
 
 internal fun benchmarkGrade(score: Long): String = when {
-    score >= 20_000_000L -> "SSS+"
-    score >= 17_000_000L -> "SSS"
-    score >= 14_000_000L -> "SSS-"
-    score >= 12_000_000L -> "SS+"
-    score >= 10_000_000L -> "SS"
-    score >= 8_500_000L -> "SS-"
-    score >= 7_250_000L -> "S+"
-    score >= 6_250_000L -> "S"
-    score >= 5_250_000L -> "S-"
-    score >= 4_500_000L -> "AAA+"
-    score >= 3_800_000L -> "AAA"
-    score >= 3_200_000L -> "AAA-"
-    score >= 2_700_000L -> "A+"
-    score >= 2_200_000L -> "A"
-    score >= 1_800_000L -> "A-"
-    score >= 1_400_000L -> "B+"
-    score >= 1_000_000L -> "B"
-    score >= 750_000L -> "B-"
-    score >= 550_000L -> "C+"
-    score >= 375_000L -> "C"
-    score >= 250_000L -> "C-"
-    score >= 160_000L -> "D+"
-    score >= 100_000L -> "D"
-    score >= 50_000L -> "D-"
-    score >= 25_000L -> "F+"
-    score >= 10_000L -> "F"
+    score >= 60_000_000L -> "SSS+"
+    score >= 40_000_000L -> "SSS"
+    score >= 28_000_000L -> "SSS-"
+    score >= 20_000_000L -> "SS+"
+    score >= 15_000_000L -> "SS"
+    score >= 11_000_000L -> "SS-"
+    score >= 9_000_000L -> "S+"
+    score >= 7_000_000L -> "S"
+    score >= 5_200_000L -> "S-"
+    score >= 3_800_000L -> "AAA+"
+    score >= 2_800_000L -> "AAA"
+    score >= 2_000_000L -> "AAA-"
+    score >= 1_500_000L -> "A+"
+    score >= 1_100_000L -> "A"
+    score >= 800_000L -> "A-"
+    score >= 580_000L -> "B+"
+    score >= 420_000L -> "B"
+    score >= 300_000L -> "B-"
+    score >= 210_000L -> "C+"
+    score >= 150_000L -> "C"
+    score >= 100_000L -> "C-"
+    score >= 65_000L -> "D+"
+    score >= 40_000L -> "D"
+    score >= 25_000L -> "D-"
+    score >= 12_000L -> "F+"
+    score >= 6_000L -> "F"
     else -> "F-"
 }
