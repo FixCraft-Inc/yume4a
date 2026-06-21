@@ -17,8 +17,12 @@ private const val SELF_TEST_GLOBAL_MODEL = "yume-global-v1"
 private const val SELF_TEST_ANDROID_MODEL = "yume-android-v1"
 private const val SELF_TEST_CHECKSUM_FIELD = "checksum"
 private const val SELF_TEST_HKDF_INFO_PREFIX = "yume-hop-v1:"
+private const val SELF_TEST_AAD = "yume-android-selftest"
+private const val SELF_TEST_SUSTAIN_INFO_PREFIX = "yume-sustain:"
+private val memInfoSplit = Regex("\\s+")
 
 private fun selfTestChecksum(value: Int): String = "$SELF_TEST_CHECKSUM_FIELD=${value and 0xFF}"
+private fun selfTestAscii(value: String): ByteArray = value.toByteArray(StandardCharsets.US_ASCII)
 
 internal data class YumeLocalSelfTestReport(
     val rows: List<YumeLocalSelfTestRow>,
@@ -26,6 +30,8 @@ internal data class YumeLocalSelfTestReport(
     val mode: YumeLocalSelfTestMode,
     val globalScore: Long? = null,
     val leagueScore: Long? = null,
+    val profileDetail: String = "",
+    val workloadDetail: String = "",
 ) {
     val score: Long?
         get() = globalScore
@@ -41,6 +47,12 @@ internal data class YumeLocalSelfTestReport(
         leagueScore?.let {
             appendLine("LEAGUE ${formatSelfTestInteger(it)} ${benchmarkGrade(it, BenchmarkScoreTrack.AndroidLeague)} model=$SELF_TEST_ANDROID_MODEL")
             appendLine("league_score=$it league_grade=${benchmarkGrade(it, BenchmarkScoreTrack.AndroidLeague)}")
+        }
+        if (profileDetail.isNotBlank()) {
+            appendLine("profile=$profileDetail")
+        }
+        if (workloadDetail.isNotBlank()) {
+            appendLine("workload=$workloadDetail")
         }
         for (row in rows) {
             append(row.name)
@@ -110,6 +122,10 @@ internal object YumeLocalSelfTest {
     private const val MIB = 1024 * KIB
     private const val REFERENCE_SCORE = 10_000_000.0
 
+    private fun mib(value: Int): Int {
+        return value.coerceAtLeast(0).coerceAtMost(Int.MAX_VALUE / MIB) * MIB
+    }
+
     fun run(
         mode: YumeLocalSelfTestMode,
         cacheDir: File? = null,
@@ -130,6 +146,7 @@ internal object YumeLocalSelfTest {
             streamSingleBytes = 32 * MIB,
             streamManyBytes = 256 * MIB,
             manyStreams = 64,
+            hotThreads = 1,
             memoryBandwidthBytes = 64 * MIB,
             cryptoBytes = 32 * MIB,
             packetCodecBytes = 32 * MIB,
@@ -147,19 +164,7 @@ internal object YumeLocalSelfTest {
         cacheDir: File? = null,
         onProgress: (YumeLocalSelfTestProgress) -> Unit = {},
     ): YumeLocalSelfTestReport = run(
-        Workload(
-            copyBytes = 512 * MIB,
-            streamSingleBytes = 256 * MIB,
-            streamManyBytes = 1024 * MIB,
-            manyStreams = 64,
-            memoryBandwidthBytes = 1024 * MIB,
-            cryptoBytes = 1024 * MIB,
-            packetCodecBytes = 1024 * MIB,
-            hkdfOps = 250_000,
-            diskBytes = 512 * MIB,
-            sustainedMixMs = 90_000,
-            scoreEnabled = true,
-        ),
+        computeFullWorkload(detectSystemProfile()),
         mode = YumeLocalSelfTestMode.Full,
         cacheDir = cacheDir,
         onProgress = onProgress,
@@ -171,6 +176,7 @@ internal object YumeLocalSelfTest {
             streamSingleBytes = 128 * KIB,
             streamManyBytes = 256 * KIB,
             manyStreams = 4,
+            hotThreads = 1,
             memoryBandwidthBytes = 128 * KIB,
             cryptoBytes = 128 * KIB,
             packetCodecBytes = 128 * KIB,
@@ -192,11 +198,7 @@ internal object YumeLocalSelfTest {
     ): YumeLocalSelfTestReport {
         val start = System.nanoTime()
         val rows = mutableListOf<YumeLocalSelfTestRow>()
-        val hotThreads = if (workload.scoreEnabled) {
-            Runtime.getRuntime().availableProcessors().coerceAtLeast(1).coerceAtMost(64)
-        } else {
-            1
-        }
+        val hotThreads = workload.hotThreads.coerceIn(1, 64)
         val steps = mutableListOf(
             WorkStep("copy-floor", 0.25) { _ -> runCopyFloor(workload.copyBytes) },
             WorkStep("stream-copy-1", 0.35) { _ -> runStreamCopy(workload.streamSingleBytes, streams = 1) },
@@ -213,7 +215,7 @@ internal object YumeLocalSelfTest {
         }
         if (workload.sustainedMixMs > 0) {
             steps += WorkStep("sustained-mix", workload.sustainedMixMs.toDouble() / 1_000.0) { progress ->
-                runSustainedMix(workload.sustainedMixMs, progress)
+                runSustainedMix(workload.sustainedMixMs, hotThreads, progress)
             }
         }
         val totalWeight = steps.sumOf { it.weight }.coerceAtLeast(1.0)
@@ -240,6 +242,108 @@ internal object YumeLocalSelfTest {
             mode = mode,
             globalScore = globalScore,
             leagueScore = leagueScore,
+            profileDetail = workload.profileDetail,
+            workloadDetail = workload.workloadDetail,
+        )
+    }
+
+    private data class AndroidSystemProfile(
+        val logicalCpus: Int,
+        val totalMemoryMiB: Int,
+        val availableMemoryMiB: Int,
+        val heapMaxMemoryMiB: Int,
+    )
+
+    private fun detectSystemProfile(): AndroidSystemProfile {
+        val runtime = Runtime.getRuntime()
+        val memInfo = readProcMemInfo()
+        val heapMaxMiB = (runtime.maxMemory() / MIB.toLong())
+            .coerceAtLeast(0L)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+        return AndroidSystemProfile(
+            logicalCpus = runtime.availableProcessors().coerceAtLeast(1),
+            totalMemoryMiB = memInfo.first,
+            availableMemoryMiB = memInfo.second,
+            heapMaxMemoryMiB = heapMaxMiB,
+        )
+    }
+
+    private fun readProcMemInfo(): Pair<Int, Int> {
+        var totalMiB = 0
+        var availableMiB = 0
+        runCatching {
+            File("/proc/meminfo").useLines { lines ->
+                lines.forEach { line ->
+                    when {
+                        line.startsWith("MemTotal:") -> totalMiB = memInfoLineToMiB(line)
+                        line.startsWith("MemAvailable:") -> availableMiB = memInfoLineToMiB(line)
+                    }
+                }
+            }
+        }
+        if (availableMiB == 0 && totalMiB > 0) {
+            availableMiB = totalMiB / 2
+        }
+        return totalMiB to availableMiB
+    }
+
+    private fun memInfoLineToMiB(line: String): Int {
+        val kib = line.split(memInfoSplit)
+            .firstOrNull { token -> token.all { it.isDigit() } }
+            ?.toLongOrNull()
+            ?: return 0
+        return (kib / 1024L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    private fun computeFullWorkload(profile: AndroidSystemProfile): Workload {
+        val usableMemoryMiB = when {
+            profile.availableMemoryMiB > 0 -> profile.availableMemoryMiB
+            profile.totalMemoryMiB > 0 -> profile.totalMemoryMiB / 2
+            else -> 2048
+        }
+        val hotThreads = profile.logicalCpus.coerceIn(1, 64)
+        val heapBudgetMiB = profile.heapMaxMemoryMiB.coerceAtLeast(256)
+        val memoryMiB = (usableMemoryMiB / 8).coerceIn(512, minOf(1536, heapBudgetMiB * 2))
+        val parallelPayloadMiB = (hotThreads * 192).coerceIn(512, 2048)
+        val sustainedMs = when {
+            hotThreads >= 8 && usableMemoryMiB >= 4096 -> 120_000L
+            hotThreads >= 6 -> 100_000L
+            else -> 90_000L
+        }
+        val copyBytes = mib((usableMemoryMiB / 32).coerceIn(512, 1024))
+        val streamSingleBytes = mib((usableMemoryMiB / 64).coerceIn(256, 1024))
+        val streamManyBytes = mib((usableMemoryMiB / 16).coerceIn(1024, 2048))
+        val memoryBandwidthBytes = mib(memoryMiB)
+        val cryptoBytes = mib(parallelPayloadMiB)
+        val packetCodecBytes = mib(parallelPayloadMiB)
+        val hkdfOps = (hotThreads * 25_000).coerceIn(250_000, 1_000_000)
+        val diskBytes = mib((usableMemoryMiB / 64).coerceIn(256, 1024))
+        val profileDetail = "cpus=${profile.logicalCpus} " +
+            "mem_mib=${profile.totalMemoryMiB} " +
+            "available_mib=$usableMemoryMiB " +
+            "heap_mib=${profile.heapMaxMemoryMiB}"
+        val workloadDetail = "threads=$hotThreads " +
+            "memory_mib=${memoryBandwidthBytes / MIB} " +
+            "crypto_mib=${cryptoBytes / MIB} " +
+            "packet_mib=${packetCodecBytes / MIB} " +
+            "disk_mib=${diskBytes / MIB} " +
+            "sustained_s=${sustainedMs / 1000L}"
+        return Workload(
+            copyBytes = copyBytes,
+            streamSingleBytes = streamSingleBytes,
+            streamManyBytes = streamManyBytes,
+            manyStreams = 64,
+            hotThreads = hotThreads,
+            memoryBandwidthBytes = memoryBandwidthBytes,
+            cryptoBytes = cryptoBytes,
+            packetCodecBytes = packetCodecBytes,
+            hkdfOps = hkdfOps,
+            diskBytes = diskBytes,
+            sustainedMixMs = sustainedMs,
+            scoreEnabled = true,
+            profileDetail = profileDetail,
+            workloadDetail = workloadDetail,
         )
     }
 
@@ -369,7 +473,7 @@ internal object YumeLocalSelfTest {
         val workers = List(workerCount) { workerIndex ->
             thread(start = false, name = "yume-selftest-aead-enc-$workerIndex") {
                 val key = Crypto.randomBytes(32)
-                val aad = "yume-android-selftest".toByteArray(StandardCharsets.US_ASCII)
+                val aad = selfTestAscii(SELF_TEST_AAD)
                 val plaintext = patternedBytes(64 * KIB, seed = 21 + workerIndex)
                 val iterations = iterationsFor(perWorkerBytes[workerIndex], plaintext.size)
                 var localGuard = 0
@@ -407,7 +511,7 @@ internal object YumeLocalSelfTest {
         val workers = List(workerCount) { workerIndex ->
             thread(start = false, name = "yume-selftest-aead-dec-$workerIndex") {
                 val key = Crypto.randomBytes(32)
-                val aad = "yume-android-selftest".toByteArray(StandardCharsets.US_ASCII)
+                val aad = selfTestAscii(SELF_TEST_AAD)
                 val plaintext = patternedBytes(64 * KIB, seed = 21 + workerIndex)
                 val encrypted = Crypto.aesGcmEncrypt(key, plaintext, aad)
                 val iterations = iterationsFor(perWorkerBytes[workerIndex], plaintext.size)
@@ -583,9 +687,9 @@ internal object YumeLocalSelfTest {
 
     private fun runSustainedMix(
         targetMs: Long,
+        workerCount: Int,
         onProgress: (Double) -> Unit = {},
     ): YumeLocalSelfTestRow {
-        val workerCount = Runtime.getRuntime().availableProcessors().coerceAtLeast(1).coerceAtMost(64)
         val startFlag = AtomicBoolean(false)
         val bytesByWorker = LongArray(workerCount)
         val roundsByWorker = LongArray(workerCount)
@@ -598,7 +702,7 @@ internal object YumeLocalSelfTest {
             thread(start = false, name = "yume-selftest-sustain-$workerIndex") {
                 try {
                     val key = Crypto.randomBytes(32)
-                    val aad = "yume-android-selftest".toByteArray(StandardCharsets.US_ASCII)
+                    val aad = selfTestAscii(SELF_TEST_AAD)
                     val plaintext = patternedBytes(64 * KIB, seed = 31 + workerIndex)
                     val batch = packetBatch()
                     val encodedPacketBytes = YumePacketBulk.encodedSize(batch)
@@ -615,7 +719,7 @@ internal object YumeLocalSelfTest {
                             batch.copy(sequence = (workerIndex.toLong() shl 48) or localRounds),
                         )
                         val decoded = YumePacketBulk.decode(encoded)
-                        val info = "yume-sustain:$workerIndex:$localRounds".toByteArray(StandardCharsets.US_ASCII)
+                        val info = selfTestAscii("$SELF_TEST_SUSTAIN_INFO_PREFIX$workerIndex:$localRounds")
                         val derived = Crypto.hkdfSha256(key, info, 32)
                         localGuard = localGuard xor decrypted[(localRounds and (decrypted.size - 1).toLong()).toInt()].toInt()
                         localGuard = localGuard xor decoded.packets.last().last().toInt()
@@ -787,6 +891,7 @@ internal object YumeLocalSelfTest {
         val streamSingleBytes: Int,
         val streamManyBytes: Int,
         val manyStreams: Int,
+        val hotThreads: Int,
         val memoryBandwidthBytes: Int,
         val cryptoBytes: Int,
         val packetCodecBytes: Int,
@@ -794,6 +899,8 @@ internal object YumeLocalSelfTest {
         val diskBytes: Int,
         val sustainedMixMs: Long,
         val scoreEnabled: Boolean,
+        val profileDetail: String = "",
+        val workloadDetail: String = "",
     )
 
     private data class WorkStep(
