@@ -21,11 +21,12 @@ internal data class YumeLocalSelfTestReport(
     val score: Long? = null,
 ) {
     fun toPlainText(): String = buildString {
-        appendLine("Yume Android local self-test")
+        appendLine("Yume Android local benchmark")
         appendLine("mode=${mode.id}")
         appendLine("elapsed_ms=$elapsedMs")
         score?.let {
-            appendLine("score_model=yume-bench-v2")
+            appendLine("TOTAL ${formatSelfTestInteger(it)} grade=${benchmarkGrade(it)} model=yume-bench-v3")
+            appendLine("score_model=yume-bench-v3")
             appendLine("score=$it grade=${benchmarkGrade(it)}")
         }
         for (row in rows) {
@@ -176,31 +177,36 @@ internal object YumeLocalSelfTest {
         val start = System.nanoTime()
         val rows = mutableListOf<YumeLocalSelfTestRow>()
         val steps = mutableListOf(
-            WorkStep("copy-floor") { _ -> runCopyFloor(workload.copyBytes) },
-            WorkStep("stream-copy-1") { _ -> runStreamCopy(workload.streamSingleBytes, streams = 1) },
-            WorkStep("stream-copy-many") { _ -> runStreamCopy(workload.streamManyBytes, streams = workload.manyStreams) },
-            WorkStep("aes-gcm-encrypt") { _ -> runAesGcmEncrypt(workload.cryptoBytes) },
-            WorkStep("aes-gcm-decrypt") { _ -> runAesGcmDecrypt(workload.cryptoBytes) },
-            WorkStep("packet-bulk-encode") { _ -> runPacketBulkEncode(workload.packetCodecBytes) },
-            WorkStep("packet-bulk-decode") { _ -> runPacketBulkDecode(workload.packetCodecBytes) },
-            WorkStep("hop-hkdf") { _ -> runHopHkdf(workload.hkdfOps) },
+            WorkStep("copy-floor", 0.25) { _ -> runCopyFloor(workload.copyBytes) },
+            WorkStep("stream-copy-1", 0.35) { _ -> runStreamCopy(workload.streamSingleBytes, streams = 1) },
+            WorkStep("stream-copy-many", 0.70) { _ -> runStreamCopy(workload.streamManyBytes, streams = workload.manyStreams) },
+            WorkStep("aes-gcm-encrypt", 2.20) { _ -> runAesGcmEncrypt(workload.cryptoBytes) },
+            WorkStep("aes-gcm-decrypt", 2.20) { _ -> runAesGcmDecrypt(workload.cryptoBytes) },
+            WorkStep("packet-bulk-encode", 0.90) { _ -> runPacketBulkEncode(workload.packetCodecBytes) },
+            WorkStep("packet-bulk-decode", 0.90) { _ -> runPacketBulkDecode(workload.packetCodecBytes) },
+            WorkStep("hop-hkdf", 0.80) { _ -> runHopHkdf(workload.hkdfOps) },
         )
         if (workload.diskBytes > 0 && cacheDir != null) {
-            steps += WorkStep("disk-write") { _ -> runDiskWrite(cacheDir, workload.diskBytes) }
+            steps += WorkStep("disk-write", 1.40) { _ -> runDiskWrite(cacheDir, workload.diskBytes) }
         }
         if (workload.sustainedMixMs > 0) {
-            steps += WorkStep("sustained-mix") { progress -> runSustainedMix(workload.sustainedMixMs, progress) }
+            steps += WorkStep("sustained-mix", workload.sustainedMixMs.toDouble() / 1_000.0) { progress ->
+                runSustainedMix(workload.sustainedMixMs, progress)
+            }
         }
-        val totalSteps = steps.size.coerceAtLeast(1)
-        fun publish(index: Int, label: String, stageFraction: Double = 0.0) {
-            val fraction = ((index.toDouble() + stageFraction.coerceIn(0.0, 1.0)) / totalSteps.toDouble())
+        val totalWeight = steps.sumOf { it.weight }.coerceAtLeast(1.0)
+        var completedWeight = 0.0
+        fun publish(weightBeforeStep: Double, step: WorkStep, stageFraction: Double = 0.0) {
+            val fraction = ((weightBeforeStep + step.weight * stageFraction.coerceIn(0.0, 1.0)) / totalWeight)
                 .coerceIn(0.0, 1.0)
-            onProgress(YumeLocalSelfTestProgress(label, fraction.toFloat()))
+            onProgress(YumeLocalSelfTestProgress(step.name, fraction.toFloat()))
         }
-        steps.forEachIndexed { index, step ->
-            publish(index, step.name)
-            rows += capture(step.name) { step.block { stageFraction -> publish(index, step.name, stageFraction) } }
-            publish(index, step.name, 1.0)
+        steps.forEach { step ->
+            val weightBeforeStep = completedWeight
+            publish(weightBeforeStep, step)
+            rows += capture(step.name) { step.block { stageFraction -> publish(weightBeforeStep, step, stageFraction) } }
+            completedWeight += step.weight
+            publish(weightBeforeStep, step, 1.0)
         }
         onProgress(YumeLocalSelfTestProgress("complete", 1f))
         val elapsedMs = ((System.nanoTime() - start) / 1_000_000L).coerceAtLeast(0L)
@@ -558,16 +564,16 @@ internal object YumeLocalSelfTest {
     private fun computeScore(rows: List<YumeLocalSelfTestRow>): Long? {
         data class Component(val name: String, val reference: Double, val weight: Double)
         val components = listOf(
-            Component("copy-floor", 100_000.0, 250_000.0),
-            Component("stream-copy-1", 35_000.0, 300_000.0),
-            Component("stream-copy-many", 30_000.0, 350_000.0),
-            Component("aes-gcm-encrypt", 2_500.0, 1_400_000.0),
-            Component("aes-gcm-decrypt", 2_500.0, 1_400_000.0),
-            Component("packet-bulk-encode", 5_500.0, 1_200_000.0),
-            Component("packet-bulk-decode", 5_500.0, 1_200_000.0),
-            Component("hop-hkdf", 900_000.0, 900_000.0),
-            Component("disk-write", 1_800.0, 250_000.0),
-            Component("sustained-mix", 3_000.0, 2_750_000.0),
+            Component("copy-floor", 250_000.0, 100_000.0),
+            Component("stream-copy-1", 80_000.0, 150_000.0),
+            Component("stream-copy-many", 120_000.0, 150_000.0),
+            Component("aes-gcm-encrypt", 6_000.0, 1_300_000.0),
+            Component("aes-gcm-decrypt", 6_000.0, 1_300_000.0),
+            Component("packet-bulk-encode", 12_000.0, 1_100_000.0),
+            Component("packet-bulk-decode", 12_000.0, 1_100_000.0),
+            Component("hop-hkdf", 2_500_000.0, 800_000.0),
+            Component("disk-write", 3_500.0, 100_000.0),
+            Component("sustained-mix", 12_000.0, 3_900_000.0),
         )
         var earned = 0.0
         var possible = 0.0
@@ -599,13 +605,14 @@ internal object YumeLocalSelfTest {
 
     private data class WorkStep(
         val name: String,
+        val weight: Double,
         val block: ((Double) -> Unit) -> YumeLocalSelfTestRow,
     )
 
     private fun scoreScale(ratio: Double): Double {
         if (ratio <= 0.0) return 0.0
-        if (ratio <= 1.0) return ratio.pow(0.70)
-        return 1.0 + ln(ratio) * 0.22
+        if (ratio <= 1.0) return ratio.pow(0.95)
+        return 1.0 + ln(ratio) * 0.12
     }
 }
 
@@ -613,32 +620,36 @@ private fun formatSelfTestRaw(value: Double): String {
     return String.format(Locale.US, "%.6f", value)
 }
 
+private fun formatSelfTestInteger(value: Long): String {
+    return String.format(Locale.US, "%,d", value)
+}
+
 internal fun benchmarkGrade(score: Long): String = when {
-    score >= 60_000_000L -> "SSS+"
-    score >= 40_000_000L -> "SSS"
-    score >= 28_000_000L -> "SSS-"
-    score >= 20_000_000L -> "SS+"
-    score >= 15_000_000L -> "SS"
-    score >= 11_000_000L -> "SS-"
-    score >= 9_000_000L -> "S+"
-    score >= 7_000_000L -> "S"
-    score >= 5_200_000L -> "S-"
+    score >= 120_000_000L -> "SSS+"
+    score >= 80_000_000L -> "SSS"
+    score >= 55_000_000L -> "SSS-"
+    score >= 38_000_000L -> "SS+"
+    score >= 26_000_000L -> "SS"
+    score >= 18_000_000L -> "SS-"
+    score >= 12_000_000L -> "S+"
+    score >= 8_000_000L -> "S"
+    score >= 5_500_000L -> "S-"
     score >= 3_800_000L -> "AAA+"
-    score >= 2_800_000L -> "AAA"
-    score >= 2_000_000L -> "AAA-"
-    score >= 1_500_000L -> "A+"
-    score >= 1_100_000L -> "A"
-    score >= 800_000L -> "A-"
-    score >= 580_000L -> "B+"
-    score >= 420_000L -> "B"
-    score >= 300_000L -> "B-"
-    score >= 210_000L -> "C+"
-    score >= 150_000L -> "C"
-    score >= 100_000L -> "C-"
-    score >= 65_000L -> "D+"
-    score >= 40_000L -> "D"
-    score >= 25_000L -> "D-"
-    score >= 12_000L -> "F+"
-    score >= 6_000L -> "F"
+    score >= 3_000_000L -> "AAA"
+    score >= 2_350_000L -> "AAA-"
+    score >= 2_000_000L -> "A+"
+    score >= 1_750_000L -> "A"
+    score >= 1_500_000L -> "A-"
+    score >= 1_200_000L -> "B+"
+    score >= 900_000L -> "B"
+    score >= 650_000L -> "B-"
+    score >= 460_000L -> "C+"
+    score >= 300_000L -> "C"
+    score >= 190_000L -> "C-"
+    score >= 140_000L -> "D+"
+    score >= 85_000L -> "D"
+    score >= 50_000L -> "D-"
+    score >= 25_000L -> "F+"
+    score >= 10_000L -> "F"
     else -> "F-"
 }
