@@ -8,7 +8,6 @@ import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
-import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -29,11 +28,11 @@ internal data class YumeLocalSelfTestReport(
         appendLine("mode=${mode.id}")
         appendLine("elapsed_ms=$elapsedMs")
         globalScore?.let {
-            appendLine("GLOBAL ${formatSelfTestInteger(it)} grade=${benchmarkGrade(it)} model=yume-global-v4")
+            appendLine("GLOBAL ${formatSelfTestInteger(it)} grade=${benchmarkGrade(it)} model=yume-global-v5")
             appendLine("global_score=$it global_grade=${benchmarkGrade(it)}")
         }
         leagueScore?.let {
-            appendLine("LEAGUE ${formatSelfTestInteger(it)} grade=${benchmarkGrade(it)} model=yume-android-v4")
+            appendLine("LEAGUE ${formatSelfTestInteger(it)} grade=${benchmarkGrade(it)} model=yume-android-v5")
             appendLine("league_score=$it league_grade=${benchmarkGrade(it)}")
         }
         for (row in rows) {
@@ -438,45 +437,79 @@ internal object YumeLocalSelfTest {
         targetMs: Long,
         onProgress: (Double) -> Unit = {},
     ): YumeLocalSelfTestRow {
-        val key = Crypto.randomBytes(32)
-        val aad = "yume-android-selftest".toByteArray(StandardCharsets.US_ASCII)
-        val plaintext = patternedBytes(64 * KIB)
-        val batch = packetBatch()
-        val encodedPacketBytes = YumePacketBulk.encodedSize(batch)
+        val workerCount = Runtime.getRuntime().availableProcessors().coerceAtLeast(1).coerceAtMost(64)
+        val startFlag = AtomicBoolean(false)
+        val bytesByWorker = LongArray(workerCount)
+        val roundsByWorker = LongArray(workerCount)
+        val guards = IntArray(workerCount)
+        val errors = arrayOfNulls<Throwable>(workerCount)
         val targetNs = targetMs.coerceAtLeast(1L) * 1_000_000L
-        val started = System.nanoTime()
-        val deadline = started + targetNs
-        var nextProgressNs = started
-        var guard = 0
-        var rounds = 0
-        var bytes = 0L
-        var now = started
+        var started = 0L
+        var deadline = 0L
+        val workers = List(workerCount) { workerIndex ->
+            thread(start = false, name = "yume-selftest-sustain-$workerIndex") {
+                try {
+                    val key = Crypto.randomBytes(32)
+                    val aad = "yume-android-selftest".toByteArray(StandardCharsets.US_ASCII)
+                    val plaintext = patternedBytes(64 * KIB, seed = 31 + workerIndex)
+                    val batch = packetBatch()
+                    val encodedPacketBytes = YumePacketBulk.encodedSize(batch)
+                    var localGuard = 0
+                    var localRounds = 0L
+                    var localBytes = 0L
+                    while (!startFlag.get()) {
+                        Thread.yield()
+                    }
+                    while (System.nanoTime() < deadline) {
+                        val encrypted = Crypto.aesGcmEncrypt(key, plaintext, aad)
+                        val decrypted = Crypto.aesGcmDecrypt(key, encrypted, aad)
+                        val encoded = YumePacketBulk.encode(
+                            batch.copy(sequence = (workerIndex.toLong() shl 48) or localRounds),
+                        )
+                        val decoded = YumePacketBulk.decode(encoded)
+                        val info = "yume-sustain:$workerIndex:$localRounds".toByteArray(StandardCharsets.US_ASCII)
+                        val derived = Crypto.hkdfSha256(key, info, 32)
+                        localGuard = localGuard xor decrypted[(localRounds and (decrypted.size - 1).toLong()).toInt()].toInt()
+                        localGuard = localGuard xor decoded.packets.last().last().toInt()
+                        localGuard = localGuard xor derived[0].toInt()
+                        localBytes += plaintext.size.toLong() * 2L
+                        localBytes += encodedPacketBytes.toLong() * 2L
+                        localRounds += 1L
+                    }
+                    bytesByWorker[workerIndex] = localBytes
+                    roundsByWorker[workerIndex] = localRounds
+                    guards[workerIndex] = localGuard
+                } catch (throwable: Throwable) {
+                    errors[workerIndex] = throwable
+                }
+            }
+        }
         val seconds = timedSeconds {
-            do {
-                val encrypted = Crypto.aesGcmEncrypt(key, plaintext, aad)
-                val decrypted = Crypto.aesGcmDecrypt(key, encrypted, aad)
-                val encoded = YumePacketBulk.encode(batch.copy(sequence = rounds.toLong()))
-                val decoded = YumePacketBulk.decode(encoded)
-                val derived = Crypto.hkdfSha256(key, "yume-sustain:$rounds".toByteArray(StandardCharsets.US_ASCII), 32)
-                guard = guard xor decrypted[rounds and (decrypted.size - 1)].toInt()
-                guard = guard xor decoded.packets.last().last().toInt()
-                guard = guard xor derived[0].toInt()
-                bytes += plaintext.size.toLong() * 2L
-                bytes += encodedPacketBytes.toLong() * 2L
-                rounds += 1
-                now = System.nanoTime()
+            workers.forEach { it.start() }
+            started = System.nanoTime()
+            deadline = started + targetNs
+            var nextProgressNs = started
+            startFlag.set(true)
+            while (System.nanoTime() < deadline) {
+                val now = System.nanoTime()
                 if (now >= nextProgressNs) {
                     onProgress((now - started).toDouble() / targetNs.toDouble())
                     nextProgressNs = now + 500_000_000L
                 }
-            } while (now < deadline)
+                Thread.sleep(50L)
+            }
+            workers.forEach { it.join() }
         }
+        errors.firstOrNull { it != null }?.let { throw it }
+        val bytes = bytesByWorker.sum()
+        val rounds = roundsByWorker.sum()
+        val guard = guards.fold(0) { acc, value -> acc xor value }
         onProgress(1.0)
         return throughputRow(
             name = "sustained-mix",
             bytes = bytes,
             seconds = seconds,
-            detail = "${targetMs}ms mixed BaseFWX AES-GCM + packet bulk + HKDF, rounds=$rounds, guard=${guard and 0xFF}",
+            detail = "${targetMs}ms mixed BaseFWX AES-GCM + packet bulk + HKDF, rounds=$rounds, threads=$workerCount, guard=${guard and 0xFF}",
         )
     }
 
@@ -589,7 +622,7 @@ internal object YumeLocalSelfTest {
         for (component in components) {
             val row = rows.firstOrNull { it.ok && it.name == component.name } ?: continue
             val value = row.value ?: continue
-            val reference = if (global) component.reference * 10.0 else component.reference
+            val reference = if (global) component.reference * 2.0 else component.reference
             val normalized = scoreScale(value / reference)
             earned += normalized * component.weight
             possible += component.weight
@@ -622,7 +655,7 @@ internal object YumeLocalSelfTest {
     private fun scoreScale(ratio: Double): Double {
         if (ratio <= 0.0) return 0.0
         if (ratio <= 1.0) return ratio.pow(0.95)
-        return 1.0 + ln(ratio) * 0.12
+        return ratio.pow(0.68)
     }
 }
 
