@@ -36,7 +36,7 @@ private const val SELF_TEST_SUSTAIN_INFO_PREFIX = "yume-sustain:"
 // vendors when recalibrating; adjust component references/weights together.
 private const val SELF_TEST_GLOBAL_REFERENCE_MULTIPLIER = 4.0
 private const val SELF_TEST_REFERENCE_SCORE = 10_000_000.0
-private const val SELF_TEST_ABOVE_REFERENCE_SCORE = 75_000_000L
+private const val SELF_TEST_ABOVE_REFERENCE_SCORE = 7_000_000L
 private val memInfoSplit = Regex("\\s+")
 
 private fun selfTestChecksum(value: Int): String = "$SELF_TEST_CHECKSUM_FIELD=${value and 0xFF}"
@@ -1400,32 +1400,32 @@ private data class BenchmarkGradeCutoff(
 )
 
 private val benchmarkGradeCutoffs = listOf(
-    BenchmarkGradeCutoff(45_000_000L, 24_000_000L, "SSS+"),
-    BenchmarkGradeCutoff(42_000_000L, 17_000_000L, "SSS"),
-    BenchmarkGradeCutoff(40_000_000L, 12_000_000L, "SSS-"),
-    BenchmarkGradeCutoff(35_000_000L, 8_500_000L, "SS+"),
-    BenchmarkGradeCutoff(28_000_000L, 6_000_000L, "SS"),
-    BenchmarkGradeCutoff(22_000_000L, 4_200_000L, "SS-"),
-    BenchmarkGradeCutoff(16_000_000L, 3_000_000L, "S+"),
-    BenchmarkGradeCutoff(11_000_000L, 2_200_000L, "S"),
-    BenchmarkGradeCutoff(7_500_000L, 1_600_000L, "S-"),
-    BenchmarkGradeCutoff(5_000_000L, 1_150_000L, "AAA+"),
-    BenchmarkGradeCutoff(3_500_000L, 850_000L, "AAA"),
-    BenchmarkGradeCutoff(2_400_000L, 620_000L, "AAA-"),
-    BenchmarkGradeCutoff(1_600_000L, 450_000L, "A+"),
-    BenchmarkGradeCutoff(1_050_000L, 320_000L, "A"),
-    BenchmarkGradeCutoff(700_000L, 230_000L, "A-"),
-    BenchmarkGradeCutoff(450_000L, 165_000L, "B+"),
-    BenchmarkGradeCutoff(300_000L, 115_000L, "B"),
-    BenchmarkGradeCutoff(200_000L, 80_000L, "B-"),
-    BenchmarkGradeCutoff(130_000L, 55_000L, "C+"),
-    BenchmarkGradeCutoff(80_000L, 36_000L, "C"),
-    BenchmarkGradeCutoff(50_000L, 23_000L, "C-"),
-    BenchmarkGradeCutoff(30_000L, 15_000L, "D+"),
-    BenchmarkGradeCutoff(20_000L, 9_000L, "D"),
-    BenchmarkGradeCutoff(12_000L, 5_000L, "D-"),
-    BenchmarkGradeCutoff(6_000L, 2_500L, "F+"),
-    BenchmarkGradeCutoff(2_500L, 1_000L, "F"),
+    BenchmarkGradeCutoff(6_800_000L, 24_000_000L, "SSS+"),
+    BenchmarkGradeCutoff(6_200_000L, 17_000_000L, "SSS"),
+    BenchmarkGradeCutoff(5_600_000L, 12_000_000L, "SSS-"),
+    BenchmarkGradeCutoff(5_000_000L, 8_500_000L, "SS+"),
+    BenchmarkGradeCutoff(4_400_000L, 6_000_000L, "SS"),
+    BenchmarkGradeCutoff(3_900_000L, 4_200_000L, "SS-"),
+    BenchmarkGradeCutoff(3_500_000L, 3_000_000L, "S+"),
+    BenchmarkGradeCutoff(3_100_000L, 2_200_000L, "S"),
+    BenchmarkGradeCutoff(2_800_000L, 1_600_000L, "S-"),
+    BenchmarkGradeCutoff(2_650_000L, 1_150_000L, "AAA+"),
+    BenchmarkGradeCutoff(2_550_000L, 850_000L, "AAA"),
+    BenchmarkGradeCutoff(2_500_000L, 620_000L, "AAA-"),
+    BenchmarkGradeCutoff(2_450_000L, 450_000L, "A+"),
+    BenchmarkGradeCutoff(2_100_000L, 320_000L, "A"),
+    BenchmarkGradeCutoff(1_750_000L, 230_000L, "A-"),
+    BenchmarkGradeCutoff(1_350_000L, 165_000L, "B+"),
+    BenchmarkGradeCutoff(950_000L, 115_000L, "B"),
+    BenchmarkGradeCutoff(650_000L, 80_000L, "B-"),
+    BenchmarkGradeCutoff(420_000L, 55_000L, "C+"),
+    BenchmarkGradeCutoff(270_000L, 36_000L, "C"),
+    BenchmarkGradeCutoff(170_000L, 23_000L, "C-"),
+    BenchmarkGradeCutoff(100_000L, 15_000L, "D+"),
+    BenchmarkGradeCutoff(60_000L, 9_000L, "D"),
+    BenchmarkGradeCutoff(35_000L, 5_000L, "D-"),
+    BenchmarkGradeCutoff(18_000L, 2_500L, "F+"),
+    BenchmarkGradeCutoff(8_000L, 1_000L, "F"),
 )
 
 internal fun benchmarkGrade(score: Long, track: BenchmarkScoreTrack = BenchmarkScoreTrack.Global): String {
