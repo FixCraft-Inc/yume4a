@@ -19,6 +19,8 @@ private const val SELF_TEST_CHECKSUM_FIELD = "checksum"
 private const val SELF_TEST_HKDF_INFO_PREFIX = "yume-hop-v1:"
 private const val SELF_TEST_AAD = "yume-android-selftest"
 private const val SELF_TEST_SUSTAIN_INFO_PREFIX = "yume-sustain:"
+private const val SELF_TEST_GLOBAL_REFERENCE_MULTIPLIER = 6.0
+private const val SELF_TEST_REFERENCE_SCORE = 10_000_000.0
 private val memInfoSplit = Regex("\\s+")
 
 private fun selfTestChecksum(value: Int): String = "$SELF_TEST_CHECKSUM_FIELD=${value and 0xFF}"
@@ -43,6 +45,9 @@ internal data class YumeLocalSelfTestReport(
         globalScore?.let {
             appendLine("GLOBAL ${formatSelfTestInteger(it)} ${benchmarkGrade(it, BenchmarkScoreTrack.Global)} model=$SELF_TEST_GLOBAL_MODEL")
             appendLine("global_score=$it global_grade=${benchmarkGrade(it, BenchmarkScoreTrack.Global)}")
+            if (it >= SELF_TEST_REFERENCE_SCORE.toLong()) {
+                appendLine("global_note=above_reference")
+            }
         }
         leagueScore?.let {
             appendLine("PLATFORM ${formatSelfTestInteger(it)} ${benchmarkGrade(it, BenchmarkScoreTrack.AndroidLeague)} model=$SELF_TEST_ANDROID_MODEL")
@@ -120,7 +125,6 @@ internal data class YumeLocalSelfTestProgress(
 internal object YumeLocalSelfTest {
     private const val KIB = 1024
     private const val MIB = 1024 * KIB
-    private const val REFERENCE_SCORE = 10_000_000.0
 
     private fun mib(value: Int): Int {
         return value.coerceAtLeast(0).coerceAtMost(Int.MAX_VALUE / MIB) * MIB
@@ -1016,13 +1020,17 @@ internal object YumeLocalSelfTest {
         for (component in components) {
             val row = rows.firstOrNull { it.ok && it.name == component.name } ?: continue
             val value = row.value ?: continue
-            val reference = if (global) component.reference * 6.0 else component.reference
+            val reference = if (global) {
+                component.reference * SELF_TEST_GLOBAL_REFERENCE_MULTIPLIER
+            } else {
+                component.reference
+            }
             val normalized = scoreScale(value / reference)
             earned += normalized * component.weight
             possible += component.weight
         }
         if (possible <= 0.0) return null
-        return ((earned / possible).coerceAtLeast(0.0) * REFERENCE_SCORE)
+        return ((earned / possible).coerceAtLeast(0.0) * SELF_TEST_REFERENCE_SCORE)
             .roundToLong()
             .coerceAtLeast(0L)
     }
@@ -1077,32 +1085,32 @@ private data class BenchmarkGradeCutoff(
 )
 
 private val benchmarkGradeCutoffs = listOf(
-    BenchmarkGradeCutoff(50_000_000L, 24_000_000L, "SSS+"),
-    BenchmarkGradeCutoff(35_000_000L, 17_000_000L, "SSS"),
-    BenchmarkGradeCutoff(24_000_000L, 12_000_000L, "SSS-"),
-    BenchmarkGradeCutoff(17_000_000L, 8_500_000L, "SS+"),
-    BenchmarkGradeCutoff(12_000_000L, 6_000_000L, "SS"),
-    BenchmarkGradeCutoff(8_500_000L, 4_200_000L, "SS-"),
-    BenchmarkGradeCutoff(6_000_000L, 3_000_000L, "S+"),
-    BenchmarkGradeCutoff(4_200_000L, 2_200_000L, "S"),
-    BenchmarkGradeCutoff(3_000_000L, 1_600_000L, "S-"),
-    BenchmarkGradeCutoff(2_100_000L, 1_150_000L, "AAA+"),
-    BenchmarkGradeCutoff(1_500_000L, 850_000L, "AAA"),
-    BenchmarkGradeCutoff(1_050_000L, 620_000L, "AAA-"),
-    BenchmarkGradeCutoff(750_000L, 450_000L, "A+"),
-    BenchmarkGradeCutoff(520_000L, 320_000L, "A"),
+    BenchmarkGradeCutoff(10_000_000L, 24_000_000L, "SSS+"),
+    BenchmarkGradeCutoff(8_000_000L, 17_000_000L, "SSS"),
+    BenchmarkGradeCutoff(6_400_000L, 12_000_000L, "SSS-"),
+    BenchmarkGradeCutoff(5_000_000L, 8_500_000L, "SS+"),
+    BenchmarkGradeCutoff(4_000_000L, 6_000_000L, "SS"),
+    BenchmarkGradeCutoff(3_200_000L, 4_200_000L, "SS-"),
+    BenchmarkGradeCutoff(2_500_000L, 3_000_000L, "S+"),
+    BenchmarkGradeCutoff(2_000_000L, 2_200_000L, "S"),
+    BenchmarkGradeCutoff(1_600_000L, 1_600_000L, "S-"),
+    BenchmarkGradeCutoff(1_250_000L, 1_150_000L, "AAA+"),
+    BenchmarkGradeCutoff(1_000_000L, 850_000L, "AAA"),
+    BenchmarkGradeCutoff(800_000L, 620_000L, "AAA-"),
+    BenchmarkGradeCutoff(620_000L, 450_000L, "A+"),
+    BenchmarkGradeCutoff(480_000L, 320_000L, "A"),
     BenchmarkGradeCutoff(360_000L, 230_000L, "A-"),
-    BenchmarkGradeCutoff(250_000L, 165_000L, "B+"),
-    BenchmarkGradeCutoff(175_000L, 115_000L, "B"),
-    BenchmarkGradeCutoff(120_000L, 80_000L, "B-"),
-    BenchmarkGradeCutoff(80_000L, 55_000L, "C+"),
-    BenchmarkGradeCutoff(50_000L, 36_000L, "C"),
-    BenchmarkGradeCutoff(32_000L, 23_000L, "C-"),
-    BenchmarkGradeCutoff(20_000L, 15_000L, "D+"),
-    BenchmarkGradeCutoff(12_000L, 9_000L, "D"),
-    BenchmarkGradeCutoff(7_000L, 5_000L, "D-"),
-    BenchmarkGradeCutoff(3_500L, 2_500L, "F+"),
-    BenchmarkGradeCutoff(1_500L, 1_000L, "F"),
+    BenchmarkGradeCutoff(260_000L, 165_000L, "B+"),
+    BenchmarkGradeCutoff(185_000L, 115_000L, "B"),
+    BenchmarkGradeCutoff(130_000L, 80_000L, "B-"),
+    BenchmarkGradeCutoff(90_000L, 55_000L, "C+"),
+    BenchmarkGradeCutoff(60_000L, 36_000L, "C"),
+    BenchmarkGradeCutoff(40_000L, 23_000L, "C-"),
+    BenchmarkGradeCutoff(25_000L, 15_000L, "D+"),
+    BenchmarkGradeCutoff(15_000L, 9_000L, "D"),
+    BenchmarkGradeCutoff(8_500L, 5_000L, "D-"),
+    BenchmarkGradeCutoff(4_000L, 2_500L, "F+"),
+    BenchmarkGradeCutoff(1_800L, 1_000L, "F"),
 )
 
 internal fun benchmarkGrade(score: Long, track: BenchmarkScoreTrack = BenchmarkScoreTrack.Global): String {
