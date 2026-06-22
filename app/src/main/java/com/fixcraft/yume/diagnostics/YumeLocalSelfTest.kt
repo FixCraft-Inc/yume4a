@@ -25,13 +25,15 @@ import org.bouncycastle.pqc.crypto.crystals.kyber.KyberParameters
 import org.bouncycastle.pqc.crypto.crystals.kyber.KyberPrivateKeyParameters
 import org.bouncycastle.pqc.crypto.crystals.kyber.KyberPublicKeyParameters
 
-private const val SELF_TEST_GLOBAL_MODEL = "yume-global-v1"
-private const val SELF_TEST_ANDROID_MODEL = "yume-android-v1"
+private const val SELF_TEST_GLOBAL_MODEL = "yume-global-v2"
+private const val SELF_TEST_ANDROID_MODEL = "yume-android-v2"
 private const val SELF_TEST_CHECKSUM_FIELD = "checksum"
 private const val SELF_TEST_HKDF_INFO_PREFIX = "yume-hop-v1:"
 private const val SELF_TEST_AAD = "yume-android-selftest"
 private const val SELF_TEST_INNER_INFO = "yume-inner-v1"
 private const val SELF_TEST_SUSTAIN_INFO_PREFIX = "yume-sustain:"
+// Reference-based scoring only. Do not special-case Android models, CPUs, or
+// vendors when recalibrating; adjust component references/weights together.
 private const val SELF_TEST_GLOBAL_REFERENCE_MULTIPLIER = 1.5
 private const val SELF_TEST_REFERENCE_SCORE = 10_000_000.0
 private val memInfoSplit = Regex("\\s+")
