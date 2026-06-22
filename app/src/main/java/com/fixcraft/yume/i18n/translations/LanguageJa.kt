@@ -81,10 +81,16 @@ internal object LanguageJa : LanguageBundle {
         "Measures this device's Yume hot paths without contacting a server." to "サーバーに接続せず、このデバイス上の Yume ホットパスを測定します。",
         "Run local self-test" to "ローカル self-test を実行",
         "Re-run local self-test" to "ローカル self-test を再実行",
+        "Quick test" to "クイックテスト",
+        "Full benchmark" to "フルベンチマーク",
         "Copy local self-test report" to "ローカル self-test レポートをコピー",
         "Running local self-test" to "ローカル self-test を実行中",
+        "Running full benchmark" to "フルベンチマークを実行中",
         "Local self-test report copied." to "ローカル self-test レポートをコピーしました。",
         "No local self-test results yet." to "ローカル self-test の結果はまだありません。",
+        "Show detailed stats" to "詳細統計を表示",
+        "Hide detailed stats" to "詳細統計を隠す",
+        "Full mode computes a GLOBAL score." to "フルモードでは GLOBAL スコアを計算します。",
         "Text tools" to "テキストツール",
         "Encrypt or decrypt text with BaseFWX-compatible modes." to "BaseFWX 互換モードでテキストを暗号化または復号します。",
         "Input" to "入力",
@@ -192,6 +198,8 @@ internal object LanguageJa : LanguageBundle {
                 "低速接続で帯域がどこに行っているかを特定するのに使用します。" +
                 "logcat（タグ「YumePerf」）と下の VPN ログ フィードで確認できます。",
         "Native transport (beta)" to "ネイティブ トランスポート (ベータ)",
+        "DNS policy" to "DNS ポリシー",
+        "IPv4-only; AAAA/SVCB/HTTPS records are stripped" to "IPv4 のみ。AAAA/SVCB/HTTPS レコードは除去されます",
         "Drives the TLS pipe via libyumetransport.so so the writer no " +
             "longer blocks on output.write() when the kernel TCP buffer " +
             "fills. Targets desktop-CLI-grade upload throughput. Takes " +

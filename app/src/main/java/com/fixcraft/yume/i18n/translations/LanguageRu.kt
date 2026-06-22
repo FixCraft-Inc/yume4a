@@ -81,10 +81,16 @@ internal object LanguageRu : LanguageBundle {
         "Measures this device's Yume hot paths without contacting a server." to "Измеряет горячие пути Yume на этом устройстве без обращения к серверу.",
         "Run local self-test" to "Запустить локальный self-test",
         "Re-run local self-test" to "Повторить локальный self-test",
+        "Quick test" to "Быстрый тест",
+        "Full benchmark" to "Полный бенчмарк",
         "Copy local self-test report" to "Копировать отчет локального self-test",
         "Running local self-test" to "Выполняется локальный self-test",
+        "Running full benchmark" to "Выполняется полный бенчмарк",
         "Local self-test report copied." to "Отчет локального self-test скопирован.",
         "No local self-test results yet." to "Результатов локального self-test пока нет.",
+        "Show detailed stats" to "Показать подробную статистику",
+        "Hide detailed stats" to "Скрыть подробную статистику",
+        "Full mode computes a GLOBAL score." to "Полный режим вычисляет оценку GLOBAL.",
         "Text tools" to "Текстовые инструменты",
         "Encrypt or decrypt text with BaseFWX-compatible modes." to "Шифруйте и расшифровывайте текст в режимах, совместимых с BaseFWX.",
         "Input" to "Ввод",
@@ -193,6 +199,8 @@ internal object LanguageRu : LanguageBundle {
                 "соединении. Виден в logcat (тег «YumePerf») и в журнале " +
                 "VPN ниже.",
         "Native transport (beta)" to "Нативный транспорт (бета)",
+        "DNS policy" to "Политика DNS",
+        "IPv4-only; AAAA/SVCB/HTTPS records are stripped" to "Только IPv4; записи AAAA/SVCB/HTTPS удаляются",
         "Drives the TLS pipe via libyumetransport.so so the writer no " +
             "longer blocks on output.write() when the kernel TCP buffer " +
             "fills. Targets desktop-CLI-grade upload throughput. Takes " +

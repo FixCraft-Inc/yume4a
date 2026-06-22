@@ -80,10 +80,16 @@ internal object LanguageUk : LanguageBundle {
         "Measures this device's Yume hot paths without contacting a server." to "Вимірює гарячі шляхи Yume на цьому пристрої без звернення до сервера.",
         "Run local self-test" to "Запустити локальний self-test",
         "Re-run local self-test" to "Повторити локальний self-test",
+        "Quick test" to "Швидкий тест",
+        "Full benchmark" to "Повний бенчмарк",
         "Copy local self-test report" to "Копіювати звіт локального self-test",
         "Running local self-test" to "Виконується локальний self-test",
+        "Running full benchmark" to "Виконується повний бенчмарк",
         "Local self-test report copied." to "Звіт локального self-test скопійовано.",
         "No local self-test results yet." to "Результатів локального self-test ще немає.",
+        "Show detailed stats" to "Показати докладну статистику",
+        "Hide detailed stats" to "Сховати докладну статистику",
+        "Full mode computes a GLOBAL score." to "Повний режим обчислює оцінку GLOBAL.",
         "Text tools" to "Текстові інструменти",
         "Encrypt or decrypt text with BaseFWX-compatible modes." to "Шифруйте або розшифровуйте текст у режимах, сумісних з BaseFWX.",
         "Input" to "Ввід",
@@ -192,6 +198,8 @@ internal object LanguageUk : LanguageBundle {
                 "з'єднанні. Видно у logcat (тег «YumePerf») і у журналі " +
                 "VPN нижче.",
         "Native transport (beta)" to "Нативний транспорт (бета)",
+        "DNS policy" to "Політика DNS",
+        "IPv4-only; AAAA/SVCB/HTTPS records are stripped" to "Лише IPv4; записи AAAA/SVCB/HTTPS вилучаються",
         "Drives the TLS pipe via libyumetransport.so so the writer no " +
             "longer blocks on output.write() when the kernel TCP buffer " +
             "fills. Targets desktop-CLI-grade upload throughput. Takes " +

@@ -45,8 +45,8 @@ internal data class YumeLocalSelfTestReport(
             appendLine("global_score=$it global_grade=${benchmarkGrade(it, BenchmarkScoreTrack.Global)}")
         }
         leagueScore?.let {
-            appendLine("LEAGUE ${formatSelfTestInteger(it)} ${benchmarkGrade(it, BenchmarkScoreTrack.AndroidLeague)} model=$SELF_TEST_ANDROID_MODEL")
-            appendLine("league_score=$it league_grade=${benchmarkGrade(it, BenchmarkScoreTrack.AndroidLeague)}")
+            appendLine("PLATFORM ${formatSelfTestInteger(it)} ${benchmarkGrade(it, BenchmarkScoreTrack.AndroidLeague)} model=$SELF_TEST_ANDROID_MODEL")
+            appendLine("platform_score=$it platform_grade=${benchmarkGrade(it, BenchmarkScoreTrack.AndroidLeague)}")
         }
         if (profileDetail.isNotBlank()) {
             appendLine("profile=$profileDetail")
@@ -198,6 +198,11 @@ internal object YumeLocalSelfTest {
     ): YumeLocalSelfTestReport {
         val start = System.nanoTime()
         val rows = mutableListOf<YumeLocalSelfTestRow>()
+        val loadSampler = if (mode == YumeLocalSelfTestMode.Full) {
+            SystemLoadSampler().also { it.start() }
+        } else {
+            null
+        }
         val hotThreads = workload.hotThreads.coerceIn(1, 64)
         val steps = mutableListOf(
             WorkStep("copy-floor", 0.25) { _ -> runCopyFloor(workload.copyBytes) },
@@ -232,6 +237,7 @@ internal object YumeLocalSelfTest {
             completedWeight += step.weight
             publish(weightBeforeStep, step, 1.0)
         }
+        loadSampler?.stop()?.let { rows += it }
         onProgress(YumeLocalSelfTestProgress("complete", 1f))
         val elapsedMs = ((System.nanoTime() - start) / 1_000_000L).coerceAtLeast(0L)
         val globalScore = if (workload.scoreEnabled) computeScore(rows, global = true) else null
@@ -253,6 +259,85 @@ internal object YumeLocalSelfTest {
         val availableMemoryMiB: Int,
         val heapMaxMemoryMiB: Int,
     )
+
+    private data class SystemLoadSample(
+        val cpuPercent: Double? = null,
+        val memoryUsedPercent: Double? = null,
+        val temperatureC: Double? = null,
+    )
+
+    private data class CpuTicks(
+        val idle: Long,
+        val total: Long,
+    )
+
+    private class SystemLoadSampler {
+        private val running = AtomicBoolean(false)
+        private val samples = mutableListOf<SystemLoadSample>()
+        private var startedNs: Long = 0L
+        private var worker: Thread? = null
+
+        fun start() {
+            if (running.getAndSet(true)) return
+            startedNs = System.nanoTime()
+            worker = thread(start = true, name = "yume-selftest-load") {
+                var previousCpu = readCpuTicks()
+                while (running.get()) {
+                    Thread.sleep(1_000L)
+                    val currentCpu = readCpuTicks()
+                    val cpuPercent = if (previousCpu != null && currentCpu != null) {
+                        cpuLoadPercent(previousCpu, currentCpu)
+                    } else {
+                        null
+                    }
+                    previousCpu = currentCpu
+                    val memInfo = readProcMemInfo()
+                    val memoryUsed = if (memInfo.first > 0 && memInfo.second in 0..memInfo.first) {
+                        (1.0 - (memInfo.second.toDouble() / memInfo.first.toDouble())) * 100.0
+                    } else {
+                        null
+                    }
+                    val tempC = readMaxThermalC()
+                    synchronized(samples) {
+                        samples += SystemLoadSample(cpuPercent, memoryUsed, tempC)
+                    }
+                }
+            }
+        }
+
+        fun stop(): YumeLocalSelfTestRow {
+            running.set(false)
+            worker?.join(2_500L)
+            val snapshot = synchronized(samples) { samples.toList() }
+            val cpu = miniStats(snapshot.mapNotNull { it.cpuPercent })
+            val memory = miniStats(snapshot.mapNotNull { it.memoryUsedPercent })
+            val temp = miniStats(snapshot.mapNotNull { it.temperatureC })
+            val seconds = ((System.nanoTime() - startedNs) / 1_000_000_000.0).coerceAtLeast(0.0)
+            val metric = if (cpu.max > 0.0 || cpu.median > 0.0) {
+                "${formatNumber(cpu.mean)}% avg CPU"
+            } else {
+                "unavailable"
+            }
+            val detail = buildString {
+                append("samples=${snapshot.size} ")
+                appendLoadStat("cpu", cpu, "%")
+                append(' ')
+                appendLoadStat("mem_used", memory, "%")
+                append(' ')
+                appendLoadStat("temp_c", temp, "C")
+            }
+            return YumeLocalSelfTestRow(
+                name = "system-load",
+                metric = metric,
+                detail = detail,
+                ok = snapshot.isNotEmpty(),
+                value = cpu.mean.takeIf { cpu.max > 0.0 || cpu.median > 0.0 },
+                unit = "%",
+                operations = snapshot.size,
+                seconds = seconds,
+            )
+        }
+    }
 
     private fun detectSystemProfile(): AndroidSystemProfile {
         val runtime = Runtime.getRuntime()
@@ -294,6 +379,43 @@ internal object YumeLocalSelfTest {
             ?.toLongOrNull()
             ?: return 0
         return (kib / 1024L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    private fun readCpuTicks(): CpuTicks? {
+        val line = runCatching {
+            File("/proc/stat").useLines { lines -> lines.firstOrNull().orEmpty() }
+        }.getOrNull() ?: return null
+        val parts = line.trim().split(memInfoSplit)
+        if (parts.size < 5 || parts.first() != "cpu") return null
+        val values = parts.drop(1).mapNotNull { it.toLongOrNull() }
+        if (values.size < 4) return null
+        val idle = values.getOrElse(3) { 0L } + values.getOrElse(4) { 0L }
+        val total = values.fold(0L) { acc, value -> acc + value }
+        if (total <= 0L) return null
+        return CpuTicks(idle = idle, total = total)
+    }
+
+    private fun cpuLoadPercent(before: CpuTicks, after: CpuTicks): Double? {
+        if (after.total <= before.total || after.idle < before.idle) return null
+        val totalDelta = (after.total - before.total).toDouble()
+        if (totalDelta <= 0.0) return null
+        val idleDelta = (after.idle - before.idle).toDouble()
+        return ((1.0 - (idleDelta / totalDelta)) * 100.0).coerceIn(0.0, 100.0)
+    }
+
+    private fun readMaxThermalC(): Double? {
+        val zones = runCatching { File("/sys/class/thermal").listFiles() }.getOrNull()
+            ?: return null
+        var maxTemp: Double? = null
+        for (zone in zones) {
+            val raw = runCatching { File(zone, "temp").readText().trim().toDouble() }.getOrNull()
+                ?: continue
+            val celsius = if (raw > 1_000.0) raw / 1_000.0 else raw
+            if (celsius in 1.0..140.0) {
+                maxTemp = maxOf(maxTemp ?: celsius, celsius)
+            }
+        }
+        return maxTemp
     }
 
     private fun computeFullWorkload(profile: AndroidSystemProfile): Workload {
@@ -819,13 +941,14 @@ internal object YumeLocalSelfTest {
 
     private data class MiniStats(
         val min: Double,
+        val mean: Double,
         val median: Double,
         val p95: Double,
         val max: Double,
     )
 
     private fun miniStats(values: List<Double>): MiniStats {
-        if (values.isEmpty()) return MiniStats(0.0, 0.0, 0.0, 0.0)
+        if (values.isEmpty()) return MiniStats(0.0, 0.0, 0.0, 0.0, 0.0)
         val sorted = values.sorted()
         fun pick(q: Double): Double {
             val raw = kotlin.math.ceil(q * sorted.size.toDouble()).toInt() - 1
@@ -839,10 +962,28 @@ internal object YumeLocalSelfTest {
         }
         return MiniStats(
             min = sorted.first(),
+            mean = sorted.average(),
             median = median,
             p95 = pick(0.95),
             max = sorted.last(),
         )
+    }
+
+    private fun StringBuilder.appendLoadStat(name: String, stats: MiniStats, unit: String) {
+        if (stats.max <= 0.0 && stats.median <= 0.0) {
+            append(name)
+            append("=unavailable")
+            return
+        }
+        append(name)
+        append("_avg=")
+        append(formatNumber(stats.mean))
+        append(unit)
+        append(' ')
+        append(name)
+        append("_max=")
+        append(formatNumber(stats.max))
+        append(unit)
     }
 
     private fun timedSeconds(block: () -> Unit): Double {

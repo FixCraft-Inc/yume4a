@@ -419,14 +419,7 @@ private fun LocalSelfTestCard(
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
-                current.leagueScore?.let { score ->
-                    Text(
-                        text = strings.benchmarkScoreValue("LEAGUE", score, benchmarkGrade(score)),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-                if (current.globalScore == null && current.leagueScore == null) {
+                if (current.globalScore == null) {
                     Text(
                         text = strings.quickBenchmarkNoScore,
                         style = MaterialTheme.typography.bodySmall,
@@ -497,7 +490,7 @@ private fun BenchmarkDetailsDialog(
                 }
                 report.leagueScore?.let { score ->
                     Text(
-                        text = strings.benchmarkScoreValue("LEAGUE", score, benchmarkGrade(score)),
+                        text = strings.benchmarkScoreValue("PLATFORM", score, benchmarkGrade(score)),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.primary,
                     )
