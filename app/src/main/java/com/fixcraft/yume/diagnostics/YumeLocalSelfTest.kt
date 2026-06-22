@@ -1,10 +1,17 @@
 package com.fixcraft.yume.diagnostics
 
 import com.fixcraft.basefwx.Crypto
+import com.fixcraft.basefwx.PQ
+import com.fixcraft.yume.transport.YumeFrameType
+import com.fixcraft.yume.transport.YumeInnerCrypto
+import com.fixcraft.yume.transport.YumeInnerKdf
+import com.fixcraft.yume.transport.YumeInnerPreference
+import com.fixcraft.yume.transport.YumeInnerSessionState
 import com.fixcraft.yume.transport.YumePacketBulk
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
+import java.security.SecureRandom
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -12,14 +19,20 @@ import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
+import org.bouncycastle.pqc.crypto.crystals.kyber.KyberKeyGenerationParameters
+import org.bouncycastle.pqc.crypto.crystals.kyber.KyberKeyPairGenerator
+import org.bouncycastle.pqc.crypto.crystals.kyber.KyberParameters
+import org.bouncycastle.pqc.crypto.crystals.kyber.KyberPrivateKeyParameters
+import org.bouncycastle.pqc.crypto.crystals.kyber.KyberPublicKeyParameters
 
 private const val SELF_TEST_GLOBAL_MODEL = "yume-global-v1"
 private const val SELF_TEST_ANDROID_MODEL = "yume-android-v1"
 private const val SELF_TEST_CHECKSUM_FIELD = "checksum"
 private const val SELF_TEST_HKDF_INFO_PREFIX = "yume-hop-v1:"
 private const val SELF_TEST_AAD = "yume-android-selftest"
+private const val SELF_TEST_INNER_INFO = "yume-inner-v1"
 private const val SELF_TEST_SUSTAIN_INFO_PREFIX = "yume-sustain:"
-private const val SELF_TEST_GLOBAL_REFERENCE_MULTIPLIER = 6.0
+private const val SELF_TEST_GLOBAL_REFERENCE_MULTIPLIER = 1.0
 private const val SELF_TEST_REFERENCE_SCORE = 10_000_000.0
 private val memInfoSplit = Regex("\\s+")
 
@@ -155,6 +168,10 @@ internal object YumeLocalSelfTest {
             cryptoBytes = 32 * MIB,
             packetCodecBytes = 32 * MIB,
             hkdfOps = 5_000,
+            pqSamples = 0,
+            argon2MemoryKiB = 0,
+            argon2Parallelism = 1,
+            argon2Samples = 0,
             diskBytes = 0,
             sustainedMixMs = 0,
             scoreEnabled = false,
@@ -185,6 +202,10 @@ internal object YumeLocalSelfTest {
             cryptoBytes = 128 * KIB,
             packetCodecBytes = 128 * KIB,
             hkdfOps = 32,
+            pqSamples = 0,
+            argon2MemoryKiB = 0,
+            argon2Parallelism = 1,
+            argon2Samples = 0,
             diskBytes = 0,
             sustainedMixMs = 0,
             scoreEnabled = false,
@@ -219,6 +240,19 @@ internal object YumeLocalSelfTest {
             WorkStep("packet-bulk-decode", 0.90) { _ -> runPacketBulkDecode(workload.packetCodecBytes, hotThreads) },
             WorkStep("hop-hkdf", 0.80) { _ -> runHopHkdf(workload.hkdfOps, hotThreads) },
         )
+        if (workload.scoreEnabled) {
+            steps += WorkStep("inner-aead-encrypt", 1.20) { _ -> runInnerAeadEncrypt(workload.cryptoBytes, hotThreads) }
+            steps += WorkStep("inner-aead-decrypt", 1.20) { _ -> runInnerAeadDecrypt(workload.cryptoBytes, hotThreads) }
+            steps += WorkStep("basefwx-pq-client", 1.20) { _ -> runBasefwxPqClient(workload.pqSamples) }
+            steps += WorkStep("basefwx-pq-server", 1.20) { _ -> runBasefwxPqServer(workload.pqSamples) }
+            steps += WorkStep("basefwx-argon2", 2.20) { _ ->
+                runBasefwxArgon2(
+                    memoryKiB = workload.argon2MemoryKiB,
+                    parallelism = workload.argon2Parallelism,
+                    samples = workload.argon2Samples,
+                )
+            }
+        }
         if (workload.diskBytes > 0 && cacheDir != null) {
             steps += WorkStep("disk-write", 1.40) { _ -> runDiskWrite(cacheDir, workload.diskBytes) }
         }
@@ -317,11 +351,8 @@ internal object YumeLocalSelfTest {
             val memory = miniStats(snapshot.mapNotNull { it.memoryUsedPercent })
             val temp = miniStats(snapshot.mapNotNull { it.temperatureC })
             val seconds = ((System.nanoTime() - startedNs) / 1_000_000_000.0).coerceAtLeast(0.0)
-            val metric = if (cpu.max > 0.0 || cpu.median > 0.0) {
-                "${formatNumber(cpu.mean)}% avg CPU"
-            } else {
-                "unavailable"
-            }
+            val headroom = loadHeadroomPercent(cpu, memory, temp)
+            val metric = "${formatNumber(headroom)}% headroom"
             val detail = buildString {
                 append("samples=${snapshot.size} ")
                 appendLoadStat("cpu", cpu, "%")
@@ -335,12 +366,39 @@ internal object YumeLocalSelfTest {
                 metric = metric,
                 detail = detail,
                 ok = snapshot.isNotEmpty(),
-                value = cpu.mean.takeIf { cpu.max > 0.0 || cpu.median > 0.0 },
+                value = headroom,
                 unit = "%",
                 operations = snapshot.size,
                 seconds = seconds,
             )
         }
+    }
+
+    private fun loadHeadroomPercent(cpu: MiniStats, memory: MiniStats, temp: MiniStats): Double {
+        val cpuAvgHeadroom = if (cpu.max > 0.0 || cpu.median > 0.0) {
+            (100.0 - cpu.mean).coerceIn(0.0, 100.0)
+        } else {
+            0.0
+        }
+        val cpuBurstHeadroom = if (cpu.max > 0.0 || cpu.median > 0.0) {
+            (100.0 - cpu.max).coerceIn(0.0, 100.0)
+        } else {
+            cpuAvgHeadroom
+        }
+        val memoryHeadroom = if (memory.max > 0.0 || memory.median > 0.0) {
+            (100.0 - memory.mean).coerceIn(0.0, 100.0)
+        } else {
+            50.0
+        }
+        val tempHeadroom = if (temp.max > 0.0 || temp.median > 0.0) {
+            (((90.0 - temp.max) / 60.0) * 100.0).coerceIn(0.0, 100.0)
+        } else {
+            50.0
+        }
+        return (cpuAvgHeadroom * 0.55) +
+            (cpuBurstHeadroom * 0.15) +
+            (memoryHeadroom * 0.20) +
+            (tempHeadroom * 0.10)
     }
 
     private fun detectSystemProfile(): AndroidSystemProfile {
@@ -444,6 +502,10 @@ internal object YumeLocalSelfTest {
         val cryptoBytes = mib(parallelPayloadMiB)
         val packetCodecBytes = mib(parallelPayloadMiB)
         val hkdfOps = (hotThreads * 25_000).coerceIn(250_000, 1_000_000)
+        val pqSamples = (hotThreads * 8).coerceIn(40, 160)
+        val argonMemoryKiB = (usableMemoryMiB * 1024 / 64).coerceIn(16 * 1024, minOf(128 * 1024, heapBudgetMiB * 1024 / 3))
+        val argonSamples = if (usableMemoryMiB >= 4096) 3 else 2
+        val argonParallelism = hotThreads.coerceIn(2, 8)
         val diskBytes = mib((usableMemoryMiB / 64).coerceIn(256, 1024))
         val profileDetail = "cpus=${profile.logicalCpus} " +
             "mem_mib=${profile.totalMemoryMiB} " +
@@ -453,6 +515,9 @@ internal object YumeLocalSelfTest {
             "memory_mib=${memoryBandwidthBytes / MIB} " +
             "crypto_mib=${cryptoBytes / MIB} " +
             "packet_mib=${packetCodecBytes / MIB} " +
+            "pq_samples=$pqSamples " +
+            "argon2_memory_kib=$argonMemoryKiB " +
+            "argon2_parallelism=$argonParallelism " +
             "disk_mib=${diskBytes / MIB} " +
             "sustained_s=${sustainedMs / 1000L}"
         return Workload(
@@ -465,6 +530,10 @@ internal object YumeLocalSelfTest {
             cryptoBytes = cryptoBytes,
             packetCodecBytes = packetCodecBytes,
             hkdfOps = hkdfOps,
+            pqSamples = pqSamples,
+            argon2MemoryKiB = argonMemoryKiB,
+            argon2Parallelism = argonParallelism,
+            argon2Samples = argonSamples,
             diskBytes = diskBytes,
             sustainedMixMs = sustainedMs,
             scoreEnabled = true,
@@ -784,6 +853,186 @@ internal object YumeLocalSelfTest {
         )
     }
 
+    private fun runInnerAeadEncrypt(totalBytes: Int, workerCount: Int): YumeLocalSelfTestRow {
+        val perWorkerBytes = splitBytes(totalBytes, workerCount)
+        val startFlag = AtomicBoolean(false)
+        val bytesByWorker = LongArray(workerCount)
+        val guards = IntArray(workerCount)
+        val workers = List(workerCount) { workerIndex ->
+            thread(start = false, name = "yume-selftest-inner-enc-$workerIndex") {
+                val state = YumeInnerSessionState(
+                    baseKey = Crypto.randomBytes(32),
+                    hopEnabled = false,
+                    hopIntervalMs = 0,
+                    hopOffsetMs = 0,
+                )
+                val plaintext = patternedBytes(64 * KIB, seed = 71 + workerIndex)
+                val iterations = iterationsFor(perWorkerBytes[workerIndex], plaintext.size)
+                var localGuard = 0
+                while (!startFlag.get()) {
+                    Thread.yield()
+                }
+                repeat(iterations) {
+                    val encrypted = YumeInnerCrypto.encrypt(state, YumeFrameType.DATA, workerIndex + 1, plaintext)
+                    localGuard = localGuard xor encrypted[encrypted.lastIndex].toInt()
+                }
+                bytesByWorker[workerIndex] = iterations.toLong() * plaintext.size
+                guards[workerIndex] = localGuard
+            }
+        }
+        workers.forEach { it.start() }
+        val started = System.nanoTime()
+        startFlag.set(true)
+        workers.forEach { it.join() }
+        val seconds = (System.nanoTime() - started).toDouble() / 1_000_000_000.0
+        val bytes = bytesByWorker.sum()
+        val guard = guards.fold(0) { acc, value -> acc xor value }
+        return throughputRow(
+            name = "inner-aead-encrypt",
+            bytes = bytes,
+            seconds = seconds,
+            detail = "YUME inner crypto AES-GCM seal, threads=$workerCount, ${selfTestChecksum(guard)}",
+        )
+    }
+
+    private fun runInnerAeadDecrypt(totalBytes: Int, workerCount: Int): YumeLocalSelfTestRow {
+        val perWorkerBytes = splitBytes(totalBytes, workerCount)
+        val startFlag = AtomicBoolean(false)
+        val bytesByWorker = LongArray(workerCount)
+        val guards = IntArray(workerCount)
+        val workers = List(workerCount) { workerIndex ->
+            thread(start = false, name = "yume-selftest-inner-dec-$workerIndex") {
+                val state = YumeInnerSessionState(
+                    baseKey = Crypto.randomBytes(32),
+                    hopEnabled = false,
+                    hopIntervalMs = 0,
+                    hopOffsetMs = 0,
+                )
+                val plaintext = patternedBytes(64 * KIB, seed = 71 + workerIndex)
+                val encrypted = YumeInnerCrypto.encrypt(state, YumeFrameType.DATA, workerIndex + 1, plaintext)
+                val iterations = iterationsFor(perWorkerBytes[workerIndex], plaintext.size)
+                var localGuard = 0
+                while (!startFlag.get()) {
+                    Thread.yield()
+                }
+                repeat(iterations) {
+                    val decrypted = YumeInnerCrypto.decrypt(state, YumeFrameType.DATA, workerIndex + 1, encrypted)
+                    localGuard = localGuard xor decrypted[it and (decrypted.size - 1)].toInt()
+                }
+                bytesByWorker[workerIndex] = iterations.toLong() * plaintext.size
+                guards[workerIndex] = localGuard
+            }
+        }
+        workers.forEach { it.start() }
+        val started = System.nanoTime()
+        startFlag.set(true)
+        workers.forEach { it.join() }
+        val seconds = (System.nanoTime() - started).toDouble() / 1_000_000_000.0
+        val bytes = bytesByWorker.sum()
+        val guard = guards.fold(0) { acc, value -> acc xor value }
+        return throughputRow(
+            name = "inner-aead-decrypt",
+            bytes = bytes,
+            seconds = seconds,
+            detail = "YUME inner crypto AES-GCM open, threads=$workerCount, ${selfTestChecksum(guard)}",
+        )
+    }
+
+    private fun runBasefwxPqClient(samples: Int): YumeLocalSelfTestRow {
+        val keyPair = generateBenchmarkPqKeyPair()
+        val preference = YumeInnerPreference(
+            enabled = true,
+            pqPublicKey = keyPair.publicKey,
+            heavy = false,
+            hopRequested = false,
+            kdf = YumeInnerKdf.HKDF,
+        )
+        val timings = timeSamplesMs(samples.coerceAtLeast(1)) {
+            val prepared = YumeInnerCrypto.prepare(preference)
+            check(prepared.enabled) { "PQ client produced no key" }
+        }
+        return latencyOpsRow(
+            name = "basefwx-pq-client",
+            samplesMs = timings,
+            detail = "ML-KEM encapsulate + HKDF",
+        )
+    }
+
+    private fun runBasefwxPqServer(samples: Int): YumeLocalSelfTestRow {
+        val keyPair = generateBenchmarkPqKeyPair()
+        val info = selfTestAscii(SELF_TEST_INNER_INFO)
+        val timings = timeSamplesMs(samples.coerceAtLeast(1)) {
+            val encapsulated = PQ.kemEncrypt(keyPair.publicKey)
+            val shared = PQ.kemDecrypt(keyPair.privateKey, encapsulated.ciphertext)
+            val key = Crypto.hkdfSha256(shared, info, 32)
+            check(key.isNotEmpty()) { "PQ server produced no key" }
+        }
+        return latencyOpsRow(
+            name = "basefwx-pq-server",
+            samplesMs = timings,
+            detail = "ML-KEM decapsulate + HKDF",
+        )
+    }
+
+    private fun runBasefwxArgon2(memoryKiB: Int, parallelism: Int, samples: Int): YumeLocalSelfTestRow {
+        val password = selfTestAscii("yume-selftest-basefwx")
+        val salt = patternedBytes(16, seed = 91)
+        val memory = memoryKiB.coerceAtLeast(1024)
+        val lanes = parallelism.coerceAtLeast(1)
+        val count = samples.coerceAtLeast(1)
+        var guard = 0
+        val seconds = timedSeconds {
+            repeat(count) {
+                val out = Crypto.argon2idHashRaw(password, salt, 4, memory, lanes, 32)
+                guard = guard xor out[0].toInt()
+            }
+        }
+        return throughputRow(
+            name = "basefwx-argon2",
+            bytes = memory.toLong() * KIB.toLong() * 4L * count.toLong(),
+            seconds = seconds,
+            detail = "Argon2id raw, time=4, memory_kib=$memory, parallelism=$lanes, samples=$count, ${selfTestChecksum(guard)}",
+        )
+    }
+
+    private fun generateBenchmarkPqKeyPair(): BenchmarkPqKeyPair {
+        val generator = KyberKeyPairGenerator()
+        generator.init(KyberKeyGenerationParameters(SecureRandom(), KyberParameters.kyber768))
+        val pair = generator.generateKeyPair()
+        return BenchmarkPqKeyPair(
+            publicKey = (pair.public as KyberPublicKeyParameters).encoded,
+            privateKey = (pair.private as KyberPrivateKeyParameters).encoded,
+        )
+    }
+
+    private data class BenchmarkPqKeyPair(
+        val publicKey: ByteArray,
+        val privateKey: ByteArray,
+    )
+
+    private fun timeSamplesMs(samples: Int, block: () -> Unit): List<Double> {
+        return List(samples.coerceAtLeast(1)) {
+            val started = System.nanoTime()
+            block()
+            (System.nanoTime() - started).toDouble() / 1_000_000.0
+        }
+    }
+
+    private fun latencyOpsRow(name: String, samplesMs: List<Double>, detail: String): YumeLocalSelfTestRow {
+        val stats = miniStats(samplesMs)
+        val medianMs = stats.median.coerceAtLeast(0.000_001)
+        val opsPerSecond = 1_000.0 / medianMs
+        return YumeLocalSelfTestRow(
+            name = name,
+            metric = "${formatNumber(opsPerSecond)} ops/s",
+            detail = "$detail, median_ms=${formatNumber(stats.median)}, p95_ms=${formatNumber(stats.p95)}, samples=${samplesMs.size}",
+            value = opsPerSecond,
+            unit = "ops/s",
+            operations = samplesMs.size,
+            seconds = samplesMs.sum() / 1_000.0,
+        )
+    }
+
     private fun runDiskWrite(cacheDir: File, totalBytes: Int): YumeLocalSelfTestRow {
         val dir = File(cacheDir, "yume-selftest").also { it.mkdirs() }
         val file = File.createTempFile("disk-write-", ".bin", dir)
@@ -980,6 +1229,11 @@ internal object YumeLocalSelfTest {
             return
         }
         append(name)
+        append("_min=")
+        append(formatNumber(stats.min))
+        append(unit)
+        append(' ')
+        append(name)
         append("_avg=")
         append(formatNumber(stats.mean))
         append(unit)
@@ -1012,8 +1266,14 @@ internal object YumeLocalSelfTest {
             Component("packet-bulk-encode", 12_000.0, 1_100_000.0),
             Component("packet-bulk-decode", 12_000.0, 1_100_000.0),
             Component("hop-hkdf", 2_500_000.0, 800_000.0),
+            Component("inner-aead-encrypt", 8_000.0, 800_000.0),
+            Component("inner-aead-decrypt", 8_000.0, 800_000.0),
+            Component("basefwx-pq-client", 40_000.0, 1_100_000.0),
+            Component("basefwx-pq-server", 40_000.0, 1_100_000.0),
+            Component("basefwx-argon2", 750.0, 900_000.0),
             Component("disk-write", 3_500.0, 100_000.0),
             Component("sustained-mix", 14_000.0, 4_300_000.0),
+            Component("system-load", 50.0, 400_000.0),
         )
         var earned = 0.0
         var possible = 0.0
@@ -1045,6 +1305,10 @@ internal object YumeLocalSelfTest {
         val cryptoBytes: Int,
         val packetCodecBytes: Int,
         val hkdfOps: Int,
+        val pqSamples: Int,
+        val argon2MemoryKiB: Int,
+        val argon2Parallelism: Int,
+        val argon2Samples: Int,
         val diskBytes: Int,
         val sustainedMixMs: Long,
         val scoreEnabled: Boolean,
@@ -1085,32 +1349,32 @@ private data class BenchmarkGradeCutoff(
 )
 
 private val benchmarkGradeCutoffs = listOf(
-    BenchmarkGradeCutoff(10_000_000L, 24_000_000L, "SSS+"),
-    BenchmarkGradeCutoff(8_000_000L, 17_000_000L, "SSS"),
-    BenchmarkGradeCutoff(6_400_000L, 12_000_000L, "SSS-"),
-    BenchmarkGradeCutoff(5_000_000L, 8_500_000L, "SS+"),
-    BenchmarkGradeCutoff(4_000_000L, 6_000_000L, "SS"),
-    BenchmarkGradeCutoff(3_200_000L, 4_200_000L, "SS-"),
-    BenchmarkGradeCutoff(2_500_000L, 3_000_000L, "S+"),
-    BenchmarkGradeCutoff(2_000_000L, 2_200_000L, "S"),
-    BenchmarkGradeCutoff(1_600_000L, 1_600_000L, "S-"),
-    BenchmarkGradeCutoff(1_250_000L, 1_150_000L, "AAA+"),
-    BenchmarkGradeCutoff(1_000_000L, 850_000L, "AAA"),
-    BenchmarkGradeCutoff(800_000L, 620_000L, "AAA-"),
-    BenchmarkGradeCutoff(620_000L, 450_000L, "A+"),
-    BenchmarkGradeCutoff(480_000L, 320_000L, "A"),
+    BenchmarkGradeCutoff(50_000_000L, 24_000_000L, "SSS+"),
+    BenchmarkGradeCutoff(35_000_000L, 17_000_000L, "SSS"),
+    BenchmarkGradeCutoff(24_000_000L, 12_000_000L, "SSS-"),
+    BenchmarkGradeCutoff(17_000_000L, 8_500_000L, "SS+"),
+    BenchmarkGradeCutoff(12_000_000L, 6_000_000L, "SS"),
+    BenchmarkGradeCutoff(8_500_000L, 4_200_000L, "SS-"),
+    BenchmarkGradeCutoff(6_000_000L, 3_000_000L, "S+"),
+    BenchmarkGradeCutoff(4_200_000L, 2_200_000L, "S"),
+    BenchmarkGradeCutoff(3_000_000L, 1_600_000L, "S-"),
+    BenchmarkGradeCutoff(2_100_000L, 1_150_000L, "AAA+"),
+    BenchmarkGradeCutoff(1_500_000L, 850_000L, "AAA"),
+    BenchmarkGradeCutoff(1_050_000L, 620_000L, "AAA-"),
+    BenchmarkGradeCutoff(750_000L, 450_000L, "A+"),
+    BenchmarkGradeCutoff(520_000L, 320_000L, "A"),
     BenchmarkGradeCutoff(360_000L, 230_000L, "A-"),
-    BenchmarkGradeCutoff(260_000L, 165_000L, "B+"),
-    BenchmarkGradeCutoff(185_000L, 115_000L, "B"),
-    BenchmarkGradeCutoff(130_000L, 80_000L, "B-"),
-    BenchmarkGradeCutoff(90_000L, 55_000L, "C+"),
-    BenchmarkGradeCutoff(60_000L, 36_000L, "C"),
-    BenchmarkGradeCutoff(40_000L, 23_000L, "C-"),
-    BenchmarkGradeCutoff(25_000L, 15_000L, "D+"),
-    BenchmarkGradeCutoff(15_000L, 9_000L, "D"),
-    BenchmarkGradeCutoff(8_500L, 5_000L, "D-"),
-    BenchmarkGradeCutoff(4_000L, 2_500L, "F+"),
-    BenchmarkGradeCutoff(1_800L, 1_000L, "F"),
+    BenchmarkGradeCutoff(250_000L, 165_000L, "B+"),
+    BenchmarkGradeCutoff(175_000L, 115_000L, "B"),
+    BenchmarkGradeCutoff(120_000L, 80_000L, "B-"),
+    BenchmarkGradeCutoff(80_000L, 55_000L, "C+"),
+    BenchmarkGradeCutoff(50_000L, 36_000L, "C"),
+    BenchmarkGradeCutoff(32_000L, 23_000L, "C-"),
+    BenchmarkGradeCutoff(20_000L, 15_000L, "D+"),
+    BenchmarkGradeCutoff(12_000L, 9_000L, "D"),
+    BenchmarkGradeCutoff(7_000L, 5_000L, "D-"),
+    BenchmarkGradeCutoff(3_500L, 2_500L, "F+"),
+    BenchmarkGradeCutoff(1_500L, 1_000L, "F"),
 )
 
 internal fun benchmarkGrade(score: Long, track: BenchmarkScoreTrack = BenchmarkScoreTrack.Global): String {
