@@ -25,7 +25,7 @@ import org.bouncycastle.pqc.crypto.crystals.kyber.KyberParameters
 import org.bouncycastle.pqc.crypto.crystals.kyber.KyberPrivateKeyParameters
 import org.bouncycastle.pqc.crypto.crystals.kyber.KyberPublicKeyParameters
 
-private const val SELF_TEST_GLOBAL_MODEL = "yume-global-v2"
+private const val SELF_TEST_GLOBAL_MODEL = "yume-global-v3"
 private const val SELF_TEST_ANDROID_MODEL = "yume-android-v2"
 private const val SELF_TEST_CHECKSUM_FIELD = "checksum"
 private const val SELF_TEST_HKDF_INFO_PREFIX = "yume-hop-v1:"
@@ -34,7 +34,7 @@ private const val SELF_TEST_INNER_INFO = "yume-inner-v1"
 private const val SELF_TEST_SUSTAIN_INFO_PREFIX = "yume-sustain:"
 // Reference-based scoring only. Do not special-case Android models, CPUs, or
 // vendors when recalibrating; adjust component references/weights together.
-private const val SELF_TEST_GLOBAL_REFERENCE_MULTIPLIER = 1.5
+private const val SELF_TEST_GLOBAL_REFERENCE_MULTIPLIER = 4.0
 private const val SELF_TEST_REFERENCE_SCORE = 10_000_000.0
 private const val SELF_TEST_ABOVE_REFERENCE_SCORE = 75_000_000L
 private val memInfoSplit = Regex("\\s+")
@@ -283,6 +283,24 @@ internal object YumeLocalSelfTest {
         loadSampler?.stop()?.let { rows += it }
         onProgress(YumeLocalSelfTestProgress("complete", 1f))
         val elapsedMs = ((System.nanoTime() - start) / 1_000_000L).coerceAtLeast(0L)
+        if (workload.scoreEnabled) {
+            rows += YumeLocalSelfTestRow(
+                name = "system-capacity",
+                ok = true,
+                metric = "${formatNumber(workload.capacityScore)} score",
+                value = workload.capacityScore,
+                unit = "score",
+                detail = workload.capacityDetail,
+            )
+            rows += YumeLocalSelfTestRow(
+                name = "elapsed-time",
+                ok = true,
+                metric = "${formatNumber(elapsedMs.toDouble() / 1000.0)} s",
+                value = elapsedMs.toDouble() / 1000.0,
+                unit = "s",
+                detail = "total benchmark wall time",
+            )
+        }
         val globalScore = if (workload.scoreEnabled) computeScore(rows, global = true) else null
         val leagueScore = if (workload.scoreEnabled) computeScore(rows, global = false) else null
         return YumeLocalSelfTestReport(
@@ -512,6 +530,7 @@ internal object YumeLocalSelfTest {
         val argonSamples = if (usableMemoryMiB >= 4096) 3 else 2
         val argonParallelism = hotThreads.coerceIn(2, 8)
         val diskBytes = mib((usableMemoryMiB / 64).coerceIn(256, 1024))
+        val capacityScore = computeSystemCapacityScore(profile.logicalCpus, profile.totalMemoryMiB)
         val profileDetail = "cpus=${profile.logicalCpus} " +
             "mem_mib=${profile.totalMemoryMiB} " +
             "available_mib=$usableMemoryMiB " +
@@ -542,6 +561,8 @@ internal object YumeLocalSelfTest {
             diskBytes = diskBytes,
             sustainedMixMs = sustainedMs,
             scoreEnabled = true,
+            capacityScore = capacityScore,
+            capacityDetail = "logical_cpus=${profile.logicalCpus} total_mem_mib=${profile.totalMemoryMiB}",
             profileDetail = profileDetail,
             workloadDetail = workloadDetail,
         )
@@ -1260,7 +1281,12 @@ internal object YumeLocalSelfTest {
     }
 
     private fun computeScore(rows: List<YumeLocalSelfTestRow>, global: Boolean): Long? {
-        data class Component(val name: String, val reference: Double, val weight: Double)
+        data class Component(
+            val name: String,
+            val reference: Double,
+            val weight: Double,
+            val lowerIsBetter: Boolean = false,
+        )
         val components = listOf(
             Component("copy-floor", 250_000.0, 100_000.0),
             Component("stream-copy-1", 80_000.0, 150_000.0),
@@ -1278,7 +1304,9 @@ internal object YumeLocalSelfTest {
             Component("basefwx-argon2", 750.0, 900_000.0),
             Component("disk-write", 3_500.0, 100_000.0),
             Component("sustained-mix", 14_000.0, 4_300_000.0),
-            Component("system-load", 50.0, 400_000.0),
+            Component("system-load", 50.0, 100_000.0),
+            Component("system-capacity", SELF_TEST_REFERENCE_SCORE, 4_500_000.0),
+            Component("elapsed-time", 160.0, 500_000.0, lowerIsBetter = true),
         )
         var earned = 0.0
         var possible = 0.0
@@ -1290,7 +1318,11 @@ internal object YumeLocalSelfTest {
             } else {
                 component.reference
             }
-            val normalized = scoreScale(value / reference)
+            val normalized = if (component.lowerIsBetter) {
+                scoreScale(reference / value.coerceAtLeast(0.000001))
+            } else {
+                scoreScale(value / reference)
+            }
             earned += normalized * component.weight
             possible += component.weight
         }
@@ -1317,6 +1349,8 @@ internal object YumeLocalSelfTest {
         val diskBytes: Int,
         val sustainedMixMs: Long,
         val scoreEnabled: Boolean,
+        val capacityScore: Double = 0.0,
+        val capacityDetail: String = "",
         val profileDetail: String = "",
         val workloadDetail: String = "",
     )
@@ -1330,7 +1364,19 @@ internal object YumeLocalSelfTest {
     private fun scoreScale(ratio: Double): Double {
         if (ratio <= 0.0) return 0.0
         if (ratio <= 1.0) return ratio.pow(3.0)
-        return ratio.pow(1.15)
+        return 1.0 + (kotlin.math.ln(ratio) / kotlin.math.ln(2.0)) * 0.55
+    }
+
+    private fun computeSystemCapacityScore(logicalCpus: Int, totalMemoryMiB: Int): Double {
+        val cpuPoints = scoreScale(logicalCpus.coerceAtLeast(1).toDouble() / 32.0) * 6_500_000.0
+        val memoryMiB = totalMemoryMiB.coerceAtLeast(0)
+        val memoryPoints = if (memoryMiB > 0) {
+            scoreScale(memoryMiB.toDouble() / 65_536.0) * 3_500_000.0
+        } else {
+            0.0
+        }
+        return ((cpuPoints + memoryPoints) / 10_000_000.0 * SELF_TEST_REFERENCE_SCORE)
+            .coerceAtLeast(0.0)
     }
 }
 
