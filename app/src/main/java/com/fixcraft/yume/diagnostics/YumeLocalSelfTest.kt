@@ -32,7 +32,7 @@ private const val SELF_TEST_HKDF_INFO_PREFIX = "yume-hop-v1:"
 private const val SELF_TEST_AAD = "yume-android-selftest"
 private const val SELF_TEST_INNER_INFO = "yume-inner-v1"
 private const val SELF_TEST_SUSTAIN_INFO_PREFIX = "yume-sustain:"
-private const val SELF_TEST_GLOBAL_REFERENCE_MULTIPLIER = 1.0
+private const val SELF_TEST_GLOBAL_REFERENCE_MULTIPLIER = 1.5
 private const val SELF_TEST_REFERENCE_SCORE = 10_000_000.0
 private val memInfoSplit = Regex("\\s+")
 
@@ -56,7 +56,9 @@ internal data class YumeLocalSelfTestReport(
         appendLine("mode=${mode.id}")
         appendLine("elapsed_ms=$elapsedMs")
         globalScore?.let {
-            appendLine("GLOBAL ${formatSelfTestInteger(it)} ${benchmarkGrade(it, BenchmarkScoreTrack.Global)} model=$SELF_TEST_GLOBAL_MODEL")
+            val grade = benchmarkGrade(it, BenchmarkScoreTrack.Global)
+            val note = if (it >= SELF_TEST_REFERENCE_SCORE.toLong()) " (above reference)" else ""
+            appendLine("GLOBAL ${formatSelfTestInteger(it)} $grade$note model=$SELF_TEST_GLOBAL_MODEL")
             appendLine("global_score=$it global_grade=${benchmarkGrade(it, BenchmarkScoreTrack.Global)}")
             if (it >= SELF_TEST_REFERENCE_SCORE.toLong()) {
                 appendLine("global_note=above_reference")
@@ -1324,7 +1326,7 @@ internal object YumeLocalSelfTest {
 
     private fun scoreScale(ratio: Double): Double {
         if (ratio <= 0.0) return 0.0
-        if (ratio <= 1.0) return ratio.pow(0.95)
+        if (ratio <= 1.0) return ratio.pow(3.0)
         return ratio.pow(1.15)
     }
 }
