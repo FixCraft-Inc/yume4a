@@ -36,6 +36,7 @@ private const val SELF_TEST_SUSTAIN_INFO_PREFIX = "yume-sustain:"
 // vendors when recalibrating; adjust component references/weights together.
 private const val SELF_TEST_GLOBAL_REFERENCE_MULTIPLIER = 1.5
 private const val SELF_TEST_REFERENCE_SCORE = 10_000_000.0
+private const val SELF_TEST_ABOVE_REFERENCE_SCORE = 75_000_000L
 private val memInfoSplit = Regex("\\s+")
 
 private fun selfTestChecksum(value: Int): String = "$SELF_TEST_CHECKSUM_FIELD=${value and 0xFF}"
@@ -59,10 +60,10 @@ internal data class YumeLocalSelfTestReport(
         appendLine("elapsed_ms=$elapsedMs")
         globalScore?.let {
             val grade = benchmarkGrade(it, BenchmarkScoreTrack.Global)
-            val note = if (it >= SELF_TEST_REFERENCE_SCORE.toLong()) " (above reference)" else ""
+            val note = if (it >= SELF_TEST_ABOVE_REFERENCE_SCORE) " (above reference)" else ""
             appendLine("GLOBAL ${formatSelfTestInteger(it)} $grade$note model=$SELF_TEST_GLOBAL_MODEL")
             appendLine("global_score=$it global_grade=${benchmarkGrade(it, BenchmarkScoreTrack.Global)}")
-            if (it >= SELF_TEST_REFERENCE_SCORE.toLong()) {
+            if (it >= SELF_TEST_ABOVE_REFERENCE_SCORE) {
                 appendLine("global_note=above_reference")
             }
         }
@@ -1353,7 +1354,7 @@ private data class BenchmarkGradeCutoff(
 )
 
 private val benchmarkGradeCutoffs = listOf(
-    BenchmarkGradeCutoff(50_000_000L, 24_000_000L, "SSS+"),
+    BenchmarkGradeCutoff(40_000_000L, 24_000_000L, "SSS+"),
     BenchmarkGradeCutoff(35_000_000L, 17_000_000L, "SSS"),
     BenchmarkGradeCutoff(24_000_000L, 12_000_000L, "SSS-"),
     BenchmarkGradeCutoff(17_000_000L, 8_500_000L, "SS+"),
