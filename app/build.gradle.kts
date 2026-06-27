@@ -83,6 +83,27 @@ val syncBasefwxJava by tasks.registering(Sync::class) {
         include("com/fixcraft/basefwx/EcKeys.java")
         include("com/fixcraft/basefwx/LiveCipher.java")
         include("com/fixcraft/basefwx/UnsupportedKdfException.java")
+        // 3.7.x de-monolith: BaseFwx delegates to these AWT-free helpers.
+        // javac needs them at compile time even though they are not public API.
+        include("com/fixcraft/basefwx/BaseFwxUtil.java")
+        include("com/fixcraft/basefwx/FwxAesCodec.java")
+        include("com/fixcraft/basefwx/An7Codec.java")
+        include("com/fixcraft/basefwx/TextCodecs.java")
+        include("com/fixcraft/basefwx/FileCodecs.java")
+        include("com/fixcraft/basefwx/FileCodecKdf.java")
+        include("com/fixcraft/basefwx/FileCodecObfuscation.java")
+        include("com/fixcraft/basefwx/FileCodecMetadata.java")
+        include("com/fixcraft/basefwx/FileCodecIo.java")
+        include("com/fixcraft/basefwx/B512FileCodec.java")
+        include("com/fixcraft/basefwx/Pb512FileCodec.java")
+        include("com/fixcraft/basefwx/LengthPrefixedCodec.java")
+        // BaseFWX 3.7.0 fwxAES imports the Java plugin SPI even when
+        // no plugin is registered. These are AWT-free API/registry
+        // classes and must be synced with FwxAesCodec.java.
+        include("com/fixcraft/basefwx/plugin/BasefwxPlugin.java")
+        include("com/fixcraft/basefwx/plugin/BasefwxPluginException.java")
+        include("com/fixcraft/basefwx/plugin/BasefwxPluginFactory.java")
+        include("com/fixcraft/basefwx/plugin/BasefwxPluginRegistry.java")
     }
     into(basefwxJavaOutputDir)
 }
@@ -111,14 +132,16 @@ android {
         applicationId = "com.fixcraft.yume"
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
         buildConfigField("String", "YUME_PROTOCOL_VERSION", "\"$yumeProtocolVersion\"")
         buildConfigField("String", "BASEFWX_ENGINE_VERSION", "\"$basefwxEngineVersion\"")
         buildConfigField("String", "YUME_PROTECTION_POLICY", "\"Auto (highest available)\"")
         // Packet-native is gated by server packet_bulk_v1 support and falls
-        // back to tun2socks stable when unavailable.
-        buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "false")
+        // back to tun2socks stable when unavailable. Set true here so any
+        // future buildType added without an explicit override inherits the
+        // same behavior as debug/release rather than silently disabling it.
+        buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "true")
         buildConfigField(
             "String",
             "YUME_ROUTING_MODE",

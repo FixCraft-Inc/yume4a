@@ -89,50 +89,13 @@ internal object BaseFwxCompat {
         BaseFwx.pb512Decode(input, password, false)
 
     fun b512FileDecodeBytes(blob: ByteArray, password: String): DecodedFile {
-        val passwordBytes = passwordBytes(password, required = false)
-        val content = try {
-            val parts = Format.unpackLengthPrefixed(blob, 3)
-            val maskKey = recoverMaskKey(
-                userBlob = parts[0],
-                passwordBytes = passwordBytes,
-                aad = Constants.B512_AEAD_INFO,
-                defaultIterations = Constants.USER_KDF_ITERATIONS,
-            )
-            val aeadKey = Crypto.hkdfSha256(maskKey, Constants.B512_AEAD_INFO, 32)
-            val payloadBytes = Crypto.aesGcmDecrypt(aeadKey, parts[2], Constants.B512_AEAD_INFO)
-            String(payloadBytes, StandardCharsets.UTF_8)
-        } catch (_: RuntimeException) {
-            String(blob, StandardCharsets.UTF_8)
-        }
-        val (metadataBlob, body) = splitMetadata(content)
-        val useMasterHint = metaValue(metadataBlob, "ENC-MASTER")
-        require(!useMasterHint.equals("yes", ignoreCase = true)) { "Master-wrapped payloads are not supported on Android" }
-        val (extToken, dataToken) = splitWithDelims(
-            body,
-            Constants.FWX_DELIM,
-            Constants.LEGACY_FWX_DELIM,
-            "FWX container",
-        )
-        val extension = b512Decode(extToken, password)
-        val data = Base64Codec.decode(b512Decode(dataToken, password))
-        return DecodedFile(data = data, extension = extension)
+        val decoded = BaseFwx.b512FileDecodeBytes(blob, password, false)
+        return DecodedFile(data = decoded.data, extension = decoded.extension)
     }
 
     fun pb512FileDecodeBytes(blob: ByteArray, password: String): DecodedFile {
-        val plaintext = decryptAesPayloadBytes(blob, password)
-        val payload = String(plaintext, StandardCharsets.UTF_8)
-        val (metadataBlob, body) = splitMetadata(payload)
-        val useMasterHint = metaValue(metadataBlob, "ENC-MASTER")
-        require(!useMasterHint.equals("yes", ignoreCase = true)) { "Master-wrapped payloads are not supported on Android" }
-        val (extToken, dataToken) = splitWithDelims(
-            body,
-            Constants.FWX_HEAVY_DELIM,
-            Constants.LEGACY_FWX_HEAVY_DELIM,
-            "FWX heavy",
-        )
-        val extension = pb512Decode(extToken, password)
-        val data = Base64Codec.decode(pb512Decode(dataToken, password))
-        return DecodedFile(data = data, extension = extension)
+        val decoded = BaseFwx.pb512FileDecodeBytes(blob, password, false)
+        return DecodedFile(data = decoded.data, extension = decoded.extension)
     }
 
     private fun decryptAesPayloadBytes(blob: ByteArray, password: String): ByteArray {
@@ -236,34 +199,6 @@ internal object BaseFwxCompat {
         val deobfuscated = runCatching { Codec.decode(trimmed) }.getOrNull()
             ?: throw IllegalArgumentException("Invalid payload encoding")
         return Base64Codec.decode(deobfuscated)
-    }
-
-    private fun recoverMaskKey(
-        userBlob: ByteArray,
-        passwordBytes: ByteArray,
-        aad: ByteArray,
-        defaultIterations: Int,
-    ): ByteArray {
-        require(userBlob.isNotEmpty()) { "Ciphertext missing key transport data" }
-        require(passwordBytes.isNotEmpty()) { "Password required to decode this payload" }
-        val kdfLabelLength = userBlob[0].toInt() and 0xFF
-        val headerLength = 1 + kdfLabelLength + Constants.USER_KDF_SALT_SIZE
-        require(userBlob.size >= headerLength) { "Corrupted user key blob" }
-        val label = if (kdfLabelLength > 0) {
-            String(userBlob.copyOfRange(1, 1 + kdfLabelLength), StandardCharsets.US_ASCII)
-        } else {
-            "pbkdf2"
-        }
-        require(label.equals("pbkdf2", ignoreCase = true)) { "Unsupported KDF label: $label" }
-        val salt = userBlob.copyOfRange(1 + kdfLabelLength, headerLength)
-        val wrapped = userBlob.copyOfRange(headerLength, userBlob.size)
-        val userKey = Crypto.pbkdf2HmacSha256(
-            passwordBytes,
-            salt,
-            hardenPbkdf2Iterations(passwordBytes, defaultIterations),
-            32,
-        )
-        return Crypto.aesGcmDecrypt(userKey, wrapped, aad)
     }
 
     private fun recoverWrappedUserKey(
@@ -438,15 +373,6 @@ internal object BaseFwxCompat {
         return output
     }
 
-    private fun splitMetadata(payload: String): Pair<String, String> {
-        val index = payload.indexOf(Constants.META_DELIM)
-        return if (index >= 0) {
-            payload.substring(0, index) to payload.substring(index + Constants.META_DELIM.length)
-        } else {
-            "" to payload
-        }
-    }
-
     private fun metaValue(metadataBlob: String, key: String): String {
         if (metadataBlob.isBlank()) {
             return ""
@@ -454,18 +380,6 @@ internal object BaseFwxCompat {
         return runCatching {
             JSONObject(String(Base64Codec.decode(metadataBlob), StandardCharsets.UTF_8)).optString(key).trim()
         }.getOrDefault("")
-    }
-
-    private fun splitWithDelims(payload: String, delimiter: String, legacyDelimiter: String, label: String): Pair<String, String> {
-        val primaryIndex = payload.indexOf(delimiter)
-        if (primaryIndex >= 0) {
-            return payload.substring(0, primaryIndex) to payload.substring(primaryIndex + delimiter.length)
-        }
-        val legacyIndex = payload.indexOf(legacyDelimiter)
-        if (legacyIndex >= 0) {
-            return payload.substring(0, legacyIndex) to payload.substring(legacyIndex + legacyDelimiter.length)
-        }
-        throw IllegalArgumentException("$label delimiter missing")
     }
 
     private fun parseMetadataInt(raw: String, fallback: Int): Int {
