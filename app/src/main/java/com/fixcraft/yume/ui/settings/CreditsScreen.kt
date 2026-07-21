@@ -48,14 +48,14 @@ fun CreditsScreen(
                         role = strings.leadDeveloperDesignerRole,
                     )
                     CreditEntry(
-                        name = "Claude (Anthropic)",
-                        title = strings.claudeRoleLabel,
-                        role = strings.claudeCreditRole,
+                        name = "Codex",
+                        title = strings.codexTitleLabel,
+                        role = strings.codexCreditRole,
                     )
                     CreditEntry(
-                        name = "ChatGPT / Codex",
-                        title = strings.bestEmployeeOfYearLabel,
-                        role = strings.chatgptCreditRole,
+                        name = "Claude",
+                        title = strings.claudeRoleLabel,
+                        role = strings.claudeCreditRole,
                     )
                 }
             }

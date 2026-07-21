@@ -69,7 +69,6 @@ data class MainUiState(
     val selectedProfile: ServerProfile? = profiles.firstOrNull { it.id == selectedProfileId }
     val selectedCaMaterial: SecureMaterialSummary? = selectedProfile?.let { profile ->
         caMaterials.firstOrNull { it.id == profile.anonymCaMaterialId }
-            ?: caMaterials.firstOrNull { it.id == SecureMaterialStore.DEFAULT_ANONYM_CA_ID }
     }
     val selectedAuthKeyMaterial: SecureMaterialSummary? = selectedProfile?.authKeyMaterialId
         ?.takeIf { it.isNotBlank() }
@@ -100,10 +99,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshDownloadedLanguages()
     }
 
+    private val secureMaterialsFlow = combine(
+        secureStore.userMaterials,
+        secureStore.materialRevision,
+    ) { userMaterials, _ -> userMaterials }
+
     private val baseUiStateWithoutNotice: Flow<MainUiState> = combine(
         store.profiles,
         store.selectedProfileId,
-        secureStore.userMaterials,
+        secureMaterialsFlow,
         _downloadedLanguageTags,
         YumeVpnRuntime.state,
     ) { profiles, selectedProfileId, userMaterials, downloadedLanguageTags, vpnState ->
@@ -178,6 +182,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         authKeyMaterialId: String,
         notes: String,
         tlsStealthProfile: String = ServerProfile.DEFAULT_TLS_STEALTH_PROFILE,
+        innerPsk: String = "",
+        tlsPinSha256: String = "",
     ): String? {
         val strings = strings()
         val normalizedName = name.trim()
@@ -192,7 +198,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val normalizedPort = port.trim().ifEmpty { "443" }
             val normalizedSni = sni.trim()
             val normalizedObfsSecret = obfsSecret.trim()
-            val normalizedCaMaterialId = anonymCaMaterialId.ifBlank { SecureMaterialStore.DEFAULT_ANONYM_CA_ID }
+            val normalizedInnerPsk = innerPsk.trim()
+            val normalizedTlsPin = tlsPinSha256.trim()
+            val normalizedCaMaterialId = anonymCaMaterialId.trim()
             val normalizedAuthKeyMaterialId = authKeyMaterialId.trim()
             if (normalizedHost.isEmpty()) {
                 return@runBusy strings.serverHostRequired
@@ -214,7 +222,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (parsedDnsServers.any { !numericAddressPattern.matches(it) }) {
                 return@runBusy strings.dnsServerFormatError
             }
-            if (!secureStore.hasMaterial(SecureMaterialType.AnonymCa, normalizedCaMaterialId)) {
+            val secretPattern = Regex("^[0-9a-f]{64}$")
+            if (!obfuscation) {
+                return@runBusy "YUME 2.0 requires the authenticated HTTP/2 carrier"
+            }
+            if (!secretPattern.matches(normalizedObfsSecret)) {
+                return@runBusy "Admission secret must be exactly 64 lowercase hex characters"
+            }
+            if (!secretPattern.matches(normalizedInnerPsk)) {
+                return@runBusy "Inner PSK must be exactly 64 lowercase hex characters"
+            }
+            if (normalizedTlsPin.isNotEmpty() && !secretPattern.matches(normalizedTlsPin)) {
+                return@runBusy "TLS pin must be exactly 64 lowercase hex characters"
+            }
+            if (requireAnonymProof && normalizedCaMaterialId.isBlank()) {
+                return@runBusy strings.anonymCaUnavailable
+            }
+            if (normalizedCaMaterialId.isNotBlank() &&
+                !secureStore.hasMaterial(SecureMaterialType.AnonymCa, normalizedCaMaterialId)
+            ) {
                 return@runBusy strings.anonymCaUnavailable
             }
             if (normalizedAuthKeyMaterialId.isNotBlank() &&
@@ -243,6 +269,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         .ifBlank { ServerProfile.DEFAULT_TLS_STEALTH_PROFILE }
                         .let { if (it in ServerProfile.TLS_STEALTH_PROFILE_OPTIONS) it
                                else ServerProfile.DEFAULT_TLS_STEALTH_PROFILE },
+                    innerPsk = normalizedInnerPsk,
+                    tlsPinSha256 = normalizedTlsPin,
                 )
             )
             store.selectProfile(targetId)
@@ -353,14 +381,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val strings = strings()
             val removed = secureStore.deleteMaterial(materialId)
-            if (removed == null) {
-                _noticeMessage.value = strings.embeddedAnonymCaCannotBeRemoved
-                return@launch
-            }
+            if (removed == null) return@launch
             store.profiles.value.forEach { profile ->
                 val updatedProfile = when {
                     profile.anonymCaMaterialId == removed.id -> {
-                        profile.copy(anonymCaMaterialId = SecureMaterialStore.DEFAULT_ANONYM_CA_ID)
+                        profile.copy(anonymCaMaterialId = "")
                     }
 
                     profile.authKeyMaterialId == removed.id -> {
@@ -606,8 +631,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Local CA and auth key are ready. Starting the Android VPN service.")
                         YumeVpnService.startConnect(getApplication(), selectedProfile.id, authKeyPassword)
                     } else {
-                        YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Local CA and auth key are ready. Starting the Yume SOCKS5 proxy service.")
-                        YumeSocks5ProxyService.startConnect(getApplication(), selectedProfile.id, authKeyPassword)
+                        val detail = "SOCKS5-only mode is disabled until it uses the shared YUME 2.0 ABI. Select an Android VPN technique."
+                        YumeVpnRuntime.appendLog(VpnLogLevel.Error, detail)
+                        YumeVpnRuntime.update { current ->
+                            current.copy(
+                                phase = VpnPhase.Error,
+                                headline = "YUME 2.0 transport required",
+                                detail = detail,
+                            )
+                        }
                     }
                 }
 
@@ -675,11 +707,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         strings: com.fixcraft.yume.i18n.AppStrings,
         authKeyPassword: String?,
     ): ConnectPreflightResult {
-        if (!secureStore.hasMaterial(SecureMaterialType.AnonymCa, selectedProfile.anonymCaMaterialId)) {
+        val secretPattern = Regex("^[0-9a-f]{64}$")
+        if (!selectedProfile.obfuscation || !secretPattern.matches(selectedProfile.obfsSecret)) {
+            return ConnectPreflightResult.Error(
+                headline = "YUME 2.0 admission secret required",
+                detail = "Enable the authenticated carrier and enter its 64-character lowercase hex admission secret.",
+                logMessage = "Exact YUME 2.0 carrier admission configuration is missing.",
+            )
+        }
+        if (!secretPattern.matches(selectedProfile.innerPsk)) {
+            return ConnectPreflightResult.Error(
+                headline = "YUME 2.0 inner PSK required",
+                detail = "Enter the server's 64-character lowercase hex inner PSK.",
+                logMessage = "Mandatory YUME 2.0 inner PSK is missing.",
+            )
+        }
+        if (selectedProfile.tlsPinSha256.isNotEmpty() &&
+            !secretPattern.matches(selectedProfile.tlsPinSha256)
+        ) {
+            return ConnectPreflightResult.Error(
+                headline = "Invalid TLS pin",
+                detail = "The TLS pin must be 64 lowercase hex characters.",
+                logMessage = "The configured TLS leaf fingerprint is invalid.",
+            )
+        }
+        if (selectedProfile.requireAnonymProof && selectedProfile.anonymCaMaterialId.isBlank()) {
             return ConnectPreflightResult.Error(
                 headline = strings.anonymCaMissingHeadline,
                 detail = strings.anonymCaMissingDetail,
-                logMessage = "The selected anonym CA is unavailable.",
+                logMessage = "Operator identity proof is required but no operator CA is selected.",
+            )
+        }
+        if (selectedProfile.anonymCaMaterialId.isNotBlank() &&
+            !secureStore.hasMaterial(SecureMaterialType.AnonymCa, selectedProfile.anonymCaMaterialId)
+        ) {
+            return ConnectPreflightResult.Error(
+                headline = strings.anonymCaMissingHeadline,
+                detail = strings.anonymCaMissingDetail,
+                logMessage = "The selected operator CA is unavailable.",
             )
         }
         if (selectedProfile.authKeyMaterialId.isBlank()) {
@@ -703,7 +768,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         val loadError = runCatching {
-            secureStore.readMaterialText(selectedProfile.anonymCaMaterialId)
+            if (selectedProfile.anonymCaMaterialId.isNotBlank()) {
+                secureStore.readMaterialText(selectedProfile.anonymCaMaterialId)
+            }
             secureStore.readAuthKeyPem(selectedProfile.authKeyMaterialId, authKeyPassword)
         }.exceptionOrNull()
         if (loadError != null) {

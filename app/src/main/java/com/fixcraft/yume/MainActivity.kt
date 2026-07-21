@@ -356,6 +356,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestBatteryOptimizationThenConnect() {
+        if (!BuildConfig.ALLOW_DIRECT_BATTERY_OPTIMIZATION_REQUEST) {
+            YumeVpnRuntime.appendLog(
+                VpnLogLevel.Info,
+                "This distribution does not request direct battery-optimization exemptions; continuing to Android's VPN permission.",
+            )
+            requestVpnPermissionAndConnect()
+            return
+        }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || isIgnoringBatteryOptimizations()) {
             requestVpnPermissionAndConnect()
             return

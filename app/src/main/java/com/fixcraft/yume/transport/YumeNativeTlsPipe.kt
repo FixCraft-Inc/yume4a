@@ -75,7 +75,9 @@ object YumeNativeTlsPipe {
      *
      * @param sniHost            server hostname for SNI + cert hostname verify
      * @param trustPemConcat     PEM-concatenated CA bundle; can include
-     *                           system roots + the anonym CA chain. Empty
+     *                           system roots + the selected operator CA chain.
+     *                           That chain authenticates operator authorization;
+     *                           it does not prove privacy behavior. Empty
      *                           string means rely only on system trust.
      * @param useSystemTrust     additionally trust /system/etc/security/cacerts
      * @param alpn               single ALPN protocol (e.g. "http/1.1"),

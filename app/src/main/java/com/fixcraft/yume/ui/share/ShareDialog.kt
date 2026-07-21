@@ -119,7 +119,7 @@ fun ExportShareDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "Encrypts the server connection info, the anonym CA cert, the obfs secret, " +
+                    "Encrypts the server connection info, the operator CA cert, the obfs secret, " +
                         "and (optionally) your auth private key into a single password-protected file. " +
                         "Anyone with the file AND the password becomes you on this server — pick a strong " +
                         "password.",
@@ -241,6 +241,7 @@ fun ExportShareDialog(
                                     obfsJitterMs = obfsJitterMs,
                                     tlsPinSha256 = tlsPinSha256,
                                     tlsStealthProfile = tlsStealthProfile,
+                                    innerPsk = profile.innerPsk,
                                     anonymCaCertPem = caCertPem,
                                 )
                                 ShareFile.encode(bundle, password) to null
@@ -387,8 +388,9 @@ fun ImportShareDialog(
                         if (b.label.isNotEmpty()) Text("Label:   ${b.label}")
                         Text("Server:  ${b.serverHost}:${b.serverPort}")
                         Text("Auth key: ${if (b.authPrivateKeyPem.isEmpty()) "(none)" else "PRESENT"}")
-                        Text("Anonym CA: ${if (b.anonymCaCertPem.isEmpty()) "(none)" else "PRESENT"}")
+                        Text("Operator CA: ${if (b.anonymCaCertPem.isEmpty()) "(none)" else "PRESENT"}")
                         Text("Obfs secret: ${if (b.obfsSecret.isEmpty()) "(none)" else "PRESENT"}")
+                        Text("Inner PSK: ${if (b.innerPsk.isEmpty()) "(none)" else "PRESENT"}")
                     }
                 }
                 busyLabel?.let { label ->

@@ -145,7 +145,8 @@ public:
             SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER |
             SSL_MODE_ENABLE_PARTIAL_WRITE);
 
-        // Trust anchors. Append the user-supplied PEM (anonym CA chain)
+        // Trust anchors. Append the user-supplied operator CA chain. The
+        // historical Kotlin/ABI field name is retained for compatibility.
         // and optionally the system trust store. Without at least one of
         // these we can't validate the peer cert.
         if (!trust_pem_concat.empty()) {
@@ -177,7 +178,7 @@ public:
             // legacy AOSP layout there for compat with NDK apps.
             if (SSL_CTX_load_verify_locations(ctx_, nullptr,
                     "/system/etc/security/cacerts") != 1) {
-                // Non-fatal — anonym CA above is sufficient for the Yume
+                // Non-fatal — the operator CA above is sufficient for the Yume
                 // stealth path. Log and continue.
                 LOGW("System trust store not loadable: %s",
                      drain_ssl_errors().c_str());

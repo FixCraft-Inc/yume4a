@@ -7,6 +7,7 @@
     native <methods>;
 }
 -keep class com.fixcraft.yume.transport.YumeNativeTransport { *; }
+-keep class com.fixcraft.yume.transport.SharedYumeNative { *; }
 -keep class com.fixcraft.yume.tunnel.YumeTunnelBridge { *; }
 -keep class com.fixcraft.yume.vpn.NativeDirectPacketEngine { *; }
 

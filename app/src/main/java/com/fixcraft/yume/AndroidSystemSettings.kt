@@ -19,7 +19,9 @@ object AndroidSystemSettings {
     fun openBatteryOptimizationControls(context: Context): Boolean {
         val packageUri = Uri.parse("package:${context.packageName}")
         val intents = buildList {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !isIgnoringBatteryOptimizations(context)) {
+            if (BuildConfig.ALLOW_DIRECT_BATTERY_OPTIMIZATION_REQUEST &&
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                !isIgnoringBatteryOptimizations(context)) {
                 add(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, packageUri))
             }
             add(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri))

@@ -25,6 +25,5 @@ NDK_TOOLCHAIN_VERSION := clang
 # libc++_shared.so to the APK (~ 600 KiB on arm64) but keeps each .so
 # self-contained from a STL-symbol perspective. yume-route-core does not
 # use C++ and so does not pull libc++_shared.so as a NEEDED dep.
-# libyumetransport.so (the native TLS pipe — see ../../cpp/yume_tls_pipe.cpp)
-# needs std::thread / std::string etc. and DOES NEED libc++_shared.so.
+# libyume.so and libyumeandroid.so need libc++_shared.so.
 APP_STL := c++_shared

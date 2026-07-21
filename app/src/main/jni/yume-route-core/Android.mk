@@ -53,51 +53,28 @@ LOCAL_LDFLAGS += -Wl,-z,max-page-size=16384
 LOCAL_LDFLAGS += -Wl,-z,common-page-size=16384
 include $(BUILD_SHARED_LIBRARY)
 
-# ----------------------------------------------------------------------
-# libyumetransport.so — native TLS pipe (OpenSSL non-blocking I/O behind
-# a JNI surface). Replaces SSLSocket.outputStream.write() on the upload
-# hot path so the writer coroutine never blocks on kernel TCP buffer
-# fill — the actual cause of the ~28 Mbps cap. See app/src/main/cpp/
-# yume_tls_pipe.cpp and YumeNativeTlsPipe.kt for the contract.
-#
-# OpenSSL static libs are pre-built per ABI by app/src/main/cpp/
-# build-openssl.sh, invoked from a Gradle task that runs before
-# externalNativeBuild — see app/build.gradle.kts ::buildOpenSslPerAbi.
-# Output layout:
-#   app/build/openssl/<abi>/include/openssl/*.h
-#   app/build/openssl/<abi>/lib/libssl.a + libcrypto.a
-# ----------------------------------------------------------------------
-
-YUME_OPENSSL_ROOT := $(LOCAL_PATH)/../../../../build/openssl/$(TARGET_ARCH_ABI)
-YUME_OPENSSL_INC  := $(YUME_OPENSSL_ROOT)/include
-YUME_OPENSSL_LIB  := $(YUME_OPENSSL_ROOT)/lib
+# libyume.so is cross-compiled directly from the signed sibling YUME checkout.
+# Its crypto and wire sources are never copied into this Android project.
+YUME_SHARED_ROOT := $(LOCAL_PATH)/../../../../build/yume-shared-abi
 
 include $(CLEAR_VARS)
-LOCAL_MODULE := openssl_crypto_prebuilt
-LOCAL_SRC_FILES := $(YUME_OPENSSL_LIB)/libcrypto.a
-LOCAL_EXPORT_C_INCLUDES := $(YUME_OPENSSL_INC)
-include $(PREBUILT_STATIC_LIBRARY)
+LOCAL_MODULE := yume_shared
+LOCAL_SRC_FILES := $(YUME_SHARED_ROOT)/$(TARGET_ARCH_ABI)/libyume.so
+LOCAL_EXPORT_C_INCLUDES := $(YUME_SHARED_ROOT)/include
+include $(PREBUILT_SHARED_LIBRARY)
 
+# Narrow Android ownership adapter: opaque handles, packet buffers, and
+# VpnService.protect(). All protocol/crypto remains inside libyume.
 include $(CLEAR_VARS)
-LOCAL_MODULE := openssl_ssl_prebuilt
-LOCAL_SRC_FILES := $(YUME_OPENSSL_LIB)/libssl.a
-LOCAL_EXPORT_C_INCLUDES := $(YUME_OPENSSL_INC)
-include $(PREBUILT_STATIC_LIBRARY)
-
-include $(CLEAR_VARS)
-LOCAL_MODULE := yumetransport
+LOCAL_MODULE := yumeandroid
 LOCAL_PATH := $(TOP_PATH)
-LOCAL_SRC_FILES := ../../cpp/yume_tls_pipe.cpp
-LOCAL_C_INCLUDES := $(YUME_OPENSSL_INC)
-LOCAL_CPPFLAGS := -std=c++17 -fvisibility=hidden -fvisibility-inlines-hidden -O3 \
+LOCAL_SRC_FILES := ../../cpp/yume_android_jni.cpp
+LOCAL_CPPFLAGS := -std=c++20 -fvisibility=hidden -fvisibility-inlines-hidden -O3 \
     -ffunction-sections -fdata-sections -fstack-protector-strong \
-    -Wall -Wextra -Wno-unused-parameter
-# Order matters: libssl depends on libcrypto, so the linker must see
-# ssl first when resolving symbols.
-LOCAL_STATIC_LIBRARIES := openssl_ssl_prebuilt openssl_crypto_prebuilt
-LOCAL_LDLIBS := -llog -landroid
+    -Wall -Wextra -Werror
+LOCAL_SHARED_LIBRARIES := yume_shared
+LOCAL_LDLIBS := -llog
 LOCAL_LDFLAGS := -Wl,--gc-sections \
     -Wl,-z,max-page-size=16384 \
-    -Wl,-z,common-page-size=16384 \
-    -Wl,--exclude-libs,ALL
+    -Wl,-z,common-page-size=16384
 include $(BUILD_SHARED_LIBRARY)

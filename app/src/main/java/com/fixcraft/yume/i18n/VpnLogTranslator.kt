@@ -19,7 +19,7 @@ object VpnLogTranslator {
         "Requesting Android notification permission for VPN status updates." to { strings -> strings.logRequestingNotificationPermission() },
         "Opening the Android VPN permission dialog." to { strings -> strings.logOpeningVpnPermissionDialog() },
         "Android VPN permission is already granted." to { strings -> strings.logAndroidVpnPermissionAlreadyGranted() },
-        "The selected anonym CA is unavailable." to { strings -> strings.logSelectedAnonymCaUnavailable() },
+        "The selected operator CA is unavailable." to { strings -> strings.logSelectedAnonymCaUnavailable() },
         "This server does not have an auth key assigned." to { strings -> strings.logSelectedAuthKeyRequired() },
         "The selected auth key is unavailable." to { strings -> strings.logSelectedAuthKeyUnavailable() },
         "Local CA and auth key are ready. Starting the Android VPN service." to { strings -> strings.logCredentialsReady() },
@@ -46,7 +46,7 @@ object VpnLogTranslator {
         LogPatternRule(Regex("""^Requested protection policy: (.+)\.$""")) { match, strings ->
             strings.logRequestedProtectionPolicy(match.groupValues[1])
         },
-        LogPatternRule(Regex("""^Loaded anonym CA: (.+)\.$""")) { match, strings ->
+        LogPatternRule(Regex("""^Loaded operator CA: (.+)\.$""")) { match, strings ->
             strings.logLoadedAnonymCa(match.groupValues[1])
         },
         LogPatternRule(Regex("""^Loaded auth key: (.+)\.$""")) { match, strings ->

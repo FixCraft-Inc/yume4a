@@ -4,9 +4,23 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+if [[ "$(id -u)" -eq 0 && "${YUME_ALLOW_ROOT_BUILD:-0}" != "1" ]]; then
+  cat >&2 <<'EOF'
+Refusing to run the Android release build as root.
+
+This script writes Gradle, NDK, APK, and signing outputs into the project tree.
+Run it as the checkout owner, without sudo. If a previous sudo run left
+root-owned build outputs behind, fix the ownership once before rebuilding.
+
+Set YUME_ALLOW_ROOT_BUILD=1 only for an isolated CI/container build where
+root-owned outputs cannot pollute a developer checkout.
+EOF
+  exit 1
+fi
+
 SECRET_FILE_DEFAULT="$ROOT_DIR/.release-signing.env"
-APK_OUTPUT_DIR="$ROOT_DIR/app/build/outputs/apk/release"
-OUTPUT_DIR_DEFAULT="$APK_OUTPUT_DIR/signed"
+APK_OUTPUT_DIR=""
+OUTPUT_DIR_DEFAULT=""
 
 log_section() {
   printf '\n==> %s\n' "$1"
@@ -37,6 +51,7 @@ Options:
                           arm          shorthand for arm64-v8a + armeabi-v7a
                           intel        shorthand for x86 + x86_64
                         comma-separated list also accepted, e.g. --abi arm64-v8a,x86_64
+  --distribution VALUE  direct (default) or play
   --skip-clean          skip Gradle clean
   --skip-sign           build release APK only
   --help                show this help
@@ -204,6 +219,7 @@ STORE_PASSWORD=""
 KEY_PASSWORD=""
 OUTPUT_DIR="$OUTPUT_DIR_DEFAULT"
 ABI_SELECTION="all"
+DISTRIBUTION="direct"
 SKIP_CLEAN=0
 SKIP_SIGN=0
 
@@ -267,6 +283,10 @@ while [[ $# -gt 0 ]]; do
       ABI_SELECTION="${2:-}"
       shift 2
       ;;
+    --distribution)
+      DISTRIBUTION="${2:-}"
+      shift 2
+      ;;
     --skip-clean)
       SKIP_CLEAN=1
       shift
@@ -292,6 +312,16 @@ KEY_ALIAS="$(trim_value "$KEY_ALIAS")"
 STORE_PASSWORD="$(trim_value "$STORE_PASSWORD")"
 KEY_PASSWORD="$(trim_value "$KEY_PASSWORD")"
 OUTPUT_DIR="$(trim_value "$OUTPUT_DIR")"
+DISTRIBUTION="$(trim_value "$DISTRIBUTION")"
+
+case "$DISTRIBUTION" in
+  direct|play) ;;
+  *) printf 'Unknown distribution: %s (expected direct or play)\n' "$DISTRIBUTION" >&2; exit 1 ;;
+esac
+APK_OUTPUT_DIR="$ROOT_DIR/app/build/outputs/apk/$DISTRIBUTION/release"
+if [[ -z "$OUTPUT_DIR" || "$OUTPUT_DIR" == "$ROOT_DIR/app/build/outputs/apk/release/signed" ]]; then
+  OUTPUT_DIR="$APK_OUTPUT_DIR/signed"
+fi
 
 if [[ -z "$KEYSTORE_PATH" ]]; then
   KEYSTORE_PATH="$(resolve_value YUME_RELEASE_STORE_FILE YUME_RELEASE_STORE_FILE_B64 "$SECRET_FILE" 2>/dev/null || true)"
@@ -329,6 +359,7 @@ log_item "secret file" "$(if [[ -f "$SECRET_FILE" ]]; then printf '%s' "$SECRET_
 log_item "keystore" "${KEYSTORE_PATH:-not set}"
 log_item "alias" "${KEY_ALIAS:-not set}"
 log_item "output dir" "$OUTPUT_DIR"
+log_item "distribution" "$DISTRIBUTION"
 log_item "abi" "${SELECTED_ABIS[*]}"
 log_item "zipalign" "$ZIPALIGN"
 log_item "apksigner" "$APKSIGNER"
@@ -361,8 +392,9 @@ fi
 
 # Gradle can deadlock when clean and assemble are in the same task graph because
 # clean destroys outputs that assemble tasks also declare. Keep them separate.
-log_item "step" "assembleRelease"
-./gradlew :app:assembleRelease "${GRADLE_ARGS[@]}"
+ASSEMBLE_TASK="assemble${DISTRIBUTION^}Release"
+log_item "step" "$ASSEMBLE_TASK"
+./gradlew ":app:${ASSEMBLE_TASK}" "${GRADLE_ARGS[@]}"
 
 # ABI splits produce one unsigned APK per ABI under $APK_OUTPUT_DIR. Filter the
 # discovered set down to the requested ABIs so --abi selects which APKs get
@@ -371,16 +403,14 @@ shopt -s nullglob
 ALL_UNSIGNED=("$APK_OUTPUT_DIR"/app-*-release-unsigned.apk)
 shopt -u nullglob
 
-declare -A SELECTED_ABI_SET=()
-for abi in "${SELECTED_ABIS[@]}"; do
-  SELECTED_ABI_SET[$abi]=1
-done
-
 UNSIGNED_APKS=()
 for apk in "${ALL_UNSIGNED[@]}"; do
   base="$(basename "$apk")"
   for abi in "${SELECTED_ABIS[@]}"; do
-    if [[ "$base" == app-"$abi"-release-unsigned.apk ]]; then
+    # Product flavors add their own token (for example,
+    # app-direct-arm64-v8a-release-unsigned.apk). Match the ABI as a complete
+    # filename token instead of assuming one exact Gradle output name.
+    if [[ "-$base-" == *-"$abi"-* ]]; then
       UNSIGNED_APKS+=("$apk")
       break
     fi

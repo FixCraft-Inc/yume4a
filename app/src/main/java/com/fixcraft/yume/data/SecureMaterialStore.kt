@@ -91,13 +91,16 @@ class SecureMaterialStore private constructor(context: Context) {
 
     private val _userMaterials = MutableStateFlow(loadUserMaterials())
     val userMaterials: StateFlow<List<SecureMaterialSummary>> = _userMaterials.asStateFlow()
+    private val _materialRevision = MutableStateFlow(0L)
+    val materialRevision: StateFlow<Long> = _materialRevision.asStateFlow()
 
     init {
         upgradeLegacyAuthKeyStorage(_userMaterials.value)
     }
 
     fun caMaterials(materials: List<SecureMaterialSummary> = _userMaterials.value): List<SecureMaterialSummary> {
-        return listOf(defaultAnonymCaSummary()) + materials.filter { it.type == SecureMaterialType.AnonymCa }
+        val imported = materials.filter { it.type == SecureMaterialType.AnonymCa }
+        return if (embeddedAnonymCaEnabled()) listOf(defaultAnonymCaSummary()) + imported else imported
     }
 
     fun authKeyMaterials(materials: List<SecureMaterialSummary> = _userMaterials.value): List<SecureMaterialSummary> {
@@ -106,7 +109,7 @@ class SecureMaterialStore private constructor(context: Context) {
 
     fun getSummary(id: String): SecureMaterialSummary? {
         if (id == DEFAULT_ANONYM_CA_ID) {
-            return defaultAnonymCaSummary()
+            return defaultAnonymCaSummary().takeIf { embeddedAnonymCaEnabled() }
         }
         return _userMaterials.value.firstOrNull { it.id == id }
     }
@@ -117,6 +120,7 @@ class SecureMaterialStore private constructor(context: Context) {
 
     fun readMaterialText(id: String): String {
         if (id == DEFAULT_ANONYM_CA_ID) {
+            check(embeddedAnonymCaEnabled()) { "The embedded operator CA was removed" }
             return normalizePem(readDefaultAnonymCaPem())
         }
         val summary = _userMaterials.value.firstOrNull { it.id == id }
@@ -215,12 +219,20 @@ class SecureMaterialStore private constructor(context: Context) {
 
     fun deleteMaterial(id: String): SecureMaterialSummary? {
         if (id == DEFAULT_ANONYM_CA_ID) {
-            return null
+            if (!embeddedAnonymCaEnabled()) return null
+            val removed = defaultAnonymCaSummary()
+            metadataStore.putString(KEY_EMBEDDED_ANONYM_CA_ENABLED, "false")
+            _materialRevision.value += 1
+            return removed
         }
         val existing = _userMaterials.value.firstOrNull { it.id == id } ?: return null
         fileFor(existing.id).delete()
         persistUserMaterials(_userMaterials.value.filterNot { it.id == id })
         return existing
+    }
+
+    private fun embeddedAnonymCaEnabled(): Boolean {
+        return metadataStore.getString(KEY_EMBEDDED_ANONYM_CA_ENABLED) != "false"
     }
 
     private fun strings() = appStrings(appContext, AppSettingsStore.readLanguage(appContext))
@@ -476,6 +488,7 @@ class SecureMaterialStore private constructor(context: Context) {
 
         private const val PREFS_NAME = "yume_secure_materials"
         private const val KEY_USER_MATERIALS_JSON = "user_materials_json"
+        private const val KEY_EMBEDDED_ANONYM_CA_ENABLED = "embedded_anonym_ca_enabled"
         private const val SECURE_DIR_NAME = "secure-materials"
         private const val VAULT_NAME = "secure_materials"
         private const val FILE_VERSION = 1

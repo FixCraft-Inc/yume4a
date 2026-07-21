@@ -142,9 +142,14 @@ class YumeSocks5ProxyService : Service() {
         ensureSessionActive(generation)
         activeProfile = profile
 
-        val caSummary = secureMaterialStore.getSummary(profile.anonymCaMaterialId)
-        if (caSummary == null) {
-            fail("The anonym CA configured for this server is unavailable", profile.id)
+        val caSummary = profile.anonymCaMaterialId.takeIf(String::isNotBlank)
+            ?.let(secureMaterialStore::getSummary)
+        if (profile.requireAnonymProof && caSummary == null) {
+            fail("Required operator authorization needs an available operator CA", profile.id)
+            return
+        }
+        if (profile.anonymCaMaterialId.isNotBlank() && caSummary == null) {
+            fail("The operator CA configured for this server is unavailable", profile.id)
             return
         }
         if (profile.authKeyMaterialId.isBlank()) {
@@ -157,7 +162,8 @@ class YumeSocks5ProxyService : Service() {
             return
         }
         val credentials = runCatching {
-            secureMaterialStore.readMaterialText(profile.anonymCaMaterialId) to
+            profile.anonymCaMaterialId.takeIf(String::isNotBlank)
+                ?.let(secureMaterialStore::readMaterialText).orEmpty() to
                 secureMaterialStore.readAuthKeyPem(profile.authKeyMaterialId, authKeyPassword)
         }.getOrElse { throwable ->
             fail(throwable.message ?: "Failed to load local authentication material", profile.id)
@@ -176,7 +182,8 @@ class YumeSocks5ProxyService : Service() {
                 sessionDnsServers = profile.dnsServers,
                 sessionMtu = profile.mtu,
                 upstreamNetworkLabel = describeUpstreamNetwork(),
-                veritySummary = strings().usingAnonymCa(caSummary.displayName),
+                veritySummary = caSummary?.let { strings().usingAnonymCa(it.displayName) }
+                    ?: "System TLS trust; no operator CA selected",
                 routingSummary = runtimeConfig.summary,
             )
         )

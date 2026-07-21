@@ -40,7 +40,7 @@ fun ServersScreen(
     uiState: MainUiState,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String, String, String, String) -> String?,
 ) {
     val strings = appStrings()
     val context = LocalContext.current
@@ -80,7 +80,7 @@ fun ServersScreen(
                         onClick = {
                             editorDraft = ProfileDraft(
                                 anonymCaMaterialId = uiState.caMaterials.firstOrNull()?.id
-                                    ?: SecureMaterialStore.DEFAULT_ANONYM_CA_ID,
+                                    .orEmpty(),
                             )
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -148,6 +148,8 @@ fun ServersScreen(
                     updated.authKeyMaterialId,
                     updated.notes,
                     updated.tlsStealthProfile,
+                    updated.innerPsk,
+                    updated.tlsPinSha256,
                 )
             },
         )
@@ -177,6 +179,7 @@ fun ServersScreen(
                 profile = profile,
                 caCertPem = caPem,
                 authKeySummary = authKeySummary,
+                tlsPinSha256 = profile.tlsPinSha256,
                 tlsStealthProfile = profile.tlsStealthProfile,
                 resolveAuthKeyPem = { password ->
                     runCatching {
@@ -205,9 +208,9 @@ fun ServersScreen(
                                 "Imported CA (${bundle.serverHost})",
                                 bundle.anonymCaCertPem,
                             ).id
-                        }.getOrNull() ?: SecureMaterialStore.DEFAULT_ANONYM_CA_ID
+                        }.getOrNull().orEmpty()
                     } else {
-                        SecureMaterialStore.DEFAULT_ANONYM_CA_ID
+                        ""
                     }
                     // If the bundle carried an auth private key (full-fidelity
                     // backup from desktop CLI / GUI or from another Android
@@ -238,11 +241,13 @@ fun ServersScreen(
                         bundle.obfsSecret,
                         "",                                  // dns_servers (use defaults)
                         "",                                  // mtu (use default)
-                        true,                                // require anonym proof
+                        caId.isNotEmpty(),                   // require proof only when a CA was imported
                         caId,
                         authKeyMaterialId,                   // attached if present
                         "Imported from .yss on ${ShareFileNow()}",
                         bundle.tlsStealthProfile,            // honor exported TLS profile
+                        bundle.innerPsk,
+                        bundle.tlsPinSha256,
                     )
                     val msg = when {
                         err != null -> "Imported with errors: $err"

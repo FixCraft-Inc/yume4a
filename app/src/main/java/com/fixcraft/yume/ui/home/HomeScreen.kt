@@ -98,15 +98,17 @@ internal data class ProfileDraft(
     val host: String = "",
     val port: String = "443",
     val sni: String = "",
-    val obfuscation: Boolean = false,
+    val obfuscation: Boolean = true,
     val obfsSecret: String = "",
     val dnsServers: String = "1.1.1.1, 9.9.9.9",
     val mtu: String = "1500",
     val requireAnonymProof: Boolean = true,
-    val anonymCaMaterialId: String = SecureMaterialStore.DEFAULT_ANONYM_CA_ID,
+    val anonymCaMaterialId: String = "",
     val authKeyMaterialId: String = "",
     val notes: String = "",
     val tlsStealthProfile: String = ServerProfile.DEFAULT_TLS_STEALTH_PROFILE,
+    val innerPsk: String = "",
+    val tlsPinSha256: String = "",
 )
 
 internal enum class MaterialTextKind {
@@ -135,7 +137,7 @@ fun HomeScreen(
     onDisconnect: () -> Unit,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String, String, String, String) -> String?,
     onImportCaFile: () -> Unit,
     onImportAuthKeyFile: () -> Unit,
     onSaveCaText: suspend (String, String) -> String?,
@@ -172,7 +174,7 @@ fun HomeScreen(
                     onClick = {
                         editorDraft = ProfileDraft(
                             anonymCaMaterialId = uiState.caMaterials.firstOrNull()?.id
-                                ?: SecureMaterialStore.DEFAULT_ANONYM_CA_ID,
+                                .orEmpty(),
                         )
                     },
                     containerColor = MaterialTheme.colorScheme.primary,
@@ -222,7 +224,7 @@ fun HomeScreen(
                             onAddServer = {
                                 editorDraft = ProfileDraft(
                                     anonymCaMaterialId = uiState.caMaterials.firstOrNull()?.id
-                                        ?: SecureMaterialStore.DEFAULT_ANONYM_CA_ID,
+                                        .orEmpty(),
                                 )
                             },
                         )
@@ -327,6 +329,8 @@ fun HomeScreen(
                     updated.authKeyMaterialId,
                     updated.notes,
                     updated.tlsStealthProfile,
+                    updated.innerPsk,
+                    updated.tlsPinSha256,
                 )
             },
         )
@@ -779,7 +783,7 @@ private fun MaterialGroupCard(
                         SecureMaterialRow(
                             material = material,
                             selected = material.id == selectedMaterialId,
-                            onDelete = if (material.isDefault) null else { { onDeleteMaterial(material.id) } },
+                            onDelete = { onDeleteMaterial(material.id) },
                         )
                         if (index + 1 < materials.size) {
                             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
@@ -1433,15 +1437,15 @@ internal fun ProfileEditorDialog(
                             verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
                             Text(
-                                text = strings.httpsMaskingTitle,
+                                text = "YUME 2.0 authenticated carrier",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
                                 text = if (localDraft.obfuscation) {
-                                    strings.httpsMaskingEnabled
+                                    "Required TLS 1.3 + HTTP/2 + WebSocket carrier"
                                 } else {
-                                    strings.httpsMaskingDisabled
+                                    "Enable this to use exact YUME 2.0"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1461,19 +1465,33 @@ internal fun ProfileEditorDialog(
                         value = localDraft.obfsSecret,
                         onValueChange = { localDraft = localDraft.copy(obfsSecret = it) },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text(strings.httpsMaskingSecretLabel) },
+                        label = { Text("YUME 2.0 admission secret") },
                         singleLine = true,
                         visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                         supportingText = {
-                            Text(strings.httpsMaskingSecretHelper)
+                            Text("Required: 64 lowercase hex characters")
                         },
                     )
-                    // TLS stealth profile picker. Currently drives only
-                    // the User-Agent the carrier handshake sends; the
-                    // JA3 cipher list / extension ordering is still
-                    // stock-Android (full match needs Conscrypt-level
-                    // tuning that JSSE doesn't expose). Surfaces here
-                    // because it pairs with the HTTPS-masking toggle.
+                    OutlinedTextField(
+                        value = localDraft.innerPsk,
+                        onValueChange = { localDraft = localDraft.copy(innerPsk = it) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("YUME 2.0 inner PSK") },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        supportingText = { Text("Required: 64 lowercase hex characters") },
+                    )
+                    OutlinedTextField(
+                        value = localDraft.tlsPinSha256,
+                        onValueChange = { localDraft = localDraft.copy(tlsPinSha256 = it) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("TLS leaf SHA-256 pin (optional)") },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        supportingText = { Text("64 lowercase hex characters when set") },
+                    )
+                    // This configures the shared native TLS profile. Kotlin
+                    // does not synthesize ClientHello or HTTP/2 carrier bytes.
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
                             text = "TLS stealth profile",
@@ -1494,8 +1512,7 @@ internal fun ProfileEditorDialog(
                             }
                         }
                         Text(
-                            text = "Sets the User-Agent the carrier handshake sends. " +
-                                "JA3 cipher matching is on the Android roadmap.",
+                            text = "Applied by the shared native YUME transport.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1572,8 +1589,8 @@ internal fun ProfileEditorDialog(
                         strings.anonymCaChoiceHelperOptional
                     },
                     materials = caMaterials,
-                    selectedMaterialId = localDraft.anonymCaMaterialId.ifBlank { SecureMaterialStore.DEFAULT_ANONYM_CA_ID },
-                    allowUnassigned = false,
+                    selectedMaterialId = localDraft.anonymCaMaterialId,
+                    allowUnassigned = true,
                     onSelect = { selectedId ->
                         localDraft = localDraft.copy(anonymCaMaterialId = selectedId)
                     },
@@ -2120,6 +2137,8 @@ internal fun ServerProfile.toDraft(): ProfileDraft {
         authKeyMaterialId = authKeyMaterialId,
         notes = notes,
         tlsStealthProfile = tlsStealthProfile,
+        innerPsk = innerPsk,
+        tlsPinSha256 = tlsPinSha256,
     )
 }
 

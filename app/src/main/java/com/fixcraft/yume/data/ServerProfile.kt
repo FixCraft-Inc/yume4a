@@ -15,17 +15,17 @@ data class ServerProfile(
     val dnsServers: List<String> = DEFAULT_DNS_SERVERS,
     val mtu: Int = DEFAULT_MTU,
     val requireAnonymProof: Boolean = true,
-    val anonymCaMaterialId: String = SecureMaterialStore.DEFAULT_ANONYM_CA_ID,
+    val anonymCaMaterialId: String = "",
     val authKeyMaterialId: String = "",
     val notes: String = "",
-    // TLS stealth profile this client should mimic on the obfs
-    // carrier handshake. Currently affects the User-Agent yume sends
-    // in the carrier HEADERS frame; full JA3-matching cipher list +
-    // extension order is on the post-1.x Android roadmap (requires
-    // Conscrypt-specific socket-level tuning that JSSE doesn't
-    // expose). Valid values: "chrome", "firefox", "safari", "edge".
-    // Empty string = "chrome" (default).
+    // Complete shared-core TLS/H2 transport fixture. The registry currently
+    // exposes Chrome; future Firefox/other fixtures are added in one place.
     val tlsStealthProfile: String = DEFAULT_TLS_STEALTH_PROFILE,
+    // YUME 2.0 admission and inner-crypto material. ServerProfileStore is
+    // backed by the application vault; plaintext exists only while a session
+    // is being configured for the native client.
+    val innerPsk: String = "",
+    val tlsPinSha256: String = "",
 ) {
     val endpointLabel: String
         get() = if (port == 443) host else "$host:$port"
@@ -51,12 +51,14 @@ data class ServerProfile(
         .put("auth_key_material_id", authKeyMaterialId)
         .put("notes", notes)
         .put("tls_stealth_profile", tlsStealthProfile)
+        .put("inner_psk", innerPsk)
+        .put("tls_pin_sha256", tlsPinSha256)
 
     companion object {
         const val DEFAULT_MTU = 1500
         const val DEFAULT_TLS_STEALTH_PROFILE = "chrome"
-        val TLS_STEALTH_PROFILE_OPTIONS: List<String> =
-            listOf("chrome", "firefox", "safari", "edge")
+        val TLS_STEALTH_PROFILE_OPTIONS: List<String>
+            get() = TransportProfileRegistry.ids
         val DEFAULT_DNS_SERVERS: List<String> = listOf("1.1.1.1", "9.9.9.9")
 
         fun fromJson(json: JSONObject): ServerProfile = ServerProfile(
@@ -80,13 +82,18 @@ data class ServerProfile(
             }.ifEmpty { DEFAULT_DNS_SERVERS },
             mtu = json.optInt("mtu", DEFAULT_MTU).coerceIn(1280, 1500),
             requireAnonymProof = json.optBoolean("require_anonym_proof", true),
-            anonymCaMaterialId = json.optString("anonym_ca_material_id").ifBlank { SecureMaterialStore.DEFAULT_ANONYM_CA_ID },
+            anonymCaMaterialId = if (json.has("anonym_ca_material_id")) {
+                json.optString("anonym_ca_material_id").trim()
+            } else {
+                SecureMaterialStore.DEFAULT_ANONYM_CA_ID
+            },
             authKeyMaterialId = json.optString("auth_key_material_id"),
             notes = json.optString("notes"),
-            tlsStealthProfile = json.optString("tls_stealth_profile")
-                .ifBlank { DEFAULT_TLS_STEALTH_PROFILE }
-                .lowercase()
-                .let { if (it in TLS_STEALTH_PROFILE_OPTIONS) it else DEFAULT_TLS_STEALTH_PROFILE },
+            tlsStealthProfile = TransportProfileRegistry.normalize(
+                json.optString("tls_stealth_profile"),
+            ),
+            innerPsk = json.optString("inner_psk"),
+            tlsPinSha256 = json.optString("tls_pin_sha256"),
         )
     }
 }

@@ -106,7 +106,7 @@ fun YumeApp(
     onDisconnect: () -> Unit,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String, String, String, String) -> String?,
     onImportCaFile: () -> Unit,
     onImportAuthKeyFile: () -> Unit,
     onSaveCaText: suspend (String, String) -> String?,

@@ -4,6 +4,8 @@ import android.os.ParcelFileDescriptor
 import com.fixcraft.yume.data.ConnectionTechnique
 import com.fixcraft.yume.transport.YumePacketStreamOpen
 import com.fixcraft.yume.transport.YumePacketBulk
+import com.fixcraft.yume.transport.SharedYumeNative
+import com.fixcraft.yume.transport.SharedYumePacketStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +23,7 @@ import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.nio.ByteBuffer
 
 enum class NativeDirectEngineStatus {
     Tun2SocksFallback,
@@ -44,6 +47,247 @@ interface NativeDirectPacketEngine {
     fun setVerificationMode(enabled: Boolean)
     fun stats(): TechniqueStats?
     fun snapshot(): NativeDirectEngineSnapshot
+}
+
+/**
+ * Android owns only TUN I/O and caller-owned batching buffers. libyume owns
+ * packet-bulk framing, sequences, authenticated encryption, ratchets, and its
+ * bounded queues.
+ */
+internal class SharedYumePacketEngine(
+    private val tun: ParcelFileDescriptor,
+    private val native: SharedYumeNative,
+    private val assignment: SharedYumePacketStatus,
+    private val log: (VpnLogLevel, String) -> Unit,
+) : NativeDirectPacketEngine {
+    private val running = AtomicBoolean(false)
+    private val txPackets = AtomicLong(0)
+    private val txBytes = AtomicLong(0)
+    private val rxPackets = AtomicLong(0)
+    private val rxBytes = AtomicLong(0)
+    private var tunRead: ParcelFileDescriptor? = null
+    private var tunWrite: ParcelFileDescriptor? = null
+    private var outboundThread: Thread? = null
+    private var inboundThread: Thread? = null
+
+    override suspend fun start() {
+        if (!running.compareAndSet(false, true)) return
+        tunRead = ParcelFileDescriptor.dup(tun.fileDescriptor)
+        tunWrite = ParcelFileDescriptor.dup(tun.fileDescriptor)
+        val input = FileInputStream(requireNotNull(tunRead).fileDescriptor)
+        val output = FileOutputStream(requireNotNull(tunWrite).fileDescriptor)
+        outboundThread = Thread({ runTunToNative(input) }, "yume-tun-to-native").apply { start() }
+        inboundThread = Thread({ runNativeToTun(output) }, "yume-native-to-tun").apply { start() }
+        log(
+            VpnLogLevel.Info,
+            "Shared YUME 2.0 packet ABI is active: IPv4 ${assignment.ipv4}, MTU ${assignment.mtu}.",
+        )
+    }
+
+    override fun stop() {
+        if (!running.compareAndSet(true, false)) return
+        runCatching { native.closePacket() }
+        runCatching { tunRead?.close() }
+        runCatching { tunWrite?.close() }
+        outboundThread?.interrupt()
+        inboundThread?.interrupt()
+        joinWorker(outboundThread)
+        joinWorker(inboundThread)
+        outboundThread = null
+        inboundThread = null
+        tunRead = null
+        tunWrite = null
+    }
+
+    override fun setVerificationMode(enabled: Boolean) = Unit
+
+    override fun stats(): TechniqueStats = TechniqueStats(
+        txPackets = txPackets.get(),
+        txBytes = txBytes.get(),
+        rxPackets = rxPackets.get(),
+        rxBytes = rxBytes.get(),
+    )
+
+    override fun snapshot(): NativeDirectEngineSnapshot = NativeDirectEngineSnapshot(
+        status = NativeDirectEngineStatus.PacketNative,
+        packetEngineActive = running.get(),
+        ipv6FailClosed = true,
+        queueCapacity = SharedYumeNative.MAX_BATCH_PACKETS,
+    )
+
+    private fun runTunToNative(input: FileInputStream) {
+        var packetCount = 0
+        var usedBytes = 0
+        var flushDeadlineNanos = 0L
+        val mtu = assignment.mtu.coerceIn(576, SharedYumeNative.MAX_PACKET_BYTES)
+        val scratch = ByteArray(mtu)
+        val storage = ByteBuffer.allocateDirect(BATCH_STORAGE_BYTES)
+        val offsets = IntArray(SharedYumeNative.MAX_BATCH_PACKETS)
+        val lengths = IntArray(SharedYumeNative.MAX_BATCH_PACKETS)
+        try {
+            while (running.get()) {
+                val read = try {
+                    input.read(scratch)
+                } catch (error: IOException) {
+                    if (isWouldBlockMessage(error)) {
+                        if (packetCount > 0 && System.nanoTime() >= flushDeadlineNanos) {
+                            writeNativeBatch(storage, offsets, lengths, packetCount)
+                            packetCount = 0
+                            usedBytes = 0
+                        }
+                        Thread.sleep(1)
+                        continue
+                    }
+                    throw error
+                }
+                if (read <= 0) continue
+                if (!isCompleteIpv4(scratch, read)) continue
+                if (packetCount == offsets.size || usedBytes + read > storage.capacity()) {
+                    writeNativeBatch(storage, offsets, lengths, packetCount)
+                    packetCount = 0
+                    usedBytes = 0
+                }
+                offsets[packetCount] = usedBytes
+                lengths[packetCount] = read
+                storage.position(usedBytes)
+                storage.put(scratch, 0, read)
+                usedBytes += read
+                packetCount += 1
+                if (packetCount == 1) flushDeadlineNanos = System.nanoTime() + BATCH_FLUSH_NANOS
+                if (packetCount == offsets.size || usedBytes >= BATCH_STORAGE_BYTES ||
+                    System.nanoTime() >= flushDeadlineNanos
+                ) {
+                    writeNativeBatch(storage, offsets, lengths, packetCount)
+                    packetCount = 0
+                    usedBytes = 0
+                }
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (error: Throwable) {
+            failWorker("TUN-to-native", error)
+        } finally {
+            runCatching { input.close() }
+        }
+    }
+
+    private fun writeNativeBatch(
+        storage: ByteBuffer,
+        offsets: IntArray,
+        lengths: IntArray,
+        packetCount: Int,
+    ) {
+        if (packetCount == 0) return
+        while (running.get()) {
+            when (val status = native.writePacketBatch(
+                storage, offsets, lengths, packetCount, PACKET_IO_TIMEOUT_MS,
+            )) {
+                SharedYumeNative.STATUS_OK -> {
+                    txPackets.addAndGet(packetCount.toLong())
+                    var batchBytes = 0L
+                    for (index in 0 until packetCount) batchBytes += lengths[index]
+                    txBytes.addAndGet(batchBytes)
+                    return
+                }
+                SharedYumeNative.STATUS_WOULD_BLOCK,
+                SharedYumeNative.STATUS_TIMEOUT -> continue
+                SharedYumeNative.STATUS_NOT_RUNNING -> return
+                else -> native.requirePacketStatus(status, "packet write")
+            }
+        }
+    }
+
+    private fun runNativeToTun(output: FileOutputStream) {
+        var storage = ByteBuffer.allocateDirect(BATCH_STORAGE_BYTES)
+        val offsets = IntArray(SharedYumeNative.MAX_BATCH_PACKETS)
+        val lengths = IntArray(SharedYumeNative.MAX_BATCH_PACKETS)
+        try {
+            while (running.get()) {
+                val result = native.readPacketBatch(
+                    storage, offsets, lengths, PACKET_IO_TIMEOUT_MS,
+                )
+                when (result.status) {
+                    SharedYumeNative.STATUS_OK -> {
+                        for (index in 0 until result.packetCount) {
+                            val length = lengths[index]
+                            val packet = ByteArray(length)
+                            storage.position(offsets[index])
+                            storage.get(packet)
+                            if (!isCompleteIpv4(packet, length)) continue
+                            writeTunPacket(output, packet)
+                            rxPackets.incrementAndGet()
+                            rxBytes.addAndGet(length.toLong())
+                        }
+                    }
+                    SharedYumeNative.STATUS_BUFFER_TOO_SMALL -> {
+                        require(result.requiredStorage in 1..MAX_BATCH_STORAGE_BYTES) {
+                            "Native packet storage request is out of bounds"
+                        }
+                        storage = ByteBuffer.allocateDirect(result.requiredStorage)
+                    }
+                    SharedYumeNative.STATUS_WOULD_BLOCK,
+                    SharedYumeNative.STATUS_TIMEOUT -> Unit
+                    SharedYumeNative.STATUS_NOT_RUNNING -> return
+                    else -> native.requirePacketStatus(result.status, "packet read")
+                }
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (error: Throwable) {
+            failWorker("native-to-TUN", error)
+        } finally {
+            runCatching { output.close() }
+        }
+    }
+
+    private fun writeTunPacket(output: FileOutputStream, packet: ByteArray) {
+        while (running.get()) {
+            try {
+                output.write(packet)
+                return
+            } catch (error: IOException) {
+                if (!isWouldBlockMessage(error)) throw error
+                Thread.sleep(1)
+            }
+        }
+    }
+
+    private fun failWorker(label: String, error: Throwable) {
+        if (running.get()) {
+            log(VpnLogLevel.Error, "Shared YUME $label worker stopped: ${error.message ?: error.javaClass.simpleName}.")
+            stop()
+        }
+    }
+
+    private fun joinWorker(thread: Thread?) {
+        if (thread == null || thread === Thread.currentThread()) return
+        thread.join(WORKER_JOIN_TIMEOUT_MS)
+        if (thread.isAlive) {
+            log(VpnLogLevel.Error, "Native YUME packet worker did not stop within ${WORKER_JOIN_TIMEOUT_MS}ms.")
+        }
+    }
+
+    private fun isCompleteIpv4(packet: ByteArray, length: Int): Boolean {
+        if (length < 20 || (packet[0].toInt() ushr 4 and 0x0f) != 4) return false
+        val headerLength = (packet[0].toInt() and 0x0f) * 4
+        val totalLength = ((packet[2].toInt() and 0xff) shl 8) or
+            (packet[3].toInt() and 0xff)
+        return headerLength in 20..length && totalLength == length
+    }
+
+    private fun isWouldBlockMessage(error: IOException): Boolean {
+        val message = error.message?.lowercase(Locale.US).orEmpty()
+        return message.contains("eagain") || message.contains("try again") ||
+            message.contains("would block") || message.contains("temporarily unavailable")
+    }
+
+    private companion object {
+        const val BATCH_STORAGE_BYTES = 128 * 1024
+        const val MAX_BATCH_STORAGE_BYTES = 4 * 1024 * 1024
+        const val BATCH_FLUSH_NANOS = 500_000L
+        const val PACKET_IO_TIMEOUT_MS = 250
+        const val WORKER_JOIN_TIMEOUT_MS = 5_000L
+    }
 }
 
 internal class PacketNativeTunnelPacketEngine(

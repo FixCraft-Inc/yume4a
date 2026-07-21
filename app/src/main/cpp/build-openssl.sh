@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build OpenSSL 3.0.x static libs for one Android ABI, cache the
+# Build OpenSSL 3.5.x static libs for one Android ABI, cache the
 # result under app/build/openssl/<abi>/.
 #
 # Usage:  build-openssl.sh <ABI> <ANDROID_NDK_HOME> <ANDROID_API> <OUTPUT_ROOT>
 #
-# Idempotent: if the install dir already has libssl.a + libcrypto.a, the
-# script is a no-op. First build per ABI takes ~3-5 minutes on the
-# remote-builder remote (32 cores). Subsequent builds skip.
+# Idempotent only for an identical version, source hash, NDK, API level, ABI,
+# and script revision. A stale dependency cache is never reused after one of
+# those inputs changes.
 #
 # Why a shell script instead of CMake's ExternalProject_Add: Android
 # Gradle Plugin only allows ONE externalNativeBuild path per module
@@ -21,12 +21,11 @@ NDK_HOME="${2:?missing ANDROID_NDK_HOME}"
 API_LEVEL="${3:?missing ANDROID_API}"
 OUTPUT_ROOT="${4:?missing OUTPUT_ROOT}"
 
-OPENSSL_VERSION="${OPENSSL_VERSION:-3.0.16}"
+OPENSSL_VERSION="${OPENSSL_VERSION:-3.5.7}"
 OPENSSL_URL="https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz"
-# SHA256 for the official release. If openssl.org repackages this can
-# drift — set OPENSSL_SHA256_SKIP=1 to bypass the check during a forced
-# rebuild, or update the constant below.
-OPENSSL_SHA256_DEFAULT="57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86"
+# SHA256 for the official OpenSSL 3.5.7 release. A different version requires
+# an explicitly supplied hash; release builds must never disable verification.
+OPENSSL_SHA256_DEFAULT="a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
 OPENSSL_SHA256="${OPENSSL_SHA256:-$OPENSSL_SHA256_DEFAULT}"
 
 case "$ABI" in
@@ -38,12 +37,8 @@ case "$ABI" in
 esac
 
 INSTALL_DIR="${OUTPUT_ROOT}/${ABI}"
+STAMP_FILE="${INSTALL_DIR}/.yume-openssl-build-stamp"
 mkdir -p "${OUTPUT_ROOT}"
-
-if [[ -f "${INSTALL_DIR}/lib/libssl.a" && -f "${INSTALL_DIR}/lib/libcrypto.a" ]]; then
-    echo "openssl-${OPENSSL_VERSION} for ${ABI} already installed at ${INSTALL_DIR}"
-    exit 0
-fi
 
 # Detect host triple for the NDK toolchain.
 HOST_OS="$(uname -s)"
@@ -59,6 +54,23 @@ if [[ ! -d "${NDK_TOOLCHAIN_PATH}" ]]; then
     exit 2
 fi
 
+NDK_REVISION="$(sed -n 's/^Pkg.Revision *= *//p' "${NDK_HOME}/source.properties" | head -n 1)"
+SCRIPT_SHA256="$(sha256sum "$0" | awk '{print $1}')"
+EXPECTED_STAMP=$(printf '%s\n' \
+    "openssl_version=${OPENSSL_VERSION}" \
+    "openssl_sha256=${OPENSSL_SHA256}" \
+    "abi=${ABI}" \
+    "api=${API_LEVEL}" \
+    "ndk_revision=${NDK_REVISION}" \
+    "script_sha256=${SCRIPT_SHA256}")
+if [[ -f "${INSTALL_DIR}/lib/libssl.a" && -f "${INSTALL_DIR}/lib/libcrypto.a" &&
+      -f "${STAMP_FILE}" && "$(cat "${STAMP_FILE}")" == "${EXPECTED_STAMP}" ]]; then
+    echo "openssl-${OPENSSL_VERSION} for ${ABI} already installed at ${INSTALL_DIR}"
+    exit 0
+fi
+rm -rf "${INSTALL_DIR}"
+mkdir -p "${INSTALL_DIR}"
+
 SRC_ROOT="${OUTPUT_ROOT}/src"
 ARCHIVE="${SRC_ROOT}/openssl-${OPENSSL_VERSION}.tar.gz"
 mkdir -p "${SRC_ROOT}"
@@ -68,13 +80,18 @@ if [[ ! -f "${ARCHIVE}" ]]; then
     curl --fail --silent --show-error --location -o "${ARCHIVE}" "${OPENSSL_URL}"
 fi
 
+if [[ "${OPENSSL_SHA256_SKIP:-0}" == "1" && "${YUME_ALLOW_INSECURE_DEP_OVERRIDE:-0}" != "1" ]]; then
+    echo "OPENSSL_SHA256_SKIP is forbidden for normal and release builds." >&2
+    echo "Set YUME_ALLOW_INSECURE_DEP_OVERRIDE=1 only for isolated local diagnosis." >&2
+    exit 3
+fi
 if [[ "${OPENSSL_SHA256_SKIP:-0}" != "1" ]]; then
     ACTUAL_SHA="$(sha256sum "${ARCHIVE}" | awk '{print $1}')"
     if [[ "${ACTUAL_SHA}" != "${OPENSSL_SHA256}" ]]; then
         echo "OpenSSL tarball SHA256 mismatch:" >&2
         echo "  expected: ${OPENSSL_SHA256}" >&2
         echo "  actual:   ${ACTUAL_SHA}" >&2
-        echo "Set OPENSSL_SHA256=<correct hash> or OPENSSL_SHA256_SKIP=1 to override." >&2
+        echo "Set OPENSSL_SHA256 to the official hash for an intentional version update." >&2
         exit 3
     fi
 fi
@@ -137,5 +154,7 @@ if [[ ! -f "${INSTALL_DIR}/lib/libssl.a" || ! -f "${INSTALL_DIR}/lib/libcrypto.a
     ls -la "${INSTALL_DIR}/lib/" >&2 || true
     exit 7
 fi
+
+printf '%s\n' "${EXPECTED_STAMP}" > "${STAMP_FILE}"
 
 echo "openssl-${OPENSSL_VERSION} for ${ABI} ready at ${INSTALL_DIR}"

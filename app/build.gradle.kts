@@ -26,12 +26,15 @@ val yumeProtocolVersion = readQuotedConstant(
     "Unknown",
 )
 val basefwxEngineVersion = readTrimmedFile(sharedYumeRoot.resolve("basefwx/VERSION"), "Unknown")
-val basefwxBuildUtc = System.getenv("BASEFWX_BUILD_UTC") ?: Instant.now().toString()
+val basefwxBuildUtc = System.getenv("BASEFWX_BUILD_UTC")
+    ?: System.getenv("SOURCE_DATE_EPOCH")?.toLongOrNull()?.let(Instant::ofEpochSecond)?.toString()
+    ?: "unknown"
 val basefwxBuildOrigin = System.getenv("BASEFWX_BUILD_ORIGIN") ?: "android-app"
 val basefwxGpgFingerprint = System.getenv("BASEFWX_GPG_FINGERPRINT") ?: ""
 
 val basefwxJavaOutputDir = layout.buildDirectory.dir("generated/basefwx-java")
 val basefwxJavaResourcesOutputDir = layout.buildDirectory.dir("generated/basefwx-java-resources")
+val pinnedNdkVersion = "28.2.13676358"
 val syncBasefwxJava by tasks.registering(Sync::class) {
     from(rootProject.file("../../yume/basefwx/java/src/main/java")) {
         include("com/fixcraft/basefwx/Base64Codec.java")
@@ -51,8 +54,8 @@ val syncBasefwxJava by tasks.registering(Sync::class) {
         include("com/fixcraft/basefwx/CryptoBackends.java")
         include("com/fixcraft/basefwx/JavaCryptoBackend.java")
         include("com/fixcraft/basefwx/NativeCryptoBackend.java")
-        include("com/fixcraft/basefwx/NativeLibraryLoader.java")
         include("com/fixcraft/basefwx/RuntimeLog.java")
+        include("com/fixcraft/basefwx/runtime/NativeLibraryLoader.java")
         // 3.7.x sync expansion: BaseFwx.java became syncable after the
         // image-carrier API was split out into BaseFwxImage.java (which
         // pulls in java.awt — desktop-only). With BaseFwx now AWT-clean,
@@ -127,13 +130,14 @@ android {
             minorApiLevel = 1
         }
     }
+    ndkVersion = pinnedNdkVersion
 
     defaultConfig {
         applicationId = "com.fixcraft.yume"
         minSdk = 28
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "2.0-dev1"
         buildConfigField("String", "YUME_PROTOCOL_VERSION", "\"$yumeProtocolVersion\"")
         buildConfigField("String", "BASEFWX_ENGINE_VERSION", "\"$basefwxEngineVersion\"")
         buildConfigField("String", "YUME_PROTECTION_POLICY", "\"Auto (highest available)\"")
@@ -149,6 +153,18 @@ android {
         )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("direct") {
+            dimension = "distribution"
+            buildConfigField("boolean", "ALLOW_DIRECT_BATTERY_OPTIMIZATION_REQUEST", "true")
+        }
+        create("play") {
+            dimension = "distribution"
+            buildConfigField("boolean", "ALLOW_DIRECT_BATTERY_OPTIMIZATION_REQUEST", "false")
+        }
     }
 
     val requestedAbis = (project.findProperty("yumeAbi") as? String)
@@ -255,18 +271,11 @@ tasks.named("preBuild") {
     dependsOn(syncBasefwxJava, syncBasefwxJavaResources)
 }
 
-// libyumetransport.so (the non-blocking TLS pipe) statically links a
-// pre-built OpenSSL 3.0.x. Building OpenSSL inside ndk-build is awkward
-// (Configure scripts, perl, autoconf), so we build it outside via
-// app/src/main/cpp/build-openssl.sh, ONCE per ABI, cached under
-// app/build/openssl/<abi>/. The Android.mk file imports the resulting
-// libssl.a + libcrypto.a as PREBUILT_STATIC_LIBRARY targets.
-//
-// This task is wired into the externalNativeBuild lifecycle below so
-// AGP runs it before ndk-build. First build per ABI takes ~3-5 min on
-// remote-builder; subsequent builds skip (idempotent).
-val openSslOutputDir = layout.buildDirectory.dir("openssl")
-val openSslBuildScript = rootProject.file("app/src/main/cpp/build-openssl.sh")
+// Build the public YUME C ABI directly from the signed sibling checkout. The
+// app receives libyume.so and a narrow JNI ownership adapter; no protocol or
+// crypto sources are synchronized into this project.
+val yumeSharedAbiOutputDir = layout.buildDirectory.dir("yume-shared-abi")
+val yumeSharedAbiBuildScript = sharedYumeRoot.resolve("tools/build_android_shared_abi.sh")
 
 val configuredAbis: List<String> = (project.findProperty("yumeAbi") as? String)
     ?.split(',')
@@ -277,16 +286,17 @@ val configuredAbis: List<String> = (project.findProperty("yumeAbi") as? String)
 val configuredMinSdk: String = (android.defaultConfig.minSdk ?: 28).toString()
 
 fun resolveNdkRoot(): String? {
-    // Env vars first (CI, CLI invocations). Then local.properties'
-    // ndk.dir, then sdk.dir + ndk/<largest version>. We deliberately
-    // do NOT depend on AGP's android.ndkDirectory because that
-    // property's API has churned across AGP versions and isn't
-    // available in Kotlin DSL strict mode on this project's AGP.
+    // A reproducible native build must use the pinned NDK revision. Do not
+    // select the lexicographically-largest installed directory: that can pick
+    // 9.x over 28.x and silently change compiler/runtime behavior.
     val envCandidate: String? = System.getenv("ANDROID_NDK_HOME")
         ?: System.getenv("ANDROID_NDK_ROOT")
     if (envCandidate != null) {
         val envDir: File = File(envCandidate)
-        if (envDir.isDirectory) return envCandidate
+        val revision = envDir.resolve("source.properties").takeIf { it.isFile }
+            ?.readLines()?.firstOrNull { it.startsWith("Pkg.Revision") }
+            ?.substringAfter('=')?.trim()
+        if (envDir.isDirectory && revision == pinnedNdkVersion) return envCandidate
     }
 
     val localProps: File = rootProject.file("local.properties")
@@ -302,57 +312,92 @@ fun resolveNdkRoot(): String? {
     val ndkDir: String? = props.getProperty("ndk.dir")
     if (!ndkDir.isNullOrBlank()) {
         val ndkDirFile: File = File(ndkDir)
-        if (ndkDirFile.isDirectory) return ndkDir
+        val revision = ndkDirFile.resolve("source.properties").takeIf { it.isFile }
+            ?.readLines()?.firstOrNull { it.startsWith("Pkg.Revision") }
+            ?.substringAfter('=')?.trim()
+        if (ndkDirFile.isDirectory && revision == pinnedNdkVersion) return ndkDir
     }
 
     val sdkDir: String? = props.getProperty("sdk.dir")
     if (sdkDir.isNullOrBlank()) return null
-    val ndkRoot: File = File(sdkDir).resolve("ndk")
-    if (!ndkRoot.isDirectory) return null
-    val candidates: Array<File>? = ndkRoot.listFiles()
-    val newest: File? = candidates
-        ?.filter { entry: File -> entry.isDirectory }
-        ?.maxByOrNull { entry: File -> entry.name }
-    return newest?.absolutePath
+    val pinnedNdk = File(sdkDir).resolve("ndk").resolve(pinnedNdkVersion)
+    return pinnedNdk.takeIf { it.isDirectory }?.absolutePath
 }
 
-val buildOpenSslPerAbi by tasks.registering {
-    description = "Builds OpenSSL 3.0.x static libs for each Android ABI used by libyumetransport.so."
+val buildYumeSharedAbi by tasks.registering {
+    description = "Cross-compiles the signed shared YUME client and packet ABI for Android."
     group = "yume native"
-    inputs.file(openSslBuildScript)
-    outputs.dir(openSslOutputDir)
+    inputs.file(yumeSharedAbiBuildScript)
+    inputs.file(sharedYumeRoot.resolve("include/yume/yume.h"))
+    inputs.file(sharedYumeRoot.resolve("vcpkg.json"))
+    inputs.files(fileTree(sharedYumeRoot.resolve("src")) {
+        include("**/*.cpp", "**/*.hpp", "**/*.h", "**/*.map", "**/CMakeLists.txt")
+    })
+    inputs.files(fileTree(sharedYumeRoot.resolve("basefwx/cpp")) {
+        include("**/*.cpp", "**/*.hpp", "**/*.h", "**/CMakeLists.txt", "vcpkg.json")
+    })
+    inputs.files(fileTree(sharedYumeRoot.resolve("cmake")) { include("**/*.cmake", "**/*.in") })
+    inputs.file(sharedYumeRoot.resolve("CMakeLists.txt"))
+    inputs.property("abis", configuredAbis.joinToString(","))
+    inputs.property("minSdk", configuredMinSdk)
+    inputs.property("ndkVersion", pinnedNdkVersion)
+    inputs.property("yumeCommit", "491a5738d9db998e2155de05619b0f893b8b128f")
+    outputs.dir(yumeSharedAbiOutputDir)
     doLast {
         val ndkPath = resolveNdkRoot()
             ?: error(
-                "libyumetransport.so requires the Android NDK. Install via Android Studio " +
+                "libyume.so requires the Android NDK. Install via Android Studio " +
                 "(SDK Manager → SDK Tools → NDK) or set ANDROID_NDK_HOME."
             )
-        val outRoot = openSslOutputDir.get().asFile.absolutePath
+        val vcpkgRoot = System.getenv("VCPKG_ROOT")
+            ?.let(::File)
+            ?.takeIf { it.resolve("scripts/buildsystems/vcpkg.cmake").isFile }
+            ?: rootProject.file("../../vcpkg")
+        require(vcpkgRoot.resolve("scripts/buildsystems/vcpkg.cmake").isFile) {
+            "Set VCPKG_ROOT to a vcpkg checkout; required for Android libyume dependencies."
+        }
+        val command = mutableListOf(
+            "bash",
+            yumeSharedAbiBuildScript.absolutePath,
+            "--ndk", ndkPath,
+            "--vcpkg", vcpkgRoot.absolutePath,
+            "--api", configuredMinSdk,
+            "--out", yumeSharedAbiOutputDir.get().asFile.absolutePath,
+        )
         for (abi in configuredAbis) {
-            logger.lifecycle("Building OpenSSL for $abi (cached under $outRoot/$abi if already present)...")
-            val proc = ProcessBuilder(
-                "bash",
-                openSslBuildScript.absolutePath,
-                abi,
-                ndkPath,
-                configuredMinSdk,
-                outRoot,
-            )
-                .redirectErrorStream(true)
-                .redirectOutput(ProcessBuilder.Redirect.INHERIT)
-                .start()
-            val rc = proc.waitFor()
-            if (rc != 0) {
-                error("OpenSSL build for $abi failed with exit code $rc")
-            }
+            command += listOf("--abi", abi)
+        }
+        val proc = ProcessBuilder(command)
+            .redirectErrorStream(true)
+            .redirectOutput(ProcessBuilder.Redirect.INHERIT)
+            .start()
+        val rc = proc.waitFor()
+        if (rc != 0) {
+            val latestBuildLog = configuredAbis
+                .map { abi ->
+                    yumeSharedAbiOutputDir.get().asFile
+                        .resolve(".build")
+                        .resolve(abi)
+                        .resolve("yume-abi-build.log")
+                }
+                .filter { it.isFile }
+                .maxByOrNull { it.lastModified() }
+            val diagnostic = latestBuildLog?.let { log ->
+                val tail = log.useLines { lines -> lines.toList().takeLast(120) }
+                    .joinToString(System.lineSeparator())
+                "\nNative build log: ${log.absolutePath}\n$tail"
+            }.orEmpty()
+            error("Shared YUME Android ABI build failed with exit code $rc$diagnostic")
         }
     }
 }
 
-// Hook into the externalNativeBuild lifecycle ONLY. AGP creates
+// Hook into the non-clean externalNativeBuild lifecycle ONLY. AGP creates
 // per-variant per-ABI tasks named like "externalNativeBuildDebug",
 // "configureNdkBuildDebug[Arm64-v8a]" etc.; we attach to all of them
 // so each ABI's Android.mk sees the pre-built OpenSSL libs ready.
+// externalNativeBuildClean* is intentionally excluded: making clean depend on
+// the shared ABI would compile it immediately before deleting its outputs.
 //
 // Deliberately NOT hooked into preBuild — unit tests (compileDebugKotlin
 // and friends) reach preBuild, and forcing OpenSSL compilation on every
@@ -361,11 +406,26 @@ val buildOpenSslPerAbi by tasks.registering {
 // or by Android Studio's run/debug flow.
 afterEvaluate {
     tasks.matching {
-        it.name.startsWith("externalNativeBuild") ||
-            it.name.startsWith("configureNdkBuild") ||
-            it.name.startsWith("generateJsonModelNdkBuild")
+        !it.name.contains("Clean", ignoreCase = true) &&
+            (it.name.startsWith("externalNativeBuild") ||
+                it.name.startsWith("configureNdkBuild") ||
+                it.name.startsWith("generateJsonModelNdkBuild"))
     }.configureEach {
-        dependsOn(buildOpenSslPerAbi)
+        dependsOn(buildYumeSharedAbi)
+    }
+}
+
+// AGP's ndk-build clean tasks parse Android.mk before deleting anything.
+// Imported libyume modules then fail if a previously configured, unselected
+// ABI no longer has its staged .so. All native intermediates are generated
+// beneath app/build or app/.cxx, so the Gradle Delete task can clean them
+// directly without invoking ndk-build against missing prebuilt inputs.
+tasks.matching { it.name.startsWith("externalNativeBuildClean") }.configureEach {
+    enabled = false
+}
+tasks.named("clean").configure {
+    doLast {
+        project.delete(layout.projectDirectory.dir(".cxx"))
     }
 }
 

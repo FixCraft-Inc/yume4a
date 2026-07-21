@@ -42,6 +42,8 @@ import com.fixcraft.yume.transport.YumeNativeTransport
 import com.fixcraft.yume.transport.YumePacketBulk
 import com.fixcraft.yume.transport.YumePacketAssignment
 import com.fixcraft.yume.transport.YumePacketStreamOpen
+import com.fixcraft.yume.transport.SharedYumeNative
+import com.fixcraft.yume.transport.SharedYumeSessionConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -96,6 +98,8 @@ class YumeVpnService : VpnService() {
     private var bootstrapSessionPool: YumeBootstrapSessionPool? = null
     private var socksProxy: YumeSocks5Proxy? = null
     private var nativeTransport: YumeNativeTransport? = null
+    private var sharedYumeClient: SharedYumeNative? = null
+    private var sharedYumeConfig: SharedYumeSessionConfig? = null
     private var activeProfile: ServerProfile? = null
     @Volatile
     private var localProxyAddress: String? = null
@@ -283,6 +287,217 @@ class YumeVpnService : VpnService() {
             fail("Selected server profile no longer exists")
             return
         }
+        activeProfile = profile
+        val caSummary = profile.anonymCaMaterialId.takeIf(String::isNotBlank)
+            ?.let(secureMaterialStore::getSummary)
+        val authKeySummary = secureMaterialStore.getSummary(profile.authKeyMaterialId)
+        if (profile.requireAnonymProof && caSummary == null) {
+            fail("Required operator authorization needs an available operator CA", profile.id)
+            return
+        }
+        if (profile.anonymCaMaterialId.isNotBlank() && caSummary == null) {
+            fail("The operator CA configured for this server is unavailable", profile.id)
+            return
+        }
+        if (authKeySummary == null) {
+            fail("The auth key configured for this server is unavailable", profile.id)
+            return
+        }
+        val credentials = runCatching {
+            profile.anonymCaMaterialId.takeIf(String::isNotBlank)
+                ?.let(secureMaterialStore::readMaterialText).orEmpty() to
+                secureMaterialStore.readAuthKeyPem(profile.authKeyMaterialId, authKeyPassword)
+        }.getOrElse { error ->
+            fail(error.message ?: "Failed to load local authentication material", profile.id)
+            return
+        }
+
+        YumeVpnRuntime.reset(
+            VpnConnectionState(
+                phase = VpnPhase.Connecting,
+                activeProfileId = profile.id,
+                headline = strings().connectingHeadline,
+                detail = "Starting the shared YUME 2.0-dev1 client",
+                endpointLabel = profile.endpointLabel,
+                upstreamNetworkLabel = describeUpstreamNetwork(),
+                veritySummary = "TLS identity pending",
+            )
+        )
+        startInForeground(profile, strings().authenticatingNotification)
+        lifecycleMutex.withLock { disconnectResources() }
+
+        var connectedOnce = false
+        try {
+            while (true) {
+                ensureSessionActive(generation)
+                waitForUpstreamNetwork(profile)
+                val connectedNetworkHandle =
+                    (upstreamNetwork ?: connectivityManager.activeNetwork)?.networkHandle
+                        ?: continue
+                try {
+                    val config = SharedYumeSessionConfig.create(
+                        noBackupFilesDir = noBackupFilesDir,
+                        profile = profile,
+                        authKeyPem = credentials.second,
+                        operatorCaPem = credentials.first,
+                    )
+                    sharedYumeConfig = config
+                    val native = SharedYumeNative { socketFd ->
+                        val protected = protect(socketFd)
+                        if (!protected) {
+                            YumeVpnRuntime.appendLog(
+                                VpnLogLevel.Error,
+                                "VpnService.protect() rejected a native YUME carrier socket.",
+                            )
+                        }
+                        protected
+                    }
+                    sharedYumeClient = native
+                    val build = native.buildInfo
+                    YumeVpnRuntime.appendLog(
+                        VpnLogLevel.Info,
+                        "Native YUME ${build.yumeVersion}, ABI ${build.abiVersion}, BaseFWX ${build.basefwxVersion}, PQ ${build.pqBackend}.",
+                    )
+                    native.start(
+                        configJson = config.json,
+                        baseDir = config.directory.absolutePath,
+                        timeoutMs = NATIVE_START_TIMEOUT_MS,
+                    )
+                    ensureSessionActive(generation)
+                    val clientStatus = native.clientStatus()
+                    check(clientStatus.serverCapabilities.contains(SharedYumeNative.PACKET_BULK_CAPABILITY) &&
+                        clientStatus.packetBulkSupported
+                    ) { "Server does not advertise mandatory packet_bulk_v1" }
+                    if (profile.tlsPinSha256.isNotEmpty()) {
+                        check(clientStatus.serverTlsFingerprintSha256 == profile.tlsPinSha256) {
+                            "Negotiated TLS fingerprint does not match the configured pin"
+                        }
+                    }
+                    val packetStatus = native.openPacket(NATIVE_PACKET_OPEN_TIMEOUT_MS)
+                    val assignment = YumePacketAssignment(
+                        ipv4 = packetStatus.ipv4,
+                        mtu = packetStatus.mtu,
+                        dnsServers = packetStatus.dnsServers,
+                    )
+                    tunInterface = buildVpnInterface(profile, assignment)
+                        ?: throw IOException("Android denied the VPN interface")
+                    updateUnderlyingNetworks()
+
+                    val runtimeConfig = (
+                        NativeDirectTechniqueEngine.runtimeConfig(
+                            appSettingsStore.settings.value.performanceProfile,
+                        ) as NativeDirectRuntimeConfig
+                    ).copy(engineStatus = NativeDirectEngineStatus.PacketNative)
+                    activeNativeDirectConfig = runtimeConfig
+                    val engine = SharedYumePacketEngine(
+                        tun = requireNotNull(tunInterface),
+                        native = native,
+                        assignment = packetStatus,
+                        log = { level, message -> YumeVpnRuntime.appendLog(level, message) },
+                    )
+                    val dataPlane = NativeDirectTechniqueDataPlane(runtimeConfig, engine)
+                    activeTechniqueDataPlane = dataPlane
+                    dataPlane.start()
+                    connectedOnce = true
+                    protectedSinceEpochMs = System.currentTimeMillis()
+                    localProxyAddress = PACKET_NATIVE_ROUTE_LABEL
+                    startTrafficTicker()
+                    YumeVpnRuntime.update { current ->
+                        current.copy(
+                            phase = VpnPhase.Connected,
+                            activeProfileId = profile.id,
+                            headline = strings().protectedHeadline,
+                            detail = "Shared YUME 2.0 packet transport is connected; device traffic validation is still required.",
+                            endpointLabel = profile.endpointLabel,
+                            sessionDnsServers = packetStatus.dnsServers,
+                            sessionMtu = packetStatus.mtu,
+                            upstreamNetworkLabel = describeUpstreamNetwork(),
+                            controlSocketProtected = true,
+                            vpnInterfaceEstablished = true,
+                            trafficRoutedThroughYume = true,
+                            requestedProtection = "Exact YUME 2.0-dev1",
+                            transportSummary = "Persistent TLS 1.3 + HTTP/2 WebSocket carrier",
+                            innerSummary = "ML-KEM-1024 + X25519 + 32-byte PSK; AES-256-GCM",
+                            hopSummary = "Directional ratchets: 256 KiB / 512 frames / 500 ms active traffic",
+                            veritySummary = when {
+                                profile.requireAnonymProof ->
+                                    "TLS identity and operator authorization verified"
+                                caSummary != null ->
+                                    "TLS identity verified; optional operator CA configured"
+                                else ->
+                                    "TLS system trust/name${if (profile.tlsPinSha256.isNotEmpty()) "/pin" else ""} verified; no operator CA selected"
+                            },
+                            routingSummary = "Native packet_bulk_v1 IPv4; IPv6 blocked",
+                            serverMode = "packet_bulk_v1",
+                            serverVersion = build.yumeVersion,
+                            peerCertificateFingerprint = clientStatus.serverTlsFingerprintSha256,
+                            relaySummary = "Live device traffic and throughput gates pending",
+                            localProxyAddress = PACKET_NATIVE_ROUTE_LABEL,
+                        )
+                    }
+                    updateForeground(profile, strings().protectedNotification)
+
+                    while (true) {
+                        delay(NATIVE_STATUS_POLL_MS)
+                        ensureSessionActive(generation)
+                        val currentNetwork = upstreamNetwork ?: connectivityManager.activeNetwork
+                        if (currentNetwork == null ||
+                            currentNetwork.networkHandle != connectedNetworkHandle
+                        ) {
+                            throw IOException("Upstream network changed; restarting native YUME")
+                        }
+                        val liveClient = native.clientStatus()
+                        val livePacket = native.packetStatus()
+                        if (!liveClient.running || !liveClient.ready || livePacket.stopped) {
+                            throw IOException(
+                                livePacket.stopReason.ifBlank { liveClient.message }
+                                    .ifBlank { "Native YUME session stopped" },
+                            )
+                        }
+                        YumeVpnRuntime.update { current ->
+                            current.copy(upstreamNetworkLabel = describeUpstreamNetwork())
+                        }
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    if (!connectedOnce) throw error
+                    YumeVpnRuntime.appendLog(
+                        VpnLogLevel.Warn,
+                        "Shared YUME session will reconnect: ${error.message ?: error.javaClass.simpleName}.",
+                    )
+                    YumeVpnRuntime.update { current ->
+                        current.copy(
+                            phase = VpnPhase.Connecting,
+                            headline = strings().connectingHeadline,
+                            detail = "Reconnecting the shared YUME transport",
+                            controlSocketProtected = false,
+                            vpnInterfaceEstablished = false,
+                            trafficRoutedThroughYume = false,
+                        )
+                    }
+                } finally {
+                    lifecycleMutex.withLock { disconnectResources() }
+                }
+                delay(NATIVE_RECONNECT_DELAY_MS)
+            }
+        } catch (_: CancellationException) {
+            lifecycleMutex.withLock { disconnectResources() }
+        } catch (error: Throwable) {
+            if (!shutdownRequested && generation == sessionGeneration.get()) {
+                fail(error.message ?: "Native YUME startup failed", profile.id)
+            }
+        }
+    }
+
+    @Suppress("unused")
+    private suspend fun connectLegacy(profileId: String, authKeyPassword: String?) {
+        val generation = sessionGeneration.get()
+        val profile = profileStore.getProfile(profileId)
+        if (profile == null) {
+            fail("Selected server profile no longer exists")
+            return
+        }
         val appSettings = appSettingsStore.settings.value
         var techniqueEngine = resolveTechniqueEngine(appSettings)
         var runtimeConfig = techniqueEngine.runtimeConfig(appSettings.performanceProfile)
@@ -292,9 +507,14 @@ class YumeVpnService : VpnService() {
         var packetNativeOpen: YumePacketStreamOpen? = null
         ensureSessionActive(generation)
         activeProfile = profile
-        val caSummary = secureMaterialStore.getSummary(profile.anonymCaMaterialId)
-        if (caSummary == null) {
-            fail("The anonym CA configured for this server is unavailable", profile.id)
+        val caSummary = profile.anonymCaMaterialId.takeIf(String::isNotBlank)
+            ?.let(secureMaterialStore::getSummary)
+        if (profile.requireAnonymProof && caSummary == null) {
+            fail("Required operator authorization needs an available operator CA", profile.id)
+            return
+        }
+        if (profile.anonymCaMaterialId.isNotBlank() && caSummary == null) {
+            fail("The operator CA configured for this server is unavailable", profile.id)
             return
         }
         if (profile.authKeyMaterialId.isBlank()) {
@@ -307,7 +527,8 @@ class YumeVpnService : VpnService() {
             return
         }
         val credentials = runCatching {
-            secureMaterialStore.readMaterialText(profile.anonymCaMaterialId) to
+            profile.anonymCaMaterialId.takeIf(String::isNotBlank)
+                ?.let(secureMaterialStore::readMaterialText).orEmpty() to
                 secureMaterialStore.readAuthKeyPem(profile.authKeyMaterialId, authKeyPassword)
         }.getOrElse { throwable ->
             fail(throwable.message ?: "Failed to load local authentication material", profile.id)
@@ -326,7 +547,8 @@ class YumeVpnService : VpnService() {
                 sessionDnsServers = profile.dnsServers,
                 sessionMtu = profile.mtu,
                 upstreamNetworkLabel = describeUpstreamNetwork(),
-                veritySummary = strings().usingAnonymCa(caSummary.displayName),
+                veritySummary = caSummary?.let { strings().usingAnonymCa(it.displayName) }
+                    ?: "System TLS trust; no operator CA selected",
             )
         )
         lastLoggedUpstreamHandle = Long.MIN_VALUE
@@ -340,7 +562,11 @@ class YumeVpnService : VpnService() {
         }
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Starting Yume Android session for ${profile.name} (${profile.endpointLabel}).")
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Requested protection policy: ${YumeVpnRuntime.state.value.requestedProtection}.")
-        YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Loaded anonym CA: ${caSummary.displayName}.")
+        if (caSummary != null) {
+            YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Loaded operator CA: ${caSummary.displayName}.")
+        } else {
+            YumeVpnRuntime.appendLog(VpnLogLevel.Info, "No operator CA selected; using system TLS trust.")
+        }
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Loaded auth key: ${authKeySummary.displayName}.")
         startInForeground(profile, strings().authenticatingNotification)
 
@@ -364,7 +590,9 @@ class YumeVpnService : VpnService() {
             var bootstrap = session.bootstrap
             YumeVpnRuntime.appendLog(
                 VpnLogLevel.Info,
-                "Server ${bootstrap.serverVersion} mode ${bootstrap.serverMode}; ${bootstrap.verity.summary}.",
+                "Server ${bootstrap.serverVersion}; operator identity " +
+                    "${if (bootstrap.serverMode.equals("anonym", ignoreCase = true)) "announced" else "not announced"}; " +
+                    "${bootstrap.verity.summary}.",
             )
             YumeVpnRuntime.appendLog(
                 VpnLogLevel.Info,
@@ -686,9 +914,13 @@ class YumeVpnService : VpnService() {
         val dataPlane = activeTechniqueDataPlane
         val session = bootstrapSession
         val pool = bootstrapSessionPool
+        val sharedClient = sharedYumeClient
+        val sharedConfig = sharedYumeConfig
         activeTechniqueDataPlane = null
         bootstrapSession = null
         bootstrapSessionPool = null
+        sharedYumeClient = null
+        sharedYumeConfig = null
 
         // Tear down upper layers first (data plane + SOCKS gateway) before the
         // session they depend on; any teardown error here is unrecoverable, so
@@ -697,6 +929,9 @@ class YumeVpnService : VpnService() {
         runCatching { socksProxy?.setStartupWarmupMode(false) }
         runCatching { socksProxy?.stop() }
         runCatching { dataPlane?.stop() }
+        runCatching { sharedClient?.stop() }
+        runCatching { sharedClient?.close() }
+        runCatching { sharedConfig?.close() }
         runCatching { configureNativeDirectTransport(enabled = false) }
         runCatching { pool?.closeAll() ?: session?.close() }
         runCatching { inFlightSocket?.close() }
@@ -1003,7 +1238,11 @@ class YumeVpnService : VpnService() {
             .setConfigureIntent(buildConfigureIntent())
             .setBlocking(false)
             .setMtu(mtu)
-            .addAddress(tunnelAddress, VPN_IPV4_PREFIX_LENGTH)
+            .addAddress(
+                tunnelAddress,
+                if (packetAssignment != null) PACKET_NATIVE_IPV4_PREFIX_LENGTH
+                else VPN_IPV4_PREFIX_LENGTH,
+            )
             .addRoute("0.0.0.0", 0)
         if (CAPTURE_IPV6_IN_ANDROID_VPN) {
             builder
@@ -2528,6 +2767,11 @@ class YumeVpnService : VpnService() {
         private const val EXCLUDE_YUME_APP_FROM_ANDROID_VPN = false
         private const val CAPTURE_IPV6_IN_ANDROID_VPN = false
         private const val VPN_IPV4_PREFIX_LENGTH = 24
+        private const val PACKET_NATIVE_IPV4_PREFIX_LENGTH = 32
+        private const val NATIVE_START_TIMEOUT_MS = 30_000
+        private const val NATIVE_PACKET_OPEN_TIMEOUT_MS = 10_000
+        private const val NATIVE_STATUS_POLL_MS = 1_500L
+        private const val NATIVE_RECONNECT_DELAY_MS = 1_000L
         private const val KEEPALIVE_PING_INTERVAL_MS = 15_000L
         private const val PRE_ROUTING_PING_TIMEOUT_MS = 6_000
         // How many consecutive PING failures we tolerate before we

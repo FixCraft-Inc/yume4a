@@ -56,7 +56,7 @@ object ShareFile {
         val obfsJitterMs: Int = 0,
         val tlsPinSha256: String = "",
         val tlsStealthProfile: String = "",
-        // anonym + PQ
+        // Operator-identity trust material + PQ (legacy serialized field names).
         val anonymCaCertPem: String = "",
         val anonymPubkey: String = "",
         val pqPublicKeyPem: String = "",
@@ -64,6 +64,7 @@ object ShareFile {
         val innerCrypto: Boolean = true,
         val innerHeavy: Boolean = true,
         val innerHop: Boolean = true,
+        val innerPsk: String = "",
         val hopIntervalMs: Int = 500,
         val allowUdp: Boolean = false,
         val allowLocalIp: Boolean = false,
@@ -197,6 +198,7 @@ object ShareFile {
             .put("inner_crypto",   b.innerCrypto)
             .put("inner_heavy",    b.innerHeavy)
             .put("inner_hop",      b.innerHop)
+            .put("inner_psk",      b.innerPsk)
             .put("hop_interval_ms", b.hopIntervalMs)
             .put("allow_udp",      b.allowUdp)
             .put("allow_local_ip", b.allowLocalIp))
@@ -245,6 +247,7 @@ object ShareFile {
             innerCrypto        = cs?.optBoolean("inner_crypto", true) ?: true,
             innerHeavy         = cs?.optBoolean("inner_heavy", true) ?: true,
             innerHop           = cs?.optBoolean("inner_hop", true) ?: true,
+            innerPsk           = cs?.optString("inner_psk").orEmpty(),
             hopIntervalMs      = cs?.optInt("hop_interval_ms", 500) ?: 500,
             allowUdp           = cs?.optBoolean("allow_udp", false) ?: false,
             allowLocalIp       = cs?.optBoolean("allow_local_ip", false) ?: false,

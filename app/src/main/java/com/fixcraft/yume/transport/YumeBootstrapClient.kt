@@ -2024,13 +2024,13 @@ object YumeBootstrapClient {
                 )
                 if (serverInfo.serverVersion != BuildConfig.YUME_PROTOCOL_VERSION) {
                     throw YumeBootstrapException(
-                        "Server version ${serverInfo.serverVersion} does not match this app (${BuildConfig.YUME_PROTOCOL_VERSION})"
+                        "Server transport core ${serverInfo.serverVersion} does not match this app's transport core (${BuildConfig.YUME_PROTOCOL_VERSION})"
                     )
                 }
                 log?.invoke("Verity ${serverInfo.verity.summary}.")
                 if (!requireAnonymProof && !serverInfo.serverMode.equals("anonym", ignoreCase = true)) {
                     log?.invoke(
-                        "Privacy warning: this server is not in anonym mode. The server operator may monitor proxied traffic."
+                        "Privacy warning: this server did not provide operator identity proof. The server operator may monitor proxied traffic."
                     )
                 }
 
@@ -2315,7 +2315,7 @@ object YumeBootstrapClient {
         val peerFingerprint = sha256Hex(peerCertificate.encoded)
         if (mode != "anonym") {
             if (requireAnonymProof) {
-                throw YumeBootstrapException("SERVER IS NOT IN ANONYM MODE")
+                throw YumeBootstrapException("The server did not provide the required operator identity proof")
             }
             return YumeVerityInfo(
                 summary = "FAIL",
@@ -2335,20 +2335,20 @@ object YumeBootstrapClient {
         val proofSources = parseProofSources(json, sig, caSig, subSig, subCertB64)
 
         if (hash.isEmpty() || ts.isEmpty() || nonce.isEmpty()) {
-            throw YumeBootstrapException("The anonym proof from the server is incomplete")
+            throw YumeBootstrapException("The operator identity proof from the server is incomplete")
         }
         if (certfp.isEmpty()) {
-            throw YumeBootstrapException("The anonym proof is missing the TLS certificate fingerprint")
+            throw YumeBootstrapException("The operator identity proof is missing the TLS certificate fingerprint")
         }
         if (peerFingerprint != certfp) {
-            throw YumeBootstrapException("The anonym proof fingerprint does not match the server TLS certificate")
+            throw YumeBootstrapException("The operator identity proof does not match the server TLS certificate")
         }
 
         val proofTimestampSeconds = ts.toLongOrNull()
-            ?: throw YumeBootstrapException("The anonym proof timestamp is invalid")
+            ?: throw YumeBootstrapException("The operator identity proof timestamp is invalid")
         val nowSeconds = System.currentTimeMillis() / 1_000L
         if (abs(nowSeconds - proofTimestampSeconds) > ANON_PROOF_WINDOW_SECONDS) {
-            throw YumeBootstrapException("The anonym proof is expired or not yet valid")
+            throw YumeBootstrapException("The operator identity proof is expired or not yet valid")
         }
 
         val proofMessage = "$ANON_MESSAGE_PREFIX$hash:$ts:$nonce:$certfp".toByteArray(Charsets.UTF_8)
@@ -2360,50 +2360,81 @@ object YumeBootstrapClient {
             }
             val fixcraftKey = loadPublicKeyFromPem(FIXCRAFT_ANONYM_PUBLIC_KEY_PEM)
             if (!verifySignature(fixcraftKey, proofMessage, decodeBase64(sig, "FixCraft signature"), json.optString("algo"))) {
-                throw YumeBootstrapException("The FixCraft anonym signature is invalid")
+                throw YumeBootstrapException("The legacy external operator signature is invalid")
             }
             verifiedSources += "fixcraft"
         }
 
         if ("sub-ca" in proofSources) {
-            if (subCertB64.isEmpty()) {
-                throw YumeBootstrapException("The server announced a Sub-CA proof but did not send a sub certificate")
+            if (anonymCaPem.isBlank()) {
+                if (requireAnonymProof) {
+                    throw YumeBootstrapException("Required delegated operator proof needs a selected operator CA")
+                }
+            } else {
+                if (subCertB64.isEmpty()) {
+                    throw YumeBootstrapException("The server announced delegated identity proof but did not send its certificate")
+                }
+                if (subSig.isEmpty()) {
+                    throw YumeBootstrapException("The server announced delegated identity proof but did not send its signature")
+                }
+                val subCert = loadCertificate(String(decodeBase64(subCertB64, "delegated server certificate"), Charsets.UTF_8))
+                val caCert = loadCertificate(anonymCaPem)
+                caCert.checkValidity(Date())
+                subCert.checkValidity(Date())
+                if (caCert.basicConstraints < 0 || subCert.basicConstraints >= 0 ||
+                    subCert.issuerX500Principal != caCert.subjectX500Principal
+                ) {
+                    throw YumeBootstrapException("The delegated server certificate is not a valid leaf from the selected operator CA")
+                }
+                subCert.verify(caCert.publicKey, provider)
+                if (!verifySignature(subCert.publicKey, proofMessage, decodeBase64(subSig, "delegated server signature"), json.optString("sub_alg"))) {
+                    throw YumeBootstrapException("The delegated server identity signature is invalid")
+                }
+                verifiedSources += "sub-ca"
             }
-            if (subSig.isEmpty()) {
-                throw YumeBootstrapException("The server announced a Sub-CA proof but did not send a sub signature")
-            }
-            val subCert = loadCertificate(String(decodeBase64(subCertB64, "Sub-CA certificate"), Charsets.UTF_8))
-            val caCert = loadCertificate(anonymCaPem)
-            subCert.checkValidity(Date())
-            subCert.verify(caCert.publicKey, provider)
-            if (!verifySignature(subCert.publicKey, proofMessage, decodeBase64(subSig, "Sub-CA signature"), json.optString("sub_alg"))) {
-                throw YumeBootstrapException("The Sub-CA anonym signature is invalid")
-            }
-            verifiedSources += "sub-ca"
         }
 
         if ("ca" in proofSources) {
-            if (caSig.isEmpty()) {
-                throw YumeBootstrapException("The server announced a CA proof but did not send a CA signature")
+            if (anonymCaPem.isBlank()) {
+                if (requireAnonymProof) {
+                    throw YumeBootstrapException("Required operator proof needs a selected operator CA")
+                }
+            } else {
+                if (caSig.isEmpty()) {
+                    throw YumeBootstrapException("The server announced a CA proof but did not send a CA signature")
+                }
+                val caCert = loadCertificate(anonymCaPem)
+                caCert.checkValidity(Date())
+                if (caCert.basicConstraints < 0) {
+                    throw YumeBootstrapException("The selected operator certificate is not a CA")
+                }
+                if (!verifySignature(caCert.publicKey, proofMessage, decodeBase64(caSig, "CA signature"), json.optString("ca_alg"))) {
+                    throw YumeBootstrapException("The operator CA signature is invalid")
+                }
+                verifiedSources += "ca"
             }
-            val caCert = loadCertificate(anonymCaPem)
-            if (!verifySignature(caCert.publicKey, proofMessage, decodeBase64(caSig, "CA signature"), json.optString("ca_alg"))) {
-                throw YumeBootstrapException("The CA anonym signature is invalid")
-            }
-            verifiedSources += "ca"
         }
 
         val primarySource = when {
             "sub-ca" in verifiedSources -> "sub-ca"
             "ca" in verifiedSources -> "ca"
             "fixcraft" in verifiedSources -> "fixcraft"
-            else -> throw YumeBootstrapException("No trusted anonym proof source could be verified")
+            else -> {
+                if (requireAnonymProof) {
+                    throw YumeBootstrapException("No trusted operator identity proof could be verified")
+                }
+                return YumeVerityInfo(
+                    summary = "UNVERIFIED [no operator CA selected]",
+                    source = "unverified",
+                    peerFingerprintSha256 = peerFingerprint,
+                )
+            }
         }
 
         val summary = when (primarySource) {
-            "sub-ca" -> "PASS [Sub-CA]"
-            "ca" -> "PASS [CA]"
-            "fixcraft" -> "PASS [FixCraft]"
+            "sub-ca" -> "PASS [delegated server certificate]"
+            "ca" -> "PASS [operator CA]"
+            "fixcraft" -> "PASS [legacy FixCraft authority]"
             else -> "PASS"
         }
         return YumeVerityInfo(
@@ -3059,14 +3090,14 @@ object YumeBootstrapClient {
     ): YumeTransportSocket {
         log?.invoke("Using libyumetransport.so (OpenSSL ${YumeNativeTlsPipe.openSslVersion()}).")
         val alpn = if (profile.obfuscation) "http/1.1" else ""
-        // Combine the system trust store + the anonym CA into a single
+        // Combine the system trust store + the selected operator CA into a single
         // PEM bundle. We can't rely on OpenSSL's
         // SSL_CTX_load_verify_locations("/system/etc/security/cacerts")
         // on modern Android — the path either isn't readable by app
         // processes or is in a different layout — so we extract every
         // accepted root from Java's TrustManagerFactory and base64-PEM
         // encode them client-side. Matches the CompositeX509TrustManager
-        // (system + anonym) that the SSLSocket path uses.
+        // (system + operator CA) that the SSLSocket path uses.
         val combinedTrustPem = buildCombinedTrustPem(anonymCaPem)
         val handle = YumeNativeTlsPipe.create(
             sniHost = profile.serverName,
@@ -3098,9 +3129,9 @@ object YumeBootstrapClient {
 
     private fun buildCombinedTrustPem(anonymCaPem: String): String {
         // Walks every accepted root from Java's TrustManagerFactory and
-        // PEM-encodes it, then appends the user-supplied anonym CA PEM.
+        // PEM-encodes it, then appends the user-supplied operator CA PEM.
         // This is the EXACT same trust set that the Java SSLSocket path
-        // sees via CompositeX509TrustManager(systemTrust, anonymTrust).
+        // sees via CompositeX509TrustManager(systemTrust, operatorTrust).
         //
         // Why: the native OpenSSL can't read /system/etc/security/cacerts
         // on modern Android (path layout differs, file permissions
@@ -3149,6 +3180,9 @@ object YumeBootstrapClient {
 
     private fun buildTlsTrustManagers(anonymCaPem: String): Array<TrustManager> {
         val systemTrust = defaultX509TrustManager()
+        if (anonymCaPem.isBlank()) {
+            return arrayOf(systemTrust)
+        }
         val anonymTrust = pemX509TrustManager(anonymCaPem)
         return arrayOf(CompositeX509TrustManager(listOf(systemTrust, anonymTrust)))
     }
@@ -3163,10 +3197,10 @@ object YumeBootstrapClient {
         val certificates = try {
             loadCertificates(pem)
         } catch (throwable: Exception) {
-            throw YumeBootstrapException("Failed to load the selected Anonym CA as a TLS trust anchor", throwable)
+            throw YumeBootstrapException("Failed to load the selected operator CA as a TLS trust anchor", throwable)
         }
         if (certificates.isEmpty()) {
-            throw YumeBootstrapException("The selected Anonym CA does not contain an X.509 certificate")
+            throw YumeBootstrapException("The selected operator CA does not contain an X.509 certificate")
         }
         val keyStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
             load(null, null)
