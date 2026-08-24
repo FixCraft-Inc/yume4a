@@ -31,7 +31,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.fixcraft.yume.MainUiState
 import com.fixcraft.yume.R
-import com.fixcraft.yume.data.supportsUserSelectablePerformanceProfiles
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.vpn.VpnPhase
 
@@ -43,11 +42,6 @@ fun HomeDashboardScreen(
     onOpenServers: () -> Unit,
 ) {
     val strings = appStrings()
-    val profileSummary = if (uiState.appSettings.connectionTechnique.supportsUserSelectablePerformanceProfiles()) {
-        strings.performanceProfileName(uiState.appSettings.performanceProfile)
-    } else {
-        strings.nativeDirectFixedTuningName
-    }
     val profile = uiState.selectedProfile
     val vpnState = uiState.vpnState
     val hasAuthKey = uiState.selectedAuthKeyMaterial != null
@@ -62,7 +56,7 @@ fun HomeDashboardScreen(
         else -> strings.phaseStatus(
             phase = vpnState.phase,
             protected = vpnState.trafficRoutedThroughYume,
-            proxyReady = vpnState.localProxyAddress != null,
+            routeReady = vpnState.activeRouteLabel != null,
         )
     }
     val statusHeadline = when {
@@ -84,8 +78,8 @@ fun HomeDashboardScreen(
         if (liveSession && vpnState.innerSummary.isNotBlank()) {
             add(vpnState.innerSummary)
         }
-        if (liveSession) {
-            conciseHop(vpnState.hopSummary)?.let(::add)
+        if (liveSession && vpnState.ratchetSummary.isNotBlank()) {
+            add("${strings.ratchetLabel}: ${vpnState.ratchetSummary}")
         }
     }
 
@@ -197,10 +191,9 @@ fun HomeDashboardScreen(
                                 )
                             }
                             Text(
-                                text = strings.routePath(
-                                    strings.connectionTechniqueName(uiState.appSettings.connectionTechnique),
-                                    profileSummary,
-                                ),
+                                text = "${strings.routeLabel}: ${
+                                    vpnState.activeRouteLabel ?: strings.transportModeValue
+                                }",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -260,13 +253,5 @@ fun HomeDashboardScreen(
                 }
             }
         }
-    }
-}
-
-private fun conciseHop(summary: String): String? {
-    return if (summary.startsWith("Hop ", ignoreCase = true) && !summary.equals("Hop off", ignoreCase = true)) {
-        summary
-    } else {
-        null
     }
 }

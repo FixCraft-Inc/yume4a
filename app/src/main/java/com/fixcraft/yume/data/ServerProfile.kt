@@ -10,7 +10,10 @@ data class ServerProfile(
     val host: String,
     val port: Int = 443,
     val sni: String = "",
-    val obfuscation: Boolean = false,
+    // dev6 has no unmasked mode: prepare_v2_security_config() and
+    // SharedYumeSessionConfig both refuse obfuscation=false, so a stored
+    // `false` is a profile that can never connect and is migrated on read.
+    val obfuscation: Boolean = true,
     val obfsSecret: String = "",
     val dnsServers: List<String> = DEFAULT_DNS_SERVERS,
     val mtu: Int = DEFAULT_MTU,
@@ -67,7 +70,7 @@ data class ServerProfile(
             host = json.optString("host"),
             port = json.optInt("port", 443).coerceIn(1, 65535),
             sni = json.optString("sni"),
-            obfuscation = json.optBoolean("obfuscation", false),
+            obfuscation = true,
             obfsSecret = json.optString("obfs_secret"),
             dnsServers = buildList {
                 val dnsArray = json.optJSONArray("dns_servers")

@@ -1,9 +1,7 @@
 package com.fixcraft.yume.vpn
 
-import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.data.ConnectionTechnique
 import com.fixcraft.yume.data.PerformanceProfile
-import com.fixcraft.yume.data.Socks5BindMode
 import com.fixcraft.yume.data.Socks5ProxySettings
 import com.fixcraft.yume.data.canonicalLabel
 import com.fixcraft.yume.transport.YumeTransportTuning
@@ -12,7 +10,6 @@ sealed interface TunnelRuntimeConfig {
     val technique: ConnectionTechnique
     val performanceProfile: PerformanceProfile
     val summary: String
-    val diagnosticsSummary: String
 }
 
 data class TechniqueStats(
@@ -30,7 +27,6 @@ interface TechniqueDataPlane {
     fun stop()
     fun setVerificationMode(enabled: Boolean)
     fun stats(): TechniqueStats?
-    fun diagnosticsSummary(): String
 }
 
 data class Tun2SocksRuntimeConfig(
@@ -59,36 +55,6 @@ data class Tun2SocksRuntimeConfig(
 ) : TunnelRuntimeConfig {
     override val technique: ConnectionTechnique = ConnectionTechnique.Tun2SocksStable
     override val summary: String = "${technique.canonicalLabel()} / ${performanceProfile.canonicalLabel()}"
-    override val diagnosticsSummary: String = bridgeDiagnosticsSummary()
-
-    fun bridgeDiagnosticsSummary(includeTechnique: Boolean = true): String = buildString {
-        if (includeTechnique) {
-            appendLine("Technique: ${technique.canonicalLabel()}")
-        }
-        appendLine("Profile: ${performanceProfile.canonicalLabel()}")
-        appendLine("TCP relays: $maxActiveTcpRelays")
-        appendLine("Relay acquire timeout: ${relayAcquireTimeoutMs}ms")
-        appendLine("Relay acquire slice: ${relayAcquireSliceMs}ms")
-        appendLine("Idle TCP eviction: ${idleTcpEvictionMs}ms")
-        appendLine("TCP eviction grace: ${tcpEvictionGraceMs}ms")
-        appendLine("TCP eviction batch: $tcpEvictionBatchSize")
-        appendLine("Bridge chunk: ${bridgeChunkBytes / 1024} KiB")
-        appendLine("Route-core TCP buffer: ${routeTcpBufferBytes / 1024} KiB")
-        appendLine("TCP stream buffer: ${tcpStreamBufferBytes / 1024} KiB")
-        appendLine("UDP stream buffer: ${udpStreamBufferBytes / 1024} KiB")
-        appendLine("Outbound frame queue: $outboundFrameQueueCapacity")
-        appendLine("Outbound TLS batch: $outboundCoalesceFrames frames / ${outboundCoalesceBytes / 1024} KiB")
-        appendLine("tun2socks connect timeout: ${tun2SocksConnectTimeoutMs}ms")
-        appendLine("tun2socks TCP read/write timeout: ${tun2SocksTcpReadWriteTimeoutMs}ms")
-        appendLine("tun2socks UDP read/write timeout: ${tun2SocksUdpReadWriteTimeoutMs}ms")
-        appendLine("Max DNS UDP associations: $maxDnsUdpAssociations")
-        appendLine("Max UDP associations: $maxUdpAssociations")
-        appendLine("DNS relay concurrency: $dnsRelayMaxConcurrency")
-        appendLine("Pre-routing stability delay: ${preRoutingStabilityDelayMs}ms")
-        appendLine("Post-routing traffic ramp: ${postRoutingTrafficRampDelayMs}ms")
-        append("UDP 443 policy: ICMP fast-fail for TCP fallback")
-    }
-
     fun toBootstrapTuning(): YumeTransportTuning {
         return YumeTransportTuning(
             tcpStreamMaxBufferedBytes = tcpStreamBufferBytes,
@@ -112,31 +78,8 @@ data class NativeDirectRuntimeConfig(
     val udpFlowBufferBytes: Int,
     val ipv6FailClosed: Boolean = true,
 ) : TunnelRuntimeConfig {
-    override val technique: ConnectionTechnique = ConnectionTechnique.NativeDirectBeta
+    override val technique: ConnectionTechnique = ConnectionTechnique.SharedNativePacket
     override val summary: String = technique.canonicalLabel()
-    override val diagnosticsSummary: String = buildString {
-        appendLine("Technique: ${technique.canonicalLabel()}")
-        appendLine("Profile: $NATIVE_DIRECT_FIXED_TUNING_LABEL")
-        appendLine(
-            "Status: " + when (engineStatus) {
-                NativeDirectEngineStatus.Tun2SocksFallback ->
-                    "tun2socks fallback when packet-native is unavailable"
-
-                NativeDirectEngineStatus.PacketNative ->
-                    "packet-native data plane"
-            }
-        )
-        appendLine("Native queue: $nativeQueueCapacity")
-        appendLine("Native TCP open fan-out: $tcpOpenConcurrency")
-        appendLine("Native TCP active streams: ${bridgeTuning.maxActiveTcpRelays}")
-        appendLine("Native TCP flow window: ${tcpFlowWindowBytes / 1024} KiB")
-        appendLine("Native UDP flow buffer: ${udpFlowBufferBytes / 1024} KiB")
-        appendLine("Packet path: IPv4 packets batched on one encrypted Yume stream when server supports packet_bulk_v1")
-        appendLine("IPv6 policy: ${if (ipv6FailClosed) "blocked" else "enabled"}")
-        appendLine()
-        appendLine("Applied tunnel tuning")
-        append(bridgeTuning.bridgeDiagnosticsSummary(includeTechnique = false))
-    }
 }
 
 data class Socks5ProxyRuntimeConfig(
@@ -146,28 +89,7 @@ data class Socks5ProxyRuntimeConfig(
 ) : TunnelRuntimeConfig {
     override val technique: ConnectionTechnique = ConnectionTechnique.Socks5ProxyOnly
     override val summary: String = "${technique.canonicalLabel()} :${proxySettings.normalizedPort}"
-    override val diagnosticsSummary: String = buildString {
-        appendLine("Technique: ${technique.canonicalLabel()}")
-        appendLine("Profile: ${performanceProfile.canonicalLabel()}")
-        appendLine("Listen port: ${proxySettings.normalizedPort}")
-        appendLine("Bind address: ${proxySettings.bindDiagnosticsLabel()}")
-        appendLine("Only apps configured for this proxy use Yume.")
-        appendLine()
-        appendLine("Applied tunnel tuning")
-        append(bridgeTuning.bridgeDiagnosticsSummary(includeTechnique = false))
-    }
-
     fun toBootstrapTuning(): YumeTransportTuning = bridgeTuning.toBootstrapTuning()
-}
-
-private fun Socks5ProxySettings.bindDiagnosticsLabel(): String {
-    return normalizedCustomBindAddress.ifBlank {
-        when (bindMode) {
-            Socks5BindMode.Loopback -> "127.0.0.1"
-            Socks5BindMode.Wifi -> "Wi-Fi address"
-            Socks5BindMode.Wildcard -> "0.0.0.0"
-        }
-    }
 }
 
 interface TunnelTechniqueEngine {
@@ -188,7 +110,6 @@ interface TunnelTechniqueEngine {
 private class LambdaTechniqueDataPlane(
     override val technique: ConnectionTechnique,
     override val summary: String,
-    private val diagnostics: String,
     private val starter: suspend () -> Unit,
     private val stopper: () -> Unit,
     private val verificationModeSetter: (Boolean) -> Unit,
@@ -207,8 +128,6 @@ private class LambdaTechniqueDataPlane(
     }
 
     override fun stats(): TechniqueStats? = statsReader()
-
-    override fun diagnosticsSummary(): String = diagnostics
 }
 
 object Tun2SocksTechniqueEngine : TunnelTechniqueEngine {
@@ -230,7 +149,6 @@ object Tun2SocksTechniqueEngine : TunnelTechniqueEngine {
         return LambdaTechniqueDataPlane(
             technique = technique,
             summary = runtimeConfig.summary,
-            diagnostics = runtimeConfig.diagnosticsSummary,
             starter = start,
             stopper = stop,
             verificationModeSetter = setVerificationMode,
@@ -240,8 +158,8 @@ object Tun2SocksTechniqueEngine : TunnelTechniqueEngine {
 }
 
 object NativeDirectTechniqueEngine : TunnelTechniqueEngine {
-    override val technique: ConnectionTechnique = ConnectionTechnique.NativeDirectBeta
-    override val isAvailable: Boolean = BuildConfig.ENABLE_NATIVE_DIRECT_BETA
+    override val technique: ConnectionTechnique = ConnectionTechnique.SharedNativePacket
+    override val isAvailable: Boolean = true
 
     override fun runtimeConfig(profile: PerformanceProfile): TunnelRuntimeConfig {
         val bridgeTuning = nativeDirectFallbackTuning()
@@ -266,7 +184,6 @@ object NativeDirectTechniqueEngine : TunnelTechniqueEngine {
         return LambdaTechniqueDataPlane(
             technique = technique,
             summary = runtimeConfig.summary,
-            diagnostics = runtimeConfig.diagnosticsSummary,
             starter = start,
             stopper = stop,
             verificationModeSetter = setVerificationMode,
@@ -304,7 +221,6 @@ object Socks5ProxyTechniqueEngine : TunnelTechniqueEngine {
         return LambdaTechniqueDataPlane(
             technique = technique,
             summary = runtimeConfig.summary,
-            diagnostics = runtimeConfig.diagnosticsSummary,
             starter = start,
             stopper = stop,
             verificationModeSetter = setVerificationMode,
@@ -324,8 +240,6 @@ private fun socks5BridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeCon
         maxUdpAssociations = 32,
     )
 }
-
-private const val NATIVE_DIRECT_FIXED_TUNING_LABEL = "Fixed native tuning"
 
 private fun stableBridgeTuning(profile: PerformanceProfile): Tun2SocksRuntimeConfig {
     return when (profile) {

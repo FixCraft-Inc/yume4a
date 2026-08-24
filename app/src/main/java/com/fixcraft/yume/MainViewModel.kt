@@ -8,33 +8,22 @@ import com.fixcraft.yume.data.AppSettings
 import com.fixcraft.yume.data.AppLanguage
 import com.fixcraft.yume.data.AppSettingsStore
 import com.fixcraft.yume.data.AppVaultManager
-import com.fixcraft.yume.data.ConnectionTechnique
 import com.fixcraft.yume.data.LogLanguage
-import com.fixcraft.yume.data.PerformanceProfile
 import com.fixcraft.yume.data.ServerProfile
 import com.fixcraft.yume.data.ServerProfileStore
 import com.fixcraft.yume.data.SecureMaterialStore
 import com.fixcraft.yume.data.SecureMaterialSummary
 import com.fixcraft.yume.data.SecureMaterialType
-import com.fixcraft.yume.data.Socks5BindMode
-import com.fixcraft.yume.data.Socks5ProxySettings
 import com.fixcraft.yume.data.ThemeColorMode
-import com.fixcraft.yume.data.canonicalLabel
-import com.fixcraft.yume.data.isVpnService
-import com.fixcraft.yume.data.supportsUserSelectablePerformanceProfiles
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AutoTranslationRuntime
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.i18n.logStrings
 import com.fixcraft.yume.i18n.VpnLogTranslator
+import com.fixcraft.yume.transport.SharedYumeNative
 import com.fixcraft.yume.vpn.VpnConnectionState
 import com.fixcraft.yume.vpn.VpnLogLevel
 import com.fixcraft.yume.vpn.VpnPhase
-import com.fixcraft.yume.vpn.NativeDirectTechniqueEngine
-import com.fixcraft.yume.vpn.Socks5ProxyTechniqueEngine
-import com.fixcraft.yume.vpn.Tun2SocksTechniqueEngine
-import com.fixcraft.yume.vpn.TunnelRuntimeConfig
-import com.fixcraft.yume.vpn.YumeSocks5ProxyService
 import com.fixcraft.yume.vpn.YumeVpnRuntime
 import com.fixcraft.yume.vpn.YumeVpnService
 import kotlinx.coroutines.CoroutineDispatcher
@@ -173,7 +162,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         host: String,
         port: String,
         sni: String,
-        obfuscation: Boolean,
         obfsSecret: String,
         dnsServers: String,
         mtu: String,
@@ -223,17 +211,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return@runBusy strings.dnsServerFormatError
             }
             val secretPattern = Regex("^[0-9a-f]{64}$")
-            if (!obfuscation) {
-                return@runBusy "YUME 2.0 requires the authenticated HTTP/2 carrier"
-            }
             if (!secretPattern.matches(normalizedObfsSecret)) {
-                return@runBusy "Admission secret must be exactly 64 lowercase hex characters"
+                return@runBusy strings.admissionSecretFormatError
             }
             if (!secretPattern.matches(normalizedInnerPsk)) {
-                return@runBusy "Inner PSK must be exactly 64 lowercase hex characters"
+                return@runBusy strings.innerPskFormatError
             }
             if (normalizedTlsPin.isNotEmpty() && !secretPattern.matches(normalizedTlsPin)) {
-                return@runBusy "TLS pin must be exactly 64 lowercase hex characters"
+                return@runBusy strings.tlsPinFormatError
             }
             if (requireAnonymProof && normalizedCaMaterialId.isBlank()) {
                 return@runBusy strings.anonymCaUnavailable
@@ -257,7 +242,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     host = normalizedHost,
                     port = parsedPort,
                     sni = normalizedSni,
-                    obfuscation = obfuscation,
                     obfsSecret = normalizedObfsSecret,
                     dnsServers = parsedDnsServers,
                     mtu = parsedMtu,
@@ -410,30 +394,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _noticeMessage.value = null
     }
 
-    fun updateConnectionTechnique(technique: ConnectionTechnique) {
-        val strings = strings()
-        if (technique == ConnectionTechnique.NativeDirectBeta && !BuildConfig.ENABLE_NATIVE_DIRECT_BETA) {
-            _noticeMessage.value = strings.nativeDirectUnavailable
-            return
-        }
-        appSettingsStore.updateConnectionTechnique(technique)
-        _noticeMessage.value = if (uiState.value.vpnState.phase == VpnPhase.Idle || uiState.value.vpnState.phase == VpnPhase.Error) {
-            strings.connectionTechniqueName(technique)
-        } else {
-            strings.reconnectFor(strings.connectionTechniqueName(technique))
-        }
-    }
-
-    fun updatePerformanceProfile(profile: PerformanceProfile) {
-        val strings = strings()
-        appSettingsStore.updatePerformanceProfile(profile)
-        _noticeMessage.value = if (uiState.value.vpnState.phase == VpnPhase.Idle || uiState.value.vpnState.phase == VpnPhase.Error) {
-            strings.performanceProfileName(profile)
-        } else {
-            strings.reconnectFor(strings.performanceProfileName(profile))
-        }
-    }
-
     fun updateThemeColorMode(mode: ThemeColorMode) {
         val strings = strings()
         appSettingsStore.updateThemeColorMode(mode)
@@ -467,10 +427,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val strings = strings()
         appSettingsStore.updateAdvancedMode(enabled)
         _noticeMessage.value = if (enabled) strings.advancedModeOn else strings.advancedModeOff
-    }
-
-    fun updateSelfDpiEnabled(enabled: Boolean) {
-        appSettingsStore.updateSelfDpiEnabled(enabled)
     }
 
     suspend fun enableAppDataPassword(password: String, confirmPassword: String): String? {
@@ -626,21 +582,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             when (preflight) {
                 ConnectPreflightResult.Ready -> {
-                    val settings = uiState.value.appSettings
-                    if (settings.connectionTechnique.isVpnService()) {
-                        YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Local CA and auth key are ready. Starting the Android VPN service.")
-                        YumeVpnService.startConnect(getApplication(), selectedProfile.id, authKeyPassword)
-                    } else {
-                        val detail = "SOCKS5-only mode is disabled until it uses the shared YUME 2.0 ABI. Select an Android VPN technique."
-                        YumeVpnRuntime.appendLog(VpnLogLevel.Error, detail)
-                        YumeVpnRuntime.update { current ->
-                            current.copy(
-                                phase = VpnPhase.Error,
-                                headline = "YUME 2.0 transport required",
-                                detail = detail,
-                            )
-                        }
-                    }
+                    YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Local CA and auth key are ready. Starting the shared-native Android VPN service.")
+                    YumeVpnService.startConnect(getApplication(), selectedProfile.id, authKeyPassword)
                 }
 
                 is ConnectPreflightResult.Error -> {
@@ -671,35 +614,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
-        // The active service is whichever one was started for the
-        // current technique; dispatch to both so we don't need to track
-        // it explicitly. Each service tolerates a no-op disconnect.
         YumeVpnService.startDisconnect(getApplication())
-        YumeSocks5ProxyService.startDisconnect(getApplication())
-    }
-
-    fun updateSocks5ProxySettings(settings: Socks5ProxySettings) {
-        appSettingsStore.updateSocks5ProxySettings(settings)
-    }
-
-    fun updateSocks5ProxyPort(port: Int) {
-        val current = uiState.value.appSettings.socks5ProxySettings
-        appSettingsStore.updateSocks5ProxySettings(current.copy(port = port))
-    }
-
-    fun updateSocks5BindMode(mode: Socks5BindMode) {
-        val current = uiState.value.appSettings.socks5ProxySettings
-        appSettingsStore.updateSocks5ProxySettings(current.copy(bindMode = mode, customBindAddress = ""))
-    }
-
-    fun updateSocks5BindAddress(address: String) {
-        val current = uiState.value.appSettings.socks5ProxySettings
-        appSettingsStore.updateSocks5ProxySettings(current.copy(customBindAddress = address))
-    }
-
-    fun updateSocks5TunnelCount(count: Int) {
-        val current = uiState.value.appSettings.socks5ProxySettings
-        appSettingsStore.updateSocks5ProxySettings(current.copy(tunnelCount = count))
     }
 
     private fun connectPreflight(
@@ -708,26 +623,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         authKeyPassword: String?,
     ): ConnectPreflightResult {
         val secretPattern = Regex("^[0-9a-f]{64}$")
-        if (!selectedProfile.obfuscation || !secretPattern.matches(selectedProfile.obfsSecret)) {
+        if (!secretPattern.matches(selectedProfile.obfsSecret)) {
             return ConnectPreflightResult.Error(
-                headline = "YUME 2.0 admission secret required",
-                detail = "Enable the authenticated carrier and enter its 64-character lowercase hex admission secret.",
-                logMessage = "Exact YUME 2.0 carrier admission configuration is missing.",
+                headline = strings.admissionSecretRequiredHeadline,
+                detail = strings.admissionSecretRequiredDetail,
+                logMessage = "The mandatory YUME 0.2.0-dev6 admission secret is missing or malformed.",
             )
         }
         if (!secretPattern.matches(selectedProfile.innerPsk)) {
             return ConnectPreflightResult.Error(
-                headline = "YUME 2.0 inner PSK required",
-                detail = "Enter the server's 64-character lowercase hex inner PSK.",
-                logMessage = "Mandatory YUME 2.0 inner PSK is missing.",
+                headline = strings.innerPskRequiredHeadline,
+                detail = strings.innerPskRequiredDetail,
+                logMessage = "The mandatory YUME 0.2.0-dev6 inner PSK is missing or malformed.",
             )
         }
         if (selectedProfile.tlsPinSha256.isNotEmpty() &&
             !secretPattern.matches(selectedProfile.tlsPinSha256)
         ) {
             return ConnectPreflightResult.Error(
-                headline = "Invalid TLS pin",
-                detail = "The TLS pin must be 64 lowercase hex characters.",
+                headline = strings.invalidTlsPinHeadline,
+                detail = strings.invalidTlsPinDetail,
                 logMessage = "The configured TLS leaf fingerprint is invalid.",
             )
         }
@@ -799,8 +714,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val strings = strings()
         val current = uiState.value
         val logStrings = logStrings(getApplication(), current.appSettings)
-        val runtimeConfig = resolveRuntimeConfig(current.appSettings)
-        val profileSummary = effectiveProfileSummary(current.appSettings, strings)
         val androidVersion = Build.VERSION.RELEASE?.takeIf { it.isNotBlank() } ?: strings.unknown
         val securityPatch = Build.VERSION.SECURITY_PATCH?.takeIf { it.isNotBlank() } ?: strings.unknown
         val manufacturer = Build.MANUFACTURER?.takeIf { it.isNotBlank() } ?: strings.unknown
@@ -837,8 +750,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendLine("${strings.supportedAbisLabel}: $supportedAbis")
             appendLine("${strings.buildFingerprintLabel}: $buildFingerprint")
             appendLine()
-            appendLine("${strings.techniqueLabel}: ${strings.connectionTechniqueName(current.appSettings.connectionTechnique)}")
-            appendLine("${strings.performanceProfileLabel}: $profileSummary")
             appendLine("${strings.themeColorsLabel}: ${strings.themeColorModeName(current.appSettings.themeColorMode)}")
             appendLine("${strings.amoledDarkThemeLabel}: ${if (current.appSettings.amoledDarkTheme) strings.on else strings.off}")
             appendLine("${strings.languageLabel}: ${strings.languageSummary(current.appSettings.language)}")
@@ -849,7 +760,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }"
                 )
             }
-            appendLine("${strings.selfDpiTitle}: ${if (current.appSettings.selfDpiEnabled) strings.on else strings.off}")
             YumeVpnRuntime.traffic.value.samples.lastOrNull()?.let { latest ->
                 appendLine(
                     "${strings.rawThroughputLabel}: rx=${formatBps(latest.rawRxRateBps)}, tx=${formatBps(latest.rawTxRateBps)}"
@@ -863,7 +773,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     strings.phaseStatus(
                         current.vpnState.phase,
                         current.vpnState.trafficRoutedThroughYume,
-                        current.vpnState.localProxyAddress != null,
+                        current.vpnState.activeRouteLabel != null,
                     )
                 }"
             )
@@ -872,7 +782,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendLine("${strings.selectedServerReportLabel}: ${current.selectedProfile?.name ?: strings.none}")
             appendLine("${strings.endpointLabel}: ${current.selectedProfile?.endpointLabel ?: strings.none}")
             appendLine("${strings.tlsNameLabel}: ${current.selectedProfile?.serverName ?: strings.none}")
-            appendLine("${strings.httpsMaskingLabel}: ${strings.boolValue(current.selectedProfile?.obfuscation == true)}")
             appendLine("${strings.anonymPolicyLabel}: ${if (current.selectedProfile?.requireAnonymProof != false) strings.anonymRequired else strings.anonymOptional}")
             appendLine("${strings.anonymCaLabel}: ${current.selectedCaMaterial?.displayName ?: strings.missing}")
             appendLine("${strings.authKeyLabel}: ${current.selectedAuthKeyMaterial?.displayName ?: strings.notAssigned}")
@@ -883,7 +792,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendLine("${strings.trafficRoutedLabel}: ${strings.boolValue(current.vpnState.trafficRoutedThroughYume)}")
             appendLine()
             appendLine(strings.runtimeTitle)
-            appendLine(buildRuntimeDiagnostics(runtimeConfig, strings))
+            appendLine(buildRuntimeDiagnostics(current, strings))
             appendLine()
             appendLine(strings.eventLogTitle)
             if (current.vpnState.eventLog.isEmpty()) {
@@ -896,104 +805,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }.trim()
     }
 
-    private fun resolveRuntimeConfig(settings: AppSettings): TunnelRuntimeConfig {
-        return when (settings.connectionTechnique) {
-            ConnectionTechnique.Tun2SocksStable -> Tun2SocksTechniqueEngine.runtimeConfig(settings.performanceProfile)
-            ConnectionTechnique.NativeDirectBeta -> {
-                if (BuildConfig.ENABLE_NATIVE_DIRECT_BETA) {
-                    NativeDirectTechniqueEngine.runtimeConfig(settings.performanceProfile)
-                } else {
-                    Tun2SocksTechniqueEngine.runtimeConfig(settings.performanceProfile)
-                }
-            }
-            ConnectionTechnique.Socks5ProxyOnly ->
-                Socks5ProxyTechniqueEngine.runtimeConfig(settings.performanceProfile, settings.socks5ProxySettings)
-        }
-    }
-
-    private fun buildRuntimeDiagnostics(runtimeConfig: TunnelRuntimeConfig, strings: com.fixcraft.yume.i18n.AppStrings): String {
-        fun formatMs(value: Long): String = "${value}ms"
-        fun formatKiB(value: Int): String = "${value / 1024} KiB"
-
-        fun buildBridgeLines(config: com.fixcraft.yume.vpn.Tun2SocksRuntimeConfig): List<String> = listOf(
-            "${strings.techniqueLabel}: ${strings.connectionTechniqueName(config.technique)}",
-            "${strings.profileLabel}: ${strings.performanceProfileName(config.performanceProfile)}",
-            "${strings.runtimeIpv6PolicyLabel}: ${strings.runtimeIpv6FailClosedStatus}",
-            "${strings.runtimeDnsPolicyLabel}: ${strings.runtimeIpv4OnlyDnsPolicy}",
-            "${strings.runtimeTcpRelaysLabel}: ${config.maxActiveTcpRelays}",
-            "${strings.runtimeRelayAcquireTimeoutLabel}: ${formatMs(config.relayAcquireTimeoutMs)}",
-            "${strings.runtimeRelayAcquireSliceLabel}: ${formatMs(config.relayAcquireSliceMs)}",
-            "${strings.runtimeIdleTcpEvictionLabel}: ${formatMs(config.idleTcpEvictionMs)}",
-            "${strings.runtimeTcpEvictionGraceLabel}: ${formatMs(config.tcpEvictionGraceMs)}",
-            "${strings.runtimeTcpEvictionBatchLabel}: ${config.tcpEvictionBatchSize}",
-            "${strings.runtimeBridgeChunkLabel}: ${formatKiB(config.bridgeChunkBytes)}",
-            "${strings.runtimeTcpStreamBufferLabel}: ${formatKiB(config.tcpStreamBufferBytes)}",
-            "${strings.runtimeUdpStreamBufferLabel}: ${formatKiB(config.udpStreamBufferBytes)}",
-            "${strings.runtimeOutboundFrameQueueLabel}: ${config.outboundFrameQueueCapacity}",
-            "${strings.runtimeTun2SocksConnectTimeoutLabel}: ${config.tun2SocksConnectTimeoutMs}ms",
-            "${strings.runtimeTun2SocksTcpReadWriteTimeoutLabel}: ${config.tun2SocksTcpReadWriteTimeoutMs}ms",
-            "${strings.runtimeTun2SocksUdpReadWriteTimeoutLabel}: ${config.tun2SocksUdpReadWriteTimeoutMs}ms",
-            "${strings.runtimeMaxDnsUdpAssociationsLabel}: ${config.maxDnsUdpAssociations}",
-            "${strings.runtimeMaxUdpAssociationsLabel}: ${config.maxUdpAssociations}",
-            "${strings.runtimeDnsRelayConcurrencyLabel}: ${config.dnsRelayMaxConcurrency}",
-            "${strings.runtimePreRoutingStabilityDelayLabel}: ${formatMs(config.preRoutingStabilityDelayMs)}",
-            "${strings.runtimePostRoutingTrafficRampLabel}: ${formatMs(config.postRoutingTrafficRampDelayMs)}",
-            "${strings.runtimeUdp443PolicyLabel}: ${strings.runtimeForcedTcpFallback}",
-        )
-
-        val lines = when (runtimeConfig) {
-            is com.fixcraft.yume.vpn.Tun2SocksRuntimeConfig -> buildBridgeLines(runtimeConfig)
-            is com.fixcraft.yume.vpn.Socks5ProxyRuntimeConfig -> buildList {
-                val bindLabel = runtimeConfig.proxySettings.normalizedCustomBindAddress
-                    .ifBlank { runtimeConfig.proxySettings.bindMode.canonicalLabel() }
-                add("${strings.techniqueLabel}: ${strings.connectionTechniqueName(runtimeConfig.technique)}")
-                add("${strings.profileLabel}: ${strings.performanceProfileName(runtimeConfig.performanceProfile)}")
-                add("${strings.socks5ListenPortLabel}: ${runtimeConfig.proxySettings.normalizedPort}")
-                add("${strings.socks5BindAddressLabel}: $bindLabel")
-                add(strings.socks5OnlyRuntimeDetail)
-                add("")
-                add(strings.runtimeAppliedBridgeTuningTitle)
-                addAll(buildBridgeLines(runtimeConfig.bridgeTuning).drop(2))
-            }
-            is com.fixcraft.yume.vpn.NativeDirectRuntimeConfig -> buildList {
-                add("${strings.techniqueLabel}: ${strings.connectionTechniqueName(runtimeConfig.technique)}")
-                add("${strings.profileLabel}: ${strings.nativeDirectFixedTuningName}")
-                add(
-                    "${strings.runtimeStatusLabel}: ${
-                        when (runtimeConfig.engineStatus) {
-                            com.fixcraft.yume.vpn.NativeDirectEngineStatus.Tun2SocksFallback ->
-                                strings.runtimeTun2SocksFallbackStatus
-
-                            com.fixcraft.yume.vpn.NativeDirectEngineStatus.PacketNative ->
-                                strings.runtimePacketNativeStatus
-                        }
-                    }"
-                )
-                add("${strings.runtimeNativeQueueLabel}: ${runtimeConfig.nativeQueueCapacity}")
-                add("${strings.runtimeNativeTcpFlowWindowLabel}: ${formatKiB(runtimeConfig.tcpFlowWindowBytes)}")
-                add("${strings.runtimeNativeUdpFlowBufferLabel}: ${formatKiB(runtimeConfig.udpFlowBufferBytes)}")
-                add(
-                    "${strings.runtimeIpv6PolicyLabel}: ${
-                        if (runtimeConfig.ipv6FailClosed) strings.runtimeIpv6FailClosedStatus
-                        else strings.enabled
-                    }"
-                )
-                add("")
-                add(strings.runtimeAppliedBridgeTuningTitle)
-                addAll(buildBridgeLines(runtimeConfig.bridgeTuning).drop(2))
-            }
-        }
-        return lines.joinToString("\n")
-    }
-
-    private fun effectiveProfileSummary(
-        settings: AppSettings,
+    /**
+     * Runtime facts the shared native packet path actually exposes. Everything
+     * here is either a protocol constant or live session state; the report no
+     * longer prints tun2socks/SOCKS bridge tuning that reaches nothing.
+     */
+    private fun buildRuntimeDiagnostics(
+        current: MainUiState,
         strings: com.fixcraft.yume.i18n.AppStrings,
     ): String {
-        return if (settings.connectionTechnique.supportsUserSelectablePerformanceProfiles()) {
-            strings.performanceProfileName(settings.performanceProfile)
-        } else {
-            strings.nativeDirectFixedTuningName
-        }
+        val state = current.vpnState
+        val live = state.trafficRoutedThroughYume || state.activeRouteLabel != null
+        return buildList {
+            add(
+                "${strings.runtimeStatusLabel}: ${
+                    if (live) strings.runtimePacketNativeStatus else strings.runtimeIdleStatus
+                }"
+            )
+            add("${strings.routingShortLabel}: ${state.activeRouteLabel ?: strings.transportModeValue}")
+            add("${strings.carrierLabel}: ${state.transportSummary}")
+            add("${strings.authenticationLabel}: ${strings.authenticationValue}")
+            add("${strings.innerLabel}: ${state.innerSummary}")
+            add("${strings.ratchetLabel}: ${state.ratchetSummary}")
+            add(
+                "${strings.runtimeBatchLimitLabel}: " +
+                    "${SharedYumeNative.MAX_BATCH_PACKETS} packets/batch, " +
+                    "${SharedYumeNative.MAX_PACKET_BYTES} bytes/packet"
+            )
+            add("${strings.assignedAddressLabel}: ${state.sessionIpv4 ?: strings.unavailable}")
+            add("${strings.mtuLabel}: ${state.sessionMtu?.toString() ?: strings.unavailable}")
+            add(
+                "${strings.dnsLabel}: ${
+                    state.sessionDnsServers.takeIf { it.isNotEmpty() }?.joinToString(", ")
+                        ?: strings.unavailable
+                }"
+            )
+            add("${strings.runtimeIpv6PolicyLabel}: ${strings.runtimeIpv6FailClosedStatus}")
+            add("${strings.runtimeDnsPolicyLabel}: ${strings.runtimeIpv4OnlyDnsPolicy}")
+            add("${strings.qualificationLabel}: ${strings.androidUnqualifiedStatus}")
+        }.joinToString("\n")
     }
 }

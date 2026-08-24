@@ -45,21 +45,13 @@
 
             <meta-data
                 android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
-                android:value="false" />
+                android:value="true" />
 
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Yume VPN tunnel bootstrap and lifecycle" />
         </service>
 
-        <service
-            android:name=".vpn.YumeSocks5ProxyService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Yume SOCKS5 proxy bootstrap and lifecycle" />
-        </service>
     </application>
 
 </manifest>

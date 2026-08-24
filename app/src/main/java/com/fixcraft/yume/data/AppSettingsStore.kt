@@ -2,20 +2,26 @@ package com.fixcraft.yume.data
 
 import android.content.Context
 import androidx.core.content.edit
-import com.fixcraft.yume.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
 
+/**
+ * Android ships exactly one routing mode. [Tun2SocksStable] and
+ * [Socks5ProxyOnly] survive only because the unused legacy engine types in
+ * `vpn/TunnelTechniqueEngine.kt` still name them; nothing persists, selects,
+ * or presents them, and [fromWireValue] migrates every stored value to
+ * [SharedNativePacket].
+ */
 enum class ConnectionTechnique(
     val wireValue: String,
 ) {
     Tun2SocksStable(
         wireValue = "tun2socks_stable",
     ),
-    NativeDirectBeta(
-        wireValue = "native_direct_beta",
+    SharedNativePacket(
+        wireValue = "shared_native_packet_v1",
     ),
     Socks5ProxyOnly(
         wireValue = "socks5_proxy_only",
@@ -24,8 +30,15 @@ enum class ConnectionTechnique(
     companion object {
         fun fromWireValue(value: String): ConnectionTechnique? {
             return when (value) {
-                "native_direct_alpha" -> NativeDirectBeta
-                else -> entries.firstOrNull { it.wireValue == value }
+                // Migrate every previously advertised routing choice to the
+                // shared packet ABI. None of the legacy Kotlin wire paths is a
+                // supported dev6 transport.
+                "native_direct_alpha",
+                "native_direct_beta",
+                "tun2socks_stable",
+                "socks5_proxy_only",
+                "shared_native_packet_v1" -> SharedNativePacket
+                else -> null
             }
         }
     }
@@ -33,41 +46,24 @@ enum class ConnectionTechnique(
 
 fun ConnectionTechnique.canonicalLabel(): String = when (this) {
     ConnectionTechnique.Tun2SocksStable -> "Tun2Socks stable"
-    ConnectionTechnique.NativeDirectBeta -> "Packet-native fast path"
+    ConnectionTechnique.SharedNativePacket -> "Shared native packet VPN"
     ConnectionTechnique.Socks5ProxyOnly -> "SOCKS5 proxy only"
 }
 
-fun ConnectionTechnique.supportsUserSelectablePerformanceProfiles(): Boolean {
-    return this == ConnectionTechnique.Tun2SocksStable
-}
-
-fun ConnectionTechnique.isVpnService(): Boolean = when (this) {
-    ConnectionTechnique.Tun2SocksStable,
-    ConnectionTechnique.NativeDirectBeta -> true
-    ConnectionTechnique.Socks5ProxyOnly -> false
-}
-
+/**
+ * Legacy engine input. Android registers no SOCKS5 component, nothing persists
+ * these values, and no screen presents them; the type survives only for the
+ * unused engine descriptors in `vpn/TunnelTechniqueEngine.kt`.
+ */
 enum class Socks5BindMode(
     val wireValue: String,
 ) {
     Loopback(wireValue = "loopback"),
     Wifi(wireValue = "wifi"),
-    Wildcard(wireValue = "wildcard");
-
-    companion object {
-        fun fromWireValue(value: String?): Socks5BindMode? {
-            if (value == null) return null
-            return entries.firstOrNull { it.wireValue == value }
-        }
-    }
+    Wildcard(wireValue = "wildcard"),
 }
 
-fun Socks5BindMode.canonicalLabel(): String = when (this) {
-    Socks5BindMode.Loopback -> "Loopback (127.0.0.1)"
-    Socks5BindMode.Wifi -> "Wi-Fi interface"
-    Socks5BindMode.Wildcard -> "All interfaces (0.0.0.0)"
-}
-
+/** Legacy engine input; see [Socks5BindMode]. */
 data class Socks5ProxySettings(
     val port: Int = DEFAULT_SOCKS5_PORT,
     val bindMode: Socks5BindMode = Socks5BindMode.Loopback,
@@ -100,6 +96,11 @@ data class Socks5ProxySettings(
     }
 }
 
+/**
+ * Legacy engine input. The shared native packet path runs one fixed tuning, so
+ * this is neither persisted nor selectable; only the unused engine descriptors
+ * in `vpn/TunnelTechniqueEngine.kt` still name it.
+ */
 enum class PerformanceProfile(
     val wireValue: String,
 ) {
@@ -111,11 +112,7 @@ enum class PerformanceProfile(
     ),
     Throughput(
         wireValue = "throughput",
-    );
-
-    companion object {
-        fun fromWireValue(value: String): PerformanceProfile? = entries.firstOrNull { it.wireValue == value }
-    }
+    ),
 }
 
 fun PerformanceProfile.canonicalLabel(): String = when (this) {
@@ -274,15 +271,12 @@ enum class LogLanguage(
 }
 
 data class AppSettings(
-    val connectionTechnique: ConnectionTechnique = ConnectionTechnique.Tun2SocksStable,
-    val performanceProfile: PerformanceProfile = PerformanceProfile.Balanced,
+    val connectionTechnique: ConnectionTechnique = ConnectionTechnique.SharedNativePacket,
     val themeColorMode: ThemeColorMode = ThemeColorMode.Yume,
     val amoledDarkTheme: Boolean = false,
     val language: AppLanguage = AppLanguage.SystemDefault,
     val logLanguage: LogLanguage = LogLanguage.FollowApp,
     val advancedMode: Boolean = false,
-    val selfDpiEnabled: Boolean = false,
-    val socks5ProxySettings: Socks5ProxySettings = Socks5ProxySettings(),
 ) {
     fun effectiveLogLanguage(): LogLanguage =
         if (advancedMode) logLanguage else LogLanguage.FollowApp
@@ -295,15 +289,6 @@ class AppSettingsStore private constructor(context: Context) {
 
     private val _settings = MutableStateFlow(loadSettings())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
-
-    fun updateConnectionTechnique(technique: ConnectionTechnique) {
-        val persistedTechnique = sanitizeTechnique(technique)
-        persist(_settings.value.copy(connectionTechnique = persistedTechnique))
-    }
-
-    fun updatePerformanceProfile(profile: PerformanceProfile) {
-        persist(_settings.value.copy(performanceProfile = profile))
-    }
 
     fun updateThemeColorMode(mode: ThemeColorMode) {
         persist(_settings.value.copy(themeColorMode = mode))
@@ -325,27 +310,11 @@ class AppSettingsStore private constructor(context: Context) {
         persist(_settings.value.copy(advancedMode = enabled))
     }
 
-    fun updateSelfDpiEnabled(enabled: Boolean) {
-        persist(_settings.value.copy(selfDpiEnabled = enabled))
-    }
-
-    fun updateSocks5ProxySettings(settings: Socks5ProxySettings) {
-        val sanitized = settings.copy(
-            port = settings.normalizedPort,
-            customBindAddress = settings.normalizedCustomBindAddress,
-            tunnelCount = settings.normalizedTunnelCount,
-        )
-        persist(_settings.value.copy(socks5ProxySettings = sanitized))
-    }
-
     private fun loadSettings(): AppSettings {
         migrateLegacyPrefsIfNeeded()
         val storedTechnique = vaultStore.getString(KEY_CONNECTION_TECHNIQUE)
             ?.let(ConnectionTechnique::fromWireValue)
-            ?: ConnectionTechnique.Tun2SocksStable
-        val storedProfile = vaultStore.getString(KEY_PERFORMANCE_PROFILE)
-            ?.let(PerformanceProfile::fromWireValue)
-            ?: PerformanceProfile.Balanced
+            ?: ConnectionTechnique.SharedNativePacket
         val storedThemeModeValue = vaultStore.getString(KEY_THEME_COLOR_MODE)
         val storedThemeColorMode = storedThemeModeValue
             ?.let(ThemeColorMode::fromWireValue)
@@ -355,45 +324,23 @@ class AppSettingsStore private constructor(context: Context) {
         val storedLanguage = AppLanguage.fromWireValue(vaultStore.getString(KEY_LANGUAGE))
         val storedLogLanguage = LogLanguage.fromWireValue(vaultStore.getString(KEY_LOG_LANGUAGE))
         val storedAdvancedMode = vaultStore.getString(KEY_ADVANCED_MODE)?.toBooleanStrictOrNull() ?: false
-        val storedSelfDpi = vaultStore.getString(KEY_SELF_DPI_ENABLED)?.toBooleanStrictOrNull() ?: false
-        val storedSocks5Port = vaultStore.getString(KEY_SOCKS5_PORT)?.toIntOrNull()
-            ?: Socks5ProxySettings.DEFAULT_SOCKS5_PORT
-        val storedSocks5BindMode = Socks5BindMode.fromWireValue(vaultStore.getString(KEY_SOCKS5_BIND_MODE))
-            ?: Socks5BindMode.Loopback
-        val storedSocks5BindAddress = vaultStore.getString(KEY_SOCKS5_BIND_ADDRESS).orEmpty()
-        val storedSocks5TunnelCount = vaultStore.getString(KEY_SOCKS5_TUNNEL_COUNT)?.toIntOrNull()
-            ?: Socks5ProxySettings.DEFAULT_TUNNEL_COUNT
         return AppSettings(
-            connectionTechnique = sanitizeTechnique(storedTechnique),
-            performanceProfile = storedProfile,
+            connectionTechnique = storedTechnique,
             themeColorMode = storedThemeColorMode,
             amoledDarkTheme = storedAmoledDarkTheme,
             language = storedLanguage,
             logLanguage = storedLogLanguage,
             advancedMode = storedAdvancedMode,
-            selfDpiEnabled = storedSelfDpi,
-            socks5ProxySettings = Socks5ProxySettings(
-                port = storedSocks5Port,
-                bindMode = storedSocks5BindMode,
-                customBindAddress = storedSocks5BindAddress,
-                tunnelCount = storedSocks5TunnelCount,
-            ),
         )
     }
 
     private fun persist(settings: AppSettings) {
         vaultStore.putString(KEY_CONNECTION_TECHNIQUE, settings.connectionTechnique.wireValue)
-        vaultStore.putString(KEY_PERFORMANCE_PROFILE, settings.performanceProfile.wireValue)
         vaultStore.putString(KEY_THEME_COLOR_MODE, settings.themeColorMode.wireValue)
         vaultStore.putString(KEY_AMOLED_DARK_THEME, settings.amoledDarkTheme.toString())
         vaultStore.putString(KEY_LANGUAGE, settings.language.wireValue)
         vaultStore.putString(KEY_LOG_LANGUAGE, settings.logLanguage.wireValue)
         vaultStore.putString(KEY_ADVANCED_MODE, settings.advancedMode.toString())
-        vaultStore.putString(KEY_SELF_DPI_ENABLED, settings.selfDpiEnabled.toString())
-        vaultStore.putString(KEY_SOCKS5_PORT, settings.socks5ProxySettings.normalizedPort.toString())
-        vaultStore.putString(KEY_SOCKS5_BIND_MODE, settings.socks5ProxySettings.bindMode.wireValue)
-        vaultStore.putString(KEY_SOCKS5_BIND_ADDRESS, settings.socks5ProxySettings.normalizedCustomBindAddress)
-        vaultStore.putString(KEY_SOCKS5_TUNNEL_COUNT, settings.socks5ProxySettings.normalizedTunnelCount.toString())
         _settings.value = settings
     }
 
@@ -402,18 +349,15 @@ class AppSettingsStore private constructor(context: Context) {
             return
         }
         if (!legacyPrefs.contains(KEY_CONNECTION_TECHNIQUE) &&
-            !legacyPrefs.contains(KEY_PERFORMANCE_PROFILE) &&
             !legacyPrefs.contains(KEY_THEME_COLOR_MODE) &&
             !legacyPrefs.contains(KEY_AMOLED_DARK_THEME) &&
             !legacyPrefs.contains(KEY_LANGUAGE) &&
             !legacyPrefs.contains(KEY_LOG_LANGUAGE) &&
-            !legacyPrefs.contains(KEY_ADVANCED_MODE) &&
-            !legacyPrefs.contains(KEY_SELF_DPI_ENABLED)
+            !legacyPrefs.contains(KEY_ADVANCED_MODE)
         ) {
             return
         }
         legacyPrefs.getString(KEY_CONNECTION_TECHNIQUE, null)?.let { vaultStore.putString(KEY_CONNECTION_TECHNIQUE, it) }
-        legacyPrefs.getString(KEY_PERFORMANCE_PROFILE, null)?.let { vaultStore.putString(KEY_PERFORMANCE_PROFILE, it) }
         legacyPrefs.getString(KEY_THEME_COLOR_MODE, null)?.let { vaultStore.putString(KEY_THEME_COLOR_MODE, it) }
         if (legacyPrefs.contains(KEY_AMOLED_DARK_THEME)) {
             vaultStore.putString(KEY_AMOLED_DARK_THEME, legacyPrefs.getBoolean(KEY_AMOLED_DARK_THEME, false).toString())
@@ -423,34 +367,17 @@ class AppSettingsStore private constructor(context: Context) {
         if (legacyPrefs.contains(KEY_ADVANCED_MODE)) {
             vaultStore.putString(KEY_ADVANCED_MODE, legacyPrefs.getBoolean(KEY_ADVANCED_MODE, false).toString())
         }
-        if (legacyPrefs.contains(KEY_SELF_DPI_ENABLED)) {
-            vaultStore.putString(KEY_SELF_DPI_ENABLED, legacyPrefs.getBoolean(KEY_SELF_DPI_ENABLED, false).toString())
-        }
         legacyPrefs.edit { clear() }
-    }
-
-    private fun sanitizeTechnique(technique: ConnectionTechnique): ConnectionTechnique {
-        return if (technique == ConnectionTechnique.NativeDirectBeta && !BuildConfig.ENABLE_NATIVE_DIRECT_BETA) {
-            ConnectionTechnique.Tun2SocksStable
-        } else {
-            technique
-        }
     }
 
     companion object {
         private const val PREFS_NAME = "yume_app_settings"
         private const val KEY_CONNECTION_TECHNIQUE = "connection_technique"
-        private const val KEY_PERFORMANCE_PROFILE = "performance_profile"
         private const val KEY_THEME_COLOR_MODE = "theme_color_mode"
         private const val KEY_AMOLED_DARK_THEME = "amoled_dark_theme"
         private const val KEY_LANGUAGE = "language"
         private const val KEY_LOG_LANGUAGE = "log_language"
         private const val KEY_ADVANCED_MODE = "advanced_mode"
-        private const val KEY_SELF_DPI_ENABLED = "self_dpi_enabled"
-        private const val KEY_SOCKS5_PORT = "socks5_port"
-        private const val KEY_SOCKS5_BIND_MODE = "socks5_bind_mode"
-        private const val KEY_SOCKS5_BIND_ADDRESS = "socks5_bind_address"
-        private const val KEY_SOCKS5_TUNNEL_COUNT = "socks5_tunnel_count"
         private const val LEGACY_THEME_MODE_AMOLED = "amoled"
         private const val VAULT_NAME = "app_settings"
 

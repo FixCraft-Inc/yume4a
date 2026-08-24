@@ -1,11 +1,13 @@
-# YUME 2.0-dev1 Android transport migration
+# YUME 0.2.0-dev6 Android transport synchronization
 
 ## Status
 
 The Android VPN entrypoint now consumes the shared C++ YUME client and public
 packet ABI. It is based on signed `origin/main` commit
-`491a5738d9db998e2155de05619b0f893b8b128f` from the sibling `~/yume`
-checkout. `2.0-dev1` is a development protocol target, not a final release.
+`dd502c464b6a09c380d3faaeb8b52919dfd37636` from the sibling `~/yume`
+checkout. “YUME 2.0” names the architecture generation; `0.2.0-dev6` is the
+exact product and authenticated transport identity. AUTH v2, relay v2, C ABI
+v1, and helper IPC v1 are independent schema versions.
 
 Android 2.0 support is **not release-approved** until the remote build,
 instrumentation, live packet traffic, lifecycle, and throughput gates below
@@ -44,9 +46,11 @@ Chrome is the only enabled fixture today. Firefox or another profile should be
 added only together with a validated shared-C++ TLS/H2 fixture, not merely a
 different User-Agent string.
 
-The old Kotlin 1.1 transport remains as unreachable rollback code until device
-parity is proven. The main VPN entrypoint cannot select it, and SOCKS-only mode
-is blocked instead of silently using the old wire.
+Android advertises one routing mode: the shared-native `packet_bulk_v1` VPN.
+Every stored Tun2Socks, packet-beta, or SOCKS-only choice migrates to that mode.
+The old SOCKS service is no longer an Android component, the VPN's unused
+`connectLegacy()` path is removed, and startup never falls back to a parallel
+Kotlin implementation of the dev6 wire protocol.
 
 ## Native build and packaging
 
@@ -102,55 +106,117 @@ requested ABI outputs.
 
 Startup rejects the session unless all of these hold:
 
-- native ABI is exactly 1 and native/source versions are exactly `2.0-dev1`;
+- native ABI is exactly 1 and native/source versions are exactly `0.2.0-dev6`;
 - `YUME_FEATURE_PQ_MLKEM1024` and `YUME_FEATURE_PACKET_BULK` are present;
 - the PQ backend is available;
 - admission secret and inner PSK are each exactly 32 bytes represented as 64
   lowercase hex characters;
 - the authenticated HTTP/2 carrier is enabled;
+- the carrier host is resolved through the selected underlying Android
+  `Network`, the native `server` field is numeric, and TLS verification retains
+  the configured server name (or the original host when no override is set);
 - TLS CA/name validation succeeds, plus the leaf pin when configured;
 - the protected native carrier socket is accepted by `VpnService.protect()`;
 - the server advertises `packet_bulk_v1` and packet OPEN succeeds;
 - assigned IPv4/MTU/protocol values pass native and Android checks.
 
-IPv6 is not captured. The assigned IPv4 address is installed as `/32`, while
+Packet v1 is IPv4-only. Android installs no IPv6 address, route, DNS server, or
+`allowFamily(AF_INET6)` exemption, so `VpnService` blocks the unsupported
+family instead of leaking it to the underlying network. The assigned IPv4
+address is installed as `/32`, while
 the Android VPN route captures IPv4 `0.0.0.0/0`. The shared packet channel
 validates packet direction/address and rejects invalid sequences and sizes.
 
 Shutdown order is packet close, reader interruption/join, packet destroy,
-client stop/destroy, material-file deletion, and TUN close. Network-handle
-changes restart the complete native session and VPN interface. VPN permission
+one client destroy, material-file deletion, and TUN close. Network-handle
+changes cancel pending DNS, restart the complete native session, and rebuild
+the VPN interface. Android 10+ uses cancellable `DnsResolver` on the exact
+underlying network. Android 9 has no cancellable resolver API, so a cancelled
+lookup is abandoned on a daemon worker that owns no service state; stop/revoke
+does not wait for it and late results are discarded. VPN permission
 revocation uses the same idempotent cleanup path.
+
+The service enters the foreground synchronously before asynchronous credential
+and native setup, declares Android Always-on support, and uses `START_STICKY`.
+Only the selected profile id is retained for a platform restart; an auth-key
+password is never persisted. Profiles backed by password-locked key material
+therefore fail closed after process death and require the user to unlock them
+again. Explicit disconnect, VPN revoke, and terminal startup failure clear the
+restart profile.
+
+Encrypted `.yss` profiles use the BaseFWX minimum of 12 password characters.
+Current exports preserve the TLS CA, TLS/SNI name, one-tunnel Android setting,
+operator-proof requirement, admission secret, and inner PSK. Imports of older
+v1 files that contain only an operator CA also use that CA as their private TLS
+issuer, matching the old test-kit convention without making the built-in CA
+mandatory.
 
 Session PEMs and 32-byte secrets are staged beneath a private `0700`
 no-backup directory with `0600` files. Normal shutdown deletes them; the next
 session also removes crash leftovers, restricted to direct UUID-named,
 non-symlink directories and the four known filenames.
 
+## Presentation and configuration surface
+
+The app presents only behavior it executes. There is no routing choice, no
+performance profile, and no SOCKS5 configuration: Settings states the fixed
+posture (`packet_bulk_v1` IPv4, TLS 1.3 + HTTP/2 WebSocket carrier, composite
+Ed25519 + ML-DSA-87 AUTH v2, ML-KEM-1024 + X25519 + PSK with AES-256-GCM, IPv6
+blocked) and repeats that the Android device gates below are still open. No
+visible or persisted string calls any part of the app "beta".
+
+The server editor no longer offers an HTTPS-masking toggle. The carrier is
+mandatory — `prepare_v2_security_config()` on the server and
+`SharedYumeSessionConfig.create()` on the client both refuse `obfuscation=false`
+— so it is stated as fixed posture and stored profiles are migrated to `true` on
+read. The editor's real inputs are the admission secret, the inner PSK, the
+optional TLS leaf pin, and the TLS profile; the first two are required 64-char
+lowercase hex values and are validated on save and again before connect.
+
+Auth-key text describes the dev6 identity as it is validated: one composite file
+holding an Ed25519 PKCS#8 block followed by an ML-DSA-87 block, generated by
+`yume --keys-gen` on the desktop. `YumeAuthKeyValidator` enforces exactly that
+count, order, and pair of algorithm OIDs.
+
+Diagnostics reports live session facts — route, carrier, authentication, inner
+tunnel, ratchet, packet batch limit, assigned IPv4, MTU, DNS, IPv6 and DNS
+policy — plus the open-qualification note. The former runtime block printed
+tun2socks/SOCKS bridge tuning that reached nothing on the packet path, and the
+"Throughput logging" and "Self-DPI warnings" switches only ever drove the
+retired Kotlin wire; all three are gone. The status sheet reports Route rather
+than "Local SOCKS5" and Ratchet rather than "Hop", and no longer shows a relay
+canary row the packet path never fills.
+
+The maintained Russian, Japanese, and Ukrainian bundles cover every English
+source string; `AppStringsTranslationTest` enforces that at build time.
+
 ## Validation already safe to run locally
 
 - `bash -n ~/yume/tools/build_android_shared_abi.sh`
 - JNI wrapper `clang++ -fsyntax-only` with pinned NDK 28.2 headers
-- host client-only facade and shared `yume_abi` compilation
-- `yume_abi_test` and `yume_abi_exports`
-- protected-socket allow/deny regression test
+- focused standalone JVM validation of `YumeAuthKeyValidatorTest`
 - `git diff --check` in both repositories
 
 A Gradle configuration-only check may need network access when the Foojay
-toolchain plugin is absent from the local cache. Do not refresh dependencies or
-run Android builds on the daily-driver laptop.
+toolchain plugin is absent from the local cache. Full APK/device validation is
+still a separate gate even when Kotlin and the selected native ABI compile.
 
 ## Required remote/device gates
 
-Ask which machine to use before running these. `remote-builder`
-(`build-host.example`) is preferred, but is not assumed.
+On the confirmed build host, copy both repositories into an isolated exact
+snapshot without overwriting a live checkout, retain the YUME Git metadata
+needed by the signed-baseline producer check, install the pinned NDK and a clean
+vcpkg checkout, then build ARM64 native first. Verify build info, exports,
+`readelf` dependencies, and packaged libraries before Kotlin/JNI compilation
+and unit tests. Expand to the other ABIs only after ARM64 and device behavior
+pass.
 
-On the build machine, sync both repositories, install the pinned NDK and
-a clean vcpkg checkout, then run:
+Representative Gradle commands after the ARM64 producer gate:
 
 ```bash
 cd ~/AndroidStudioProjects/Yume
-VCPKG_ROOT=~/vcpkg ./gradlew :app:assembleDirectDebug
+VCPKG_ROOT=~/vcpkg ./gradlew :app:compileDirectDebugKotlin :app:testDirectDebugUnitTest -PyumeAbi=arm64-v8a
+VCPKG_ROOT=~/vcpkg ./gradlew :app:assembleDirectDebug -PyumeAbi=arm64-v8a
 VCPKG_ROOT=~/vcpkg ./gradlew :app:connectedDirectDebugAndroidTest
 ```
 
@@ -161,7 +227,7 @@ the matching ABI.
 
 Against `yumed` from the same shared source revision:
 
-1. verify exact `2.0-dev1`, the expected TLS fingerprint, ML-KEM-1024, and
+1. verify exact `0.2.0-dev6`, the expected TLS fingerprint, ML-KEM-1024, and
    `packet_bulk_v1` in Android status;
 2. pass IPv4 DNS, TCP, and UDP traffic through the Android VPN and confirm the
    assigned source address and MTU;

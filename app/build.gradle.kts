@@ -25,6 +25,33 @@ val yumeProtocolVersion = readQuotedConstant(
     "kVersion",
     "Unknown",
 )
+// Provenance of the shared YUME checkout this APK's native library is built
+// from. Resolved from the checkout's git refs rather than hand-maintained:
+// the previous hard-coded marker had drifted to a hash that exists in no YUME
+// repository at all, so it identified nothing.
+//
+// This is a provenance label, not the cache key. The native task already
+// hashes the actual source fileTree, which is what makes the build correct
+// when the working tree is dirty.
+fun resolveSharedYumeHead(): String {
+    val gitDir = sharedYumeRoot.resolve(".git")
+    if (!gitDir.isDirectory) return "unknown"
+    val head = gitDir.resolve("HEAD").takeIf { it.isFile }?.readText()?.trim()
+        ?: return "unknown"
+    if (!head.startsWith("ref:")) return head  // detached HEAD
+    val ref = head.removePrefix("ref:").trim()
+    gitDir.resolve(ref).takeIf { it.isFile }?.let { return it.readText().trim() }
+    // Packed-refs fallback. A plain loop, not forEachLine: that overload is
+    // not inline, so a non-local return out of its lambda does not compile.
+    val packed = gitDir.resolve("packed-refs").takeIf { it.isFile } ?: return "unknown"
+    for (line in packed.readLines()) {
+        val parts = line.trim().split(" ")
+        if (parts.size == 2 && parts[1] == ref) return parts[0]
+    }
+    return "unknown"
+}
+
+val sharedYumeHead = resolveSharedYumeHead()
 val basefwxEngineVersion = readTrimmedFile(sharedYumeRoot.resolve("basefwx/VERSION"), "Unknown")
 val basefwxBuildUtc = System.getenv("BASEFWX_BUILD_UTC")
     ?: System.getenv("SOURCE_DATE_EPOCH")?.toLongOrNull()?.let(Instant::ofEpochSecond)?.toString()
@@ -107,6 +134,15 @@ val syncBasefwxJava by tasks.registering(Sync::class) {
         include("com/fixcraft/basefwx/plugin/BasefwxPluginException.java")
         include("com/fixcraft/basefwx/plugin/BasefwxPluginFactory.java")
         include("com/fixcraft/basefwx/plugin/BasefwxPluginRegistry.java")
+        // Direct references of files already copied above: FileCodecObfuscation,
+        // B512FileCodec, LiveCipher, Pb512FileCodec, LengthPrefixedCodec,
+        // KeyWrap and FwxAesCodec all name these two. Omitting them was a hard
+        // javac break, not a missing optional feature.
+        include("com/fixcraft/basefwx/PasswordPolicy.java")
+        include("com/fixcraft/basefwx/PayloadKeySeparation.java")
+        // Not transitively reached by the classes above, but part of the
+        // BaseFWX Java parity surface this app is expected to mirror.
+        include("com/fixcraft/basefwx/X25519.java")
     }
     into(basefwxJavaOutputDir)
 }
@@ -137,20 +173,14 @@ android {
         minSdk = 28
         targetSdk = 36
         versionCode = 3
-        versionName = "2.0-dev1"
+        // Track the shared transport identity exactly; dev6 refuses dev1.
+        versionName = yumeProtocolVersion
         buildConfigField("String", "YUME_PROTOCOL_VERSION", "\"$yumeProtocolVersion\"")
         buildConfigField("String", "BASEFWX_ENGINE_VERSION", "\"$basefwxEngineVersion\"")
-        buildConfigField("String", "YUME_PROTECTION_POLICY", "\"Auto (highest available)\"")
-        // Packet-native is gated by server packet_bulk_v1 support and falls
-        // back to tun2socks stable when unavailable. Set true here so any
-        // future buildType added without an explicit override inherits the
-        // same behavior as debug/release rather than silently disabling it.
-        buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "true")
-        buildConfigField(
-            "String",
-            "YUME_ROUTING_MODE",
-            "\"Systemwide Android VpnService routing through the active Yume tunnel backend; the upstream control socket is protected to avoid loops.\""
-        )
+        // dev6 posture is fixed by the protocol. The shared packet ABI is
+        // mandatory: there is no Kotlin-wire or tun2socks fallback when
+        // packet_bulk_v1 is unavailable, so neither is a build option.
+        buildConfigField("String", "YUME_PROTECTION_POLICY", "\"Exact YUME $yumeProtocolVersion\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -190,14 +220,7 @@ android {
     }
 
     buildTypes {
-        debug {
-            buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "true")
-        }
         release {
-            // Despite the legacy flag name, this enables the packet-native
-            // fast path. Runtime code falls back to tun2socks stable if the
-            // authenticated server does not negotiate packet_bulk_v1.
-            buildConfigField("boolean", "ENABLE_NATIVE_DIRECT_BETA", "true")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -341,7 +364,7 @@ val buildYumeSharedAbi by tasks.registering {
     inputs.property("abis", configuredAbis.joinToString(","))
     inputs.property("minSdk", configuredMinSdk)
     inputs.property("ndkVersion", pinnedNdkVersion)
-    inputs.property("yumeCommit", "491a5738d9db998e2155de05619b0f893b8b128f")
+    inputs.property("yumeCommit", sharedYumeHead)
     outputs.dir(yumeSharedAbiOutputDir)
     doLast {
         val ndkPath = resolveNdkRoot()

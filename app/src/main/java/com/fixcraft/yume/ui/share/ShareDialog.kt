@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import com.fixcraft.yume.data.SecureMaterialSummary
 import com.fixcraft.yume.data.ServerProfile
 import com.fixcraft.yume.share.ShareFile
+import com.fixcraft.basefwx.Constants
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -51,7 +52,7 @@ import kotlinx.coroutines.withContext
  *      user leaves the field blank for an encrypted key, the bundle
  *      ships without the auth key (info-only) — the recipient will
  *      need to attach their own.
- *   2. Set a new password (8+ chars, confirmed) for the output file.
+ *   2. Set a new BaseFWX-compatible password (12+ chars, confirmed).
  *   3. SAF CreateDocument picker → write the encrypted blob.
  *
  * The caller provides `resolveAuthKeyPem(password)` so this dialog
@@ -119,18 +120,18 @@ fun ExportShareDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "Encrypts the server connection info, the operator CA cert, the obfs secret, " +
-                        "and (optionally) your auth private key into a single password-protected file. " +
-                        "Anyone with the file AND the password becomes you on this server — pick a strong " +
-                        "password.",
+                    "Encrypts the server connection info, the TLS name, the operator CA cert, the " +
+                        "admission secret, the inner PSK, and (optionally) your composite auth " +
+                        "identity into a single password-protected file. Anyone with the file AND " +
+                        "the password becomes you on this server — pick a strong password.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 if (authKeyAvailable) {
                     if (authKeyEncrypted) {
                         Text(
-                            "Your auth key is encrypted at rest. Enter the password you set when you " +
-                                "imported it to include the key in the export. Leave blank to export " +
-                                "WITHOUT the key (info-only).",
+                            "Your composite auth identity is encrypted at rest. Enter the password " +
+                                "you set when you imported it to include the identity in the export. " +
+                                "Leave blank to export WITHOUT it (info-only).",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -144,14 +145,14 @@ fun ExportShareDialog(
                         )
                     } else {
                         Text(
-                            "Auth key is unencrypted — it'll be included in the export automatically.",
+                            "Auth identity is unencrypted — it'll be included in the export automatically.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 } else {
                     Text(
-                        "Note: this profile has no auth key attached — exporting info only.",
+                        "Note: this profile has no auth identity attached — exporting info only.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -160,7 +161,7 @@ fun ExportShareDialog(
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
-                    label = { Text("New file password (8+ chars)") },
+                    label = { Text("New file password (${Constants.SHORT_PASSWORD_MIN}+ chars)") },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
@@ -193,7 +194,8 @@ fun ExportShareDialog(
         },
         confirmButton = {
             Button(
-                enabled = busyLabel == null && password.length >= 8 && password == confirm,
+                enabled = busyLabel == null &&
+                    password.length >= Constants.SHORT_PASSWORD_MIN && password == confirm,
                 onClick = {
                     scope.launch {
                         status = null
@@ -241,7 +243,11 @@ fun ExportShareDialog(
                                     obfsJitterMs = obfsJitterMs,
                                     tlsPinSha256 = tlsPinSha256,
                                     tlsStealthProfile = tlsStealthProfile,
+                                    tlsCaCertPem = caCertPem,
+                                    tlsServerName = profile.serverName,
                                     innerPsk = profile.innerPsk,
+                                    tunnelCount = 1,
+                                    requireOperatorIdentity = profile.requireAnonymProof,
                                     anonymCaCertPem = caCertPem,
                                 )
                                 ShareFile.encode(bundle, password) to null
@@ -387,9 +393,11 @@ fun ImportShareDialog(
                             style = MaterialTheme.typography.titleSmall)
                         if (b.label.isNotEmpty()) Text("Label:   ${b.label}")
                         Text("Server:  ${b.serverHost}:${b.serverPort}")
-                        Text("Auth key: ${if (b.authPrivateKeyPem.isEmpty()) "(none)" else "PRESENT"}")
+                        if (b.tlsServerName.isNotEmpty()) Text("TLS name: ${b.tlsServerName}")
+                        Text("Auth key: ${if (b.authPrivateKeyPem.isEmpty()) "(none)" else "PRESENT (composite)"}")
                         Text("Operator CA: ${if (b.anonymCaCertPem.isEmpty()) "(none)" else "PRESENT"}")
-                        Text("Obfs secret: ${if (b.obfsSecret.isEmpty()) "(none)" else "PRESENT"}")
+                        Text("Operator proof: ${if (b.requireOperatorIdentity) "required" else "not required"}")
+                        Text("Admission secret: ${if (b.obfsSecret.isEmpty()) "(none)" else "PRESENT"}")
                         Text("Inner PSK: ${if (b.innerPsk.isEmpty()) "(none)" else "PRESENT"}")
                     }
                 }

@@ -1,10 +1,7 @@
 package com.fixcraft.yume.i18n
 
 import android.content.Context
-import com.fixcraft.yume.data.ConnectionTechnique
 import com.fixcraft.yume.data.AppSettings
-import com.fixcraft.yume.data.PerformanceProfile
-import com.fixcraft.yume.data.canonicalLabel
 
 private data class LogPatternRule(
     val pattern: Regex,
@@ -36,9 +33,6 @@ object VpnLogTranslator {
     private val patternRules: List<LogPatternRule> = listOf(
         LogPatternRule(Regex("""^Selected server: (.+) \((.+)\)\.$""")) { match, strings ->
             strings.logSelectedServer(match.groupValues[1], match.groupValues[2])
-        },
-        LogPatternRule(Regex("""^Technique: (.+)\.$""")) { match, strings ->
-            strings.logTechnique(localizeTechniqueSummary(match.groupValues[1], strings))
         },
         LogPatternRule(Regex("""^Starting Yume Android session for (.+) \((.+)\)\.$""")) { match, strings ->
             strings.logStartingAndroidSession(match.groupValues[1], match.groupValues[2])
@@ -94,34 +88,6 @@ object VpnLogTranslator {
             }
         }
         return message
-    }
-
-    private fun localizeTechniqueSummary(summary: String, strings: AppStrings): String {
-        val parts = summary.split(" / ", limit = 2)
-        if (parts.size != 2) {
-            return localizeTechniqueName(summary, strings)
-        }
-        val technique = localizeTechniqueName(parts[0], strings)
-        val profile = localizeProfileName(parts[1], strings)
-        return "$technique / $profile"
-    }
-
-    private fun localizeTechniqueName(value: String, strings: AppStrings): String {
-        return when (value) {
-            ConnectionTechnique.Tun2SocksStable.canonicalLabel() -> strings.connectionTechniqueName(ConnectionTechnique.Tun2SocksStable)
-            ConnectionTechnique.NativeDirectBeta.canonicalLabel() -> strings.connectionTechniqueName(ConnectionTechnique.NativeDirectBeta)
-            ConnectionTechnique.Socks5ProxyOnly.canonicalLabel() -> strings.connectionTechniqueName(ConnectionTechnique.Socks5ProxyOnly)
-            else -> value
-        }
-    }
-
-    private fun localizeProfileName(value: String, strings: AppStrings): String {
-        return when (value) {
-            PerformanceProfile.Latency.canonicalLabel() -> strings.performanceProfileName(PerformanceProfile.Latency)
-            PerformanceProfile.Balanced.canonicalLabel() -> strings.performanceProfileName(PerformanceProfile.Balanced)
-            PerformanceProfile.Throughput.canonicalLabel() -> strings.performanceProfileName(PerformanceProfile.Throughput)
-            else -> value
-        }
     }
 }
 

@@ -40,7 +40,7 @@ fun ServersScreen(
     uiState: MainUiState,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, String, String, String, Boolean, String, String, String, String, String, String) -> String?,
 ) {
     val strings = appStrings()
     val context = LocalContext.current
@@ -139,7 +139,6 @@ fun ServersScreen(
                     updated.host,
                     updated.port,
                     updated.sni,
-                    updated.obfuscation,
                     updated.obfsSecret,
                     updated.dnsServers,
                     updated.mtu,
@@ -236,12 +235,11 @@ fun ServersScreen(
                         bundle.label.ifBlank { bundle.serverHost },  // name
                         bundle.serverHost,
                         bundle.serverPort.toString(),
-                        "",                                  // sni
-                        bundle.obfuscation,
+                        bundle.tlsServerName,                // preserved TLS SNI/name
                         bundle.obfsSecret,
                         "",                                  // dns_servers (use defaults)
                         "",                                  // mtu (use default)
-                        caId.isNotEmpty(),                   // require proof only when a CA was imported
+                        bundle.requireOperatorIdentity && caId.isNotEmpty(),
                         caId,
                         authKeyMaterialId,                   // attached if present
                         "Imported from .yss on ${ShareFileNow()}",

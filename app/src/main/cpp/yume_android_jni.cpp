@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -29,6 +30,11 @@ struct Session {
     explicit Session(jobject protector_in) : protector(protector_in) {}
 
     std::mutex lifecycle_mu;
+    std::condition_variable lifecycle_cv;
+    std::size_t active_client_calls{0};
+    // start must overlap stop so the core's pre-ready cancellation can run;
+    // serialize only competing stop requests, not every client operation.
+    std::mutex client_stop_mu;
     // The packet ABI supports one reader and one writer concurrently. Keep
     // those directions independent so a bounded blocking read cannot stall
     // outbound TUN traffic. Close/destroy acquire both before freeing packet.
@@ -41,6 +47,33 @@ struct Session {
     jobject protector{nullptr};
     std::string last_error;
     std::atomic<bool> closed{false};
+};
+
+class ClientLease {
+public:
+    explicit ClientLease(Session& session) : session_(session) {
+        std::lock_guard<std::mutex> lock(session_.lifecycle_mu);
+        if (session_.closed.load(std::memory_order_acquire) || !session_.client) return;
+        client_ = session_.client;
+        ++session_.active_client_calls;
+    }
+
+    ~ClientLease() {
+        if (!client_) return;
+        std::lock_guard<std::mutex> lock(session_.lifecycle_mu);
+        --session_.active_client_calls;
+        if (session_.active_client_calls == 0) session_.lifecycle_cv.notify_all();
+    }
+
+    ClientLease(const ClientLease&) = delete;
+    ClientLease& operator=(const ClientLease&) = delete;
+
+    explicit operator bool() const noexcept { return client_ != nullptr; }
+    yume_client* get() const noexcept { return client_; }
+
+private:
+    Session& session_;
+    yume_client* client_{nullptr};
 };
 
 std::mutex g_sessions_mu;
@@ -88,7 +121,7 @@ int socket_protector(std::intptr_t socket_handle, void* user_data) {
     bool attached = false;
     const jint env_status = g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
     if (env_status == JNI_EDETACHED) {
-        if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return 0;
+        if (g_vm->AttachCurrentThread(reinterpret_cast<void**>(&env), nullptr) != JNI_OK) return 0;
         attached = true;
     } else if (env_status != JNI_OK || !env) {
         return 0;
@@ -136,20 +169,33 @@ jstring json_result(JNIEnv* env, Session& session, const void* handle, JsonCall&
 
 void cleanup(JNIEnv* env, const std::shared_ptr<Session>& session) {
     if (!session || session->closed.exchange(true, std::memory_order_acq_rel)) return;
+    yume_packet* packet = nullptr;
+    yume_client* client = nullptr;
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(session->lifecycle_mu);
+        packet = session->packet;
+        session->packet = nullptr;
+        client = session->client;
+    }
+    // Closing before acquiring the directional locks wakes a blocked read or
+    // backpressured write. Destruction still waits until both callers leave.
+    if (packet) (void)yume_packet_close(packet);
+    if (client) {
+        std::lock_guard<std::mutex> stop_lock(session->client_stop_mu);
+        (void)yume_client_stop(client);
+    }
     {
         std::scoped_lock io_lock(session->packet_read_mu, session->packet_write_mu);
-        std::lock_guard<std::mutex> lifecycle_lock(session->lifecycle_mu);
-        if (session->packet) {
-            (void)yume_packet_close(session->packet);
-            yume_packet_destroy(session->packet);
-            session->packet = nullptr;
-        }
-        if (session->client) {
-            (void)yume_client_stop(session->client);
-            yume_client_destroy(session->client);
-            session->client = nullptr;
-        }
+        if (packet) yume_packet_destroy(packet);
     }
+    {
+        std::unique_lock<std::mutex> lifecycle_lock(session->lifecycle_mu);
+        session->lifecycle_cv.wait(lifecycle_lock, [&] {
+            return session->active_client_calls == 0;
+        });
+        session->client = nullptr;
+    }
+    if (client) yume_client_destroy(client);
     {
         std::lock_guard<std::mutex> lock(session->protector_mu);
         if (session->protector) {
@@ -234,12 +280,12 @@ Java_com_fixcraft_yume_transport_SharedYumeNative_nativeStart(
     if (!session || timeout_ms <= 0) return YUME_STATUS_INVALID_ARGUMENT;
     const std::string config = from_jstring(env, config_json);
     const std::string base = from_jstring(env, base_dir);
-    std::lock_guard<std::mutex> lock(session->lifecycle_mu);
-    if (!session->client || session->closed.load()) return YUME_STATUS_NOT_RUNNING;
+    ClientLease client(*session);
+    if (!client) return YUME_STATUS_NOT_RUNNING;
     const int status = yume_client_start_json(
-        session->client, config.c_str(), base.c_str(),
+        client.get(), config.c_str(), base.c_str(),
         static_cast<std::uint32_t>(timeout_ms));
-    remember_error(*session, session->client, status);
+    remember_error(*session, client.get(), status);
     return status;
 }
 
@@ -248,16 +294,22 @@ Java_com_fixcraft_yume_transport_SharedYumeNative_nativeStop(
     JNIEnv*, jobject, jlong handle) {
     auto session = find_session(handle);
     if (!session) return YUME_STATUS_OK;
-    std::scoped_lock io_lock(session->packet_read_mu, session->packet_write_mu);
-    std::lock_guard<std::mutex> lifecycle_lock(session->lifecycle_mu);
-    if (session->packet) {
-        (void)yume_packet_close(session->packet);
-        yume_packet_destroy(session->packet);
+    yume_packet* packet = nullptr;
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(session->lifecycle_mu);
+        packet = session->packet;
         session->packet = nullptr;
     }
-    if (!session->client) return YUME_STATUS_OK;
-    const int status = yume_client_stop(session->client);
-    remember_error(*session, session->client, status);
+    if (packet) (void)yume_packet_close(packet);
+    {
+        std::scoped_lock io_lock(session->packet_read_mu, session->packet_write_mu);
+        if (packet) yume_packet_destroy(packet);
+    }
+    ClientLease client(*session);
+    if (!client) return YUME_STATUS_OK;
+    std::lock_guard<std::mutex> stop_lock(session->client_stop_mu);
+    const int status = yume_client_stop(client.get());
+    remember_error(*session, client.get(), status);
     return status;
 }
 
@@ -266,11 +318,11 @@ Java_com_fixcraft_yume_transport_SharedYumeNative_nativeClientStatus(
     JNIEnv* env, jobject, jlong handle) {
     auto session = find_session(handle);
     if (!session) return nullptr;
-    std::lock_guard<std::mutex> lock(session->lifecycle_mu);
-    if (!session->client) return nullptr;
-    return json_result(env, *session, session->client,
+    ClientLease client(*session);
+    if (!client) return nullptr;
+    return json_result(env, *session, client.get(),
         [&](char* out, std::size_t size, std::size_t* needed) {
-            return yume_client_status_json(session->client, out, size, needed);
+            return yume_client_status_json(client.get(), out, size, needed);
         });
 }
 
@@ -280,13 +332,25 @@ Java_com_fixcraft_yume_transport_SharedYumeNative_nativeOpenPacket(
     auto session = find_session(handle);
     if (!session || timeout_ms <= 0) return YUME_STATUS_INVALID_ARGUMENT;
     std::scoped_lock io_lock(session->packet_read_mu, session->packet_write_mu);
-    std::lock_guard<std::mutex> lifecycle_lock(session->lifecycle_mu);
-    if (!session->client || session->packet) return YUME_STATUS_ALREADY_RUNNING;
+    ClientLease client(*session);
+    if (!client) return YUME_STATUS_NOT_RUNNING;
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(session->lifecycle_mu);
+        if (session->packet) return YUME_STATUS_ALREADY_RUNNING;
+    }
     yume_packet* packet = nullptr;
     const int status = yume_client_open_packet(
-        session->client, static_cast<std::uint32_t>(timeout_ms), &packet);
-    remember_error(*session, session->client, status);
-    if (status == YUME_STATUS_OK) session->packet = packet;
+        client.get(), static_cast<std::uint32_t>(timeout_ms), &packet);
+    remember_error(*session, client.get(), status);
+    if (status == YUME_STATUS_OK) {
+        std::lock_guard<std::mutex> lifecycle_lock(session->lifecycle_mu);
+        if (session->closed.load(std::memory_order_acquire) || session->packet) {
+            (void)yume_packet_close(packet);
+            yume_packet_destroy(packet);
+            return YUME_STATUS_NOT_RUNNING;
+        }
+        session->packet = packet;
+    }
     return status;
 }
 
@@ -296,11 +360,15 @@ Java_com_fixcraft_yume_transport_SharedYumeNative_nativePacketStatus(
     auto session = find_session(handle);
     if (!session) return nullptr;
     std::scoped_lock io_lock(session->packet_read_mu, session->packet_write_mu);
-    std::lock_guard<std::mutex> lifecycle_lock(session->lifecycle_mu);
-    if (!session->packet) return nullptr;
-    return json_result(env, *session, session->packet,
+    yume_packet* packet = nullptr;
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(session->lifecycle_mu);
+        packet = session->packet;
+    }
+    if (!packet) return nullptr;
+    return json_result(env, *session, packet,
         [&](char* out, std::size_t size, std::size_t* needed) {
-            return yume_packet_status_json(session->packet, out, size, needed);
+            return yume_packet_status_json(packet, out, size, needed);
         });
 }
 
@@ -405,13 +473,17 @@ Java_com_fixcraft_yume_transport_SharedYumeNative_nativeClosePacket(
     JNIEnv*, jobject, jlong handle) {
     auto session = find_session(handle);
     if (!session) return YUME_STATUS_OK;
+    yume_packet* packet = nullptr;
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(session->lifecycle_mu);
+        packet = session->packet;
+        session->packet = nullptr;
+    }
+    if (!packet) return YUME_STATUS_OK;
+    const int status = yume_packet_close(packet);
+    remember_error(*session, packet, status);
     std::scoped_lock io_lock(session->packet_read_mu, session->packet_write_mu);
-    std::lock_guard<std::mutex> lifecycle_lock(session->lifecycle_mu);
-    if (!session->packet) return YUME_STATUS_OK;
-    const int status = yume_packet_close(session->packet);
-    remember_error(*session, session->packet, status);
-    yume_packet_destroy(session->packet);
-    session->packet = nullptr;
+    yume_packet_destroy(packet);
     return status;
 }
 

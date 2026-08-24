@@ -33,9 +33,15 @@ class SharedYumeSessionConfig private constructor(
         fun create(
             noBackupFilesDir: File,
             profile: ServerProfile,
+            dialAddress: String,
+            tlsServerName: String,
             authKeyPem: String,
             operatorCaPem: String,
         ): SharedYumeSessionConfig {
+            require(dialAddress.isNotBlank()) { "The resolved YUME server address is empty" }
+            require(tlsServerName.isNotBlank()) {
+                "TLS server name is required when dialing a numeric address"
+            }
             require(profile.obfuscation) { "YUME 2.0 requires the authenticated HTTP/2 carrier" }
             require(HEX_32.matches(profile.obfsSecret)) {
                 "YUME 2.0 admission secret must be exactly 64 lowercase hex characters"
@@ -72,13 +78,17 @@ class SharedYumeSessionConfig private constructor(
                 val stealthProfile =
                     TransportProfileRegistry.normalize(profile.tlsStealthProfile)
                 val json = JSONObject()
-                    .put("server", profile.host)
+                    // DNS is deliberately outside libyume: Android resolves on
+                    // the selected underlying Network before the VPN route can
+                    // recurse. Certificate verification still uses the
+                    // original configured name below.
+                    .put("server", dialAddress)
                     .put("port", profile.port)
                     .put("identity", IDENTITY_FILE)
                     .put("socks_port", 0)
                     .put("tunnels", 1)
                     .put("service_streams_only", true)
-                    .put("tls_server_name", profile.serverName)
+                    .put("tls_server_name", tlsServerName)
                     .put("require_anonym", profile.requireAnonymProof)
                     .put("accept_monitoring", !profile.requireAnonymProof)
                     .put("auto_attach_local", false)

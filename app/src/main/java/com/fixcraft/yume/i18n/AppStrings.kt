@@ -9,14 +9,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import com.fixcraft.yume.data.AppLanguage
-import com.fixcraft.yume.data.ConnectionTechnique
 import com.fixcraft.yume.data.LogLanguage
-import com.fixcraft.yume.data.PerformanceProfile
 import com.fixcraft.yume.data.ResolvedAppLanguage
 import com.fixcraft.yume.data.SecureMaterialType
-import com.fixcraft.yume.data.Socks5BindMode
 import com.fixcraft.yume.data.ThemeColorMode
-import com.fixcraft.yume.data.canonicalLabel
 import com.fixcraft.yume.i18n.translations.LanguageJa
 import com.fixcraft.yume.i18n.translations.LanguageRu
 import com.fixcraft.yume.i18n.translations.LanguageUk
@@ -90,8 +86,7 @@ class AppStrings private constructor(
     val autoTranslatedLanguagesTitle = t("Auto-translated")
     val close = t("Close")
     val appLanguageLabel = t("App language")
-    val logLanguageLabel = t("Log (Beta)")
-    val unavailableInBuild = t("Unavailable in this build.")
+    val logLanguageLabel = t("Log language")
     val originalLabel = t("Original")
     val followsSystemLabel = t("Follows your phone")
     val followAppLabel = t("Follow app")
@@ -105,8 +100,15 @@ class AppStrings private constructor(
     val translatingLanguageTitle = t("Translating the app")
     val workingTitle = t("Working")
 
-    val connectionGroupTitle = t("Connection")
-    val profileGroupTitle = t("Profile")
+    val connectionGroupTitle = t("Transport")
+    val transportFixedSummary =
+        t("Android runs one transport. It is fixed by the protocol, not selectable.")
+    val transportModeValue = "packet_bulk_v1 (IPv4)"
+    val carrierLabel = t("Carrier")
+    val carrierValue = "TLS 1.3 + HTTP/2 WebSocket"
+    val authenticationLabel = t("Authentication")
+    val authenticationValue = "Ed25519 + ML-DSA-87 (AUTH v2)"
+    val innerValue = "ML-KEM-1024 + X25519 + PSK, AES-256-GCM"
     val themeGroupTitle = t("Theme")
     val advancedGroupTitle = t("Advanced")
     val appDataGroupTitle = t("App data")
@@ -153,8 +155,6 @@ class AppStrings private constructor(
     val toolsTitle = t("Tools")
     val localSelfTestTitle = t("Local self-test")
     val localSelfTestDetail = t("Measures this device's Yume hot paths without contacting a server.")
-    val runLocalSelfTestButton = t("Run local self-test")
-    val rerunLocalSelfTestButton = t("Re-run local self-test")
     val runQuickBenchmarkButton = t("Quick test")
     val runFullBenchmarkButton = t("Full benchmark")
     val copyLocalSelfTestReport = t("Copy local self-test report")
@@ -163,7 +163,6 @@ class AppStrings private constructor(
     val localSelfTestCopied = t("Local self-test report copied.")
     val localSelfTestNoResults = t("No local self-test results yet.")
     val showBenchmarkDetails = t("Show detailed stats")
-    val hideBenchmarkDetails = t("Hide detailed stats")
     val quickBenchmarkNoScore = t("Full mode computes a GLOBAL score.")
     fun benchmarkScoreValue(label: String, score: Long, grade: String) =
         t("{label} {score} · {grade}")
@@ -191,7 +190,6 @@ class AppStrings private constructor(
     val systemGroupTitle = t("System")
     val authorLabel = t("Author")
     val companyLabel = t("Company")
-    val creditsWrittenByLabel = t("Credits written by")
     val developerQuoteLabel = t("Recognition")
     val founderNoteLabel = t("From F1xGOD")
     val yumeLabel = "Yume"
@@ -201,14 +199,11 @@ class AppStrings private constructor(
     val notificationSettingsButton = t("Notification settings")
     val notificationsLabel = t("Notifications")
     val batteryOptimizationLabel = t("Battery optimization")
-    val nativeDirectBetaLabel = t("Packet-native fast path")
     val dynamicColorsLabel = t("Dynamic colors")
     val allowed = t("Allowed")
     val permissionRequired = t("Permission required")
     val optimized = t("Optimized")
     val unrestricted = t("Unrestricted")
-    val enabled = t("Enabled")
-    val disabled = t("Disabled")
     val available = t("Available")
     val unavailableOnAndroidVersion = t("Unavailable on this Android version")
 
@@ -223,11 +218,8 @@ class AppStrings private constructor(
     val addFirstGatewayTitle = t("Add your first gateway")
     val addFirstGatewayDetail = t("A server profile stores host, TLS name, DNS, MTU, operator CA, and auth key. Your first saved profile becomes active.")
 
-    val securityTitle = t("Trust & auth")
     val securitySubtitle = t("CA and auth keys.")
     val selectedServerLabel = t("Selected server")
-    val anonymCaShort = t("Operator CA")
-    val authKeyShort = t("Auth key")
     val missing = t("Missing")
     val notAssigned = t("Not assigned")
     val pasteAnonymCaTitle = t("Paste operator CA")
@@ -251,7 +243,6 @@ class AppStrings private constructor(
     val anonymRequired = t("Required")
     val anonymOptional = t("Optional")
     val anonymLabel = t("Operator identity")
-    val pathLabel = t("Path")
     val exitIpLabel = t("Exit IP")
     val upstreamLabel = t("Upstream")
     val unknown = t("Unknown")
@@ -269,62 +260,28 @@ class AppStrings private constructor(
     val interfaceIdle = t("Interface idle")
     val latestLogLabel = t("Latest log")
     val protectionShortLabel = t("Protection")
-    val relayShortLabel = t("Relay")
     val routingShortLabel = t("Routing")
     val tunnelActive = t("Tunnel active")
     val importPemAuthKeyHint = t("Import a PEM auth key below, then edit this server to assign it before connecting.")
     val assignImportedAuthKeyHint = t("Edit this server and assign one of the imported auth keys before connecting.")
 
     val diagnosticsSubtitle = t("Session log and build info.")
-    val currentPhaseLabel = t("Current phase")
-    val techniqueLabel = t("Technique")
-    val profileLabel = t("Profile")
     val copyDiagnostics = t("Copy diagnostics")
     val shareDiagnostics = t("Share diagnostics")
     val shareDiagnosticsSubject = t("Yume Android diagnostics")
     val shareDiagnosticsChooser = t("Share diagnostics")
     val reportTitle = t("Report")
-    val throughputLoggingTitle = t("Throughput logging")
-    val throughputLoggingDescription = t(
-        "Logs a one-line throughput summary every 2 s while the " +
-            "tunnel is up. Covers encrypt/decrypt CPU, SSL write CPU, " +
-            "frame rates, and channel backpressure. Use to find where " +
-            "bandwidth is going on a slow connection. Visible in logcat " +
-            "(tag \"YumePerf\") and in the VPN log feed below."
-    )
-    val toggleEnabled = t("Enabled")
-    val toggleDisabled = t("Disabled")
-    val nativeTransportTitle = t("Native transport (beta)")
-    val nativeTransportDescription = t(
-        "Drives the TLS pipe via libyumetransport.so so the writer no " +
-            "longer blocks on output.write() when the kernel TCP buffer " +
-            "fills. Targets desktop-CLI-grade upload throughput. Takes " +
-            "effect on the next reconnect; the throughput log line shows " +
-            "`transport=native` vs `transport=java` once active."
-    )
-    val nativeTransportUnavailable = t(
-        "libyumetransport.so is not shipped for this device's ABI. The " +
-            "Java SSLSocket path is used regardless of this switch."
-    )
-    val selfDpiTitle = t("Self-DPI warnings")
-    val selfDpiDescription = t(
-        "Warns when local carrier metadata stops matching the selected disguise profile. " +
-            "Inspects TLS/profile, HTTPS masking, padding, jitter, packet-native batch stats, " +
-            "and raw versus smoothed throughput; it does not inspect app payloads."
-    )
     val rawThroughputLabel = t("Raw throughput")
     val smoothedThroughputLabel = t("Smoothed throughput")
     val yumeStatusTitle = t("Yume status")
     val briefLabel = t("Brief")
     val clientLabel = t("Client")
-    val lifecycleLabel = t("Lifecycle")
-    val lifecycleMessageLabel = t("Lifecycle msg")
     val connectionLabel = t("Connection")
     val serverModeLabel = t("Server mode")
-    val innerLabel = t("Inner")
-    val hopLabel = t("Hop")
+    val innerLabel = t("Inner tunnel")
+    val ratchetLabel = t("Ratchet")
     val verityLabel = t("Operator verification")
-    val localSocks5Label = t("Local SOCKS5")
+    val routeLabel = t("Route")
     val peerCertLabel = t("Peer cert")
     val loopSafeLabel = t("Loop-safe")
     val interfaceLabel = t("Interface")
@@ -338,7 +295,6 @@ class AppStrings private constructor(
     val sessionLogTitle = t("Session log")
     val noSessionEventsYet = t("No session events yet.")
     val debugBuildHint = t("If the installed app does not match this UI, uninstall it and reinstall the fresh debug APK.")
-    val systemwideRoutingActiveDetail = t("Systemwide Android VPN routing is active.")
 
     val trustAuthHeader = t("Trust & auth")
     val trustAuthDescription = t("Imported PEM certificates and keys stay encrypted in the app and out of cloud backup.")
@@ -346,8 +302,8 @@ class AppStrings private constructor(
     val anonymCaCertificatesSubtitle = t("The built-in FixCraft operator CA starts available but can be removed. Import the hoster's PEM CA, or leave operator authorization unassigned when the profile accepts monitoring.")
     val noCustomCaImported = t("No custom CAs imported.")
     val authKeysTitle = t("Auth keys")
-    val authKeysSubtitle = t("Yume auth uses a PEM private key. Import it from a file or paste the PEM text and then assign it to a server.")
-    val authKeyImportModeHelper = t("This is the input format. Plain PEM is accepted as-is. If the key was encrypted with BaseFWX, switch to Encrypted and enter its password.")
+    val authKeysSubtitle = t("A Yume auth key is one composite identity file: an Ed25519 PEM private-key block followed by an ML-DSA-87 block. Generate it with `yume --keys-gen` on the desktop, then assign it to a server.")
+    val authKeyImportModeHelper = t("This is the input format. A plain composite PEM is accepted as-is. If the key was encrypted with BaseFWX, switch to Encrypted and enter its password.")
     val regularKeyOption = t("Regular")
     val encryptedKeyOption = t("Encrypted")
     val noAuthKeysImported = t("No auth keys imported yet.")
@@ -371,12 +327,17 @@ class AppStrings private constructor(
     val portLabel = t("Port")
     val tlsServerNameLabel = t("TLS server name")
     val tlsServerNameHelper = t("Optional. Leave blank to use the server host.")
-    val httpsMaskingTitle = t("HTTPS masking")
-    val httpsMaskingLabel = t("HTTPS masking")
-    val httpsMaskingEnabled = t("Send the HTTP/2 carrier preface after TLS so the control path looks like browser traffic. Enable only when the server has obfs on.")
-    val httpsMaskingDisabled = t("Connect directly to the Yume AUTH exchange without the HTTPS masking preface.")
-    val httpsMaskingSecretLabel = t("HTTPS masking secret")
-    val httpsMaskingSecretHelper = t("Must match --obfs-secret. Leave blank only when the server has no obfs secret.")
+    val transportSecurityTitle = t("Transport security")
+    val transportSecurityFixedDescription = t("Fixed by the protocol, not configurable. Every session uses composite Ed25519 + ML-DSA-87 authentication and an ML-KEM-1024 / X25519 / PSK directional ratchet inside the HTTP/2 carrier.")
+    val admissionSecretLabel = t("Admission secret")
+    val admissionSecretHelper = t("Required. Must match the server's --obfs-secret.")
+    val innerPskLabel = t("Inner PSK")
+    val innerPskHelper = t("Required. Must match the server's inner PSK file.")
+    val hex64Requirement = t("Exactly 64 lowercase hex characters")
+    val tlsPinLabel = t("TLS leaf SHA-256 pin")
+    val tlsPinHelper = t("Optional. 64 lowercase hex characters when set.")
+    val tlsProfileLabel = t("TLS profile")
+    val tlsProfileHelper = t("Applied by the shared native YUME transport.")
     val dnsServersLabel = t("DNS servers")
     val dnsServersHelper = t("Comma or newline separated numeric IPv4 or IPv6 addresses.")
     val mtuHelper = t("Android VPNs are most stable between 1280 and 1500.")
@@ -387,7 +348,7 @@ class AppStrings private constructor(
     val anonymCaChoiceHelperRequired = t("Choose the CA that is expected to authorize this server operator.")
     val anonymCaChoiceHelperOptional = t("Choose the CA used to verify operator authorization when the server provides a proof.")
     val authKeyChoiceTitle = t("Auth key")
-    val authKeyChoiceHelper = t("Choose the PEM private key used for client auth. Leave empty only if you are not ready to connect yet.")
+    val authKeyChoiceHelper = t("Choose the composite identity used for client auth. Leave empty only if you are not ready to connect yet.")
     val nothingImportedYet = t("Nothing imported yet.")
     val notesLabel = t("Notes")
     val save = t("Save")
@@ -400,11 +361,10 @@ class AppStrings private constructor(
     val savedNameLabel = t("Saved name")
     val pemTextLabel = t("PEM text")
     val pemTextHelper = t("Paste the full PEM including BEGIN/END lines.")
-    val authKeyTextHelper = t("Paste the PEM private key, or switch to Encrypted and enter the BaseFWX password.")
+    val authKeyTextHelper = t("Paste both PEM private-key blocks, Ed25519 first, or switch to Encrypted and enter the BaseFWX password.")
 
     val diagnosticsReportHeader = t("Yume Android Diagnostics")
     val appLabel = t("App")
-    val performanceProfileLabel = t("Performance profile")
     val themeColorsLabel = t("Theme colors")
     val amoledDarkThemeLabel = t("AMOLED dark theme")
     val on = t("On")
@@ -438,37 +398,17 @@ class AppStrings private constructor(
     val buildFingerprintLabel = t("Build fingerprint")
     val runtimeTitle = t("Runtime")
     val runtimeStatusLabel = t("Runtime status")
-    val runtimeAppliedBridgeTuningTitle = t("Applied tunnel tuning")
-    val runtimeTun2SocksFallbackStatus = t("tun2socks fallback when packet-native is unavailable")
-    val runtimeNativeQueueLabel = t("Native queue")
-    val runtimeNativeTcpFlowWindowLabel = t("Native TCP flow window")
-    val runtimeNativeUdpFlowBufferLabel = t("Native UDP flow buffer")
     val runtimeIpv6PolicyLabel = t("IPv6 policy")
     val runtimeIpv6FailClosedStatus = t("blocked")
     val runtimeDnsPolicyLabel = t("DNS policy")
-    val runtimeIpv4OnlyDnsPolicy = t("IPv4-only; AAAA/SVCB/HTTPS records are stripped")
-    val runtimeTcpRelaysLabel = t("TCP relays")
-    val runtimeRelayAcquireTimeoutLabel = t("Relay acquire timeout")
-    val runtimeRelayAcquireSliceLabel = t("Relay acquire slice")
-    val runtimeIdleTcpEvictionLabel = t("Idle TCP eviction")
-    val runtimeTcpEvictionGraceLabel = t("TCP eviction grace")
-    val runtimeTcpEvictionBatchLabel = t("TCP eviction batch")
-    val runtimeBridgeChunkLabel = t("Bridge chunk")
-    val runtimeTcpStreamBufferLabel = t("TCP stream buffer")
-    val runtimeUdpStreamBufferLabel = t("UDP stream buffer")
-    val runtimeOutboundFrameQueueLabel = t("Outbound frame queue")
-    val runtimeTun2SocksConnectTimeoutLabel = t("tun2socks connect timeout")
-    val runtimeTun2SocksTcpReadWriteTimeoutLabel = t("tun2socks TCP read/write timeout")
-    val runtimeTun2SocksUdpReadWriteTimeoutLabel = t("tun2socks UDP read/write timeout")
-    val runtimeMaxDnsUdpAssociationsLabel = t("Max DNS UDP associations")
-    val runtimeMaxUdpAssociationsLabel = t("Max UDP associations")
-    val runtimeDnsRelayConcurrencyLabel = t("DNS relay concurrency")
-    val runtimePreRoutingStabilityDelayLabel = t("Pre-routing stability delay")
-    val runtimePostRoutingTrafficRampLabel = t("Post-routing traffic ramp")
-    val runtimeUdp443PolicyLabel = t("UDP 443 policy")
-    val runtimeForcedTcpFallback = t("forced TCP fallback")
-    val runtimeBridgeBackedBetaStatus = t("bridge-backed beta path with technique-specific tuning")
-    val runtimePacketNativeStatus = t("packet-native data plane")
+    val runtimeIpv4OnlyDnsPolicy = t("IPv4-only; the server assigns the resolvers")
+    val runtimePacketNativeStatus = t("shared native packet data plane")
+    val runtimeIdleStatus = t("not connected")
+    val runtimeBatchLimitLabel = t("Packet batch limit")
+    val assignedAddressLabel = t("Assigned IPv4")
+    val qualificationLabel = t("Qualification")
+    val androidUnqualifiedStatus =
+        t("Android device traffic, lifecycle, and throughput gates are still open.")
     val eventLogTitle = t("Event log")
     val noSessionEventsRecorded = t("No session events recorded.")
     val none = t("None")
@@ -480,26 +420,18 @@ class AppStrings private constructor(
     val portRangeError = t("Port must be between 1 and 65535")
     val mtuRangeError = t("MTU must be between 1280 and 1500")
     val dnsServerFormatError = t("DNS servers must be numeric IPv4 or IPv6 addresses")
+    val admissionSecretFormatError = t("Admission secret must be exactly 64 lowercase hex characters")
+    val innerPskFormatError = t("Inner PSK must be exactly 64 lowercase hex characters")
+    val tlsPinFormatError = t("TLS pin must be exactly 64 lowercase hex characters")
+    val admissionSecretRequiredHeadline = t("Admission secret required")
+    val admissionSecretRequiredDetail = t("Enter the server's 64-character lowercase hex admission secret.")
+    val innerPskRequiredHeadline = t("Inner PSK required")
+    val innerPskRequiredDetail = t("Enter the server's 64-character lowercase hex inner PSK.")
+    val invalidTlsPinHeadline = t("Invalid TLS pin")
+    val invalidTlsPinDetail = t("The TLS pin must be 64 lowercase hex characters.")
     val anonymCaUnavailable = t("Selected operator CA is unavailable")
     val authKeyUnavailable = t("Selected auth key is unavailable")
     val serverSaved = t("Server saved")
-    val nativeDirectUnavailable = t("Packet-native routing is disabled in this build.")
-    val socks5ProxyTitle = t("SOCKS5 proxy")
-    val socks5ProxySubtitle = t("Only apps configured with this local proxy use Yume.")
-    val socks5ListenPortLabel = t("Listen port")
-    val socks5BindAddressLabel = t("Bind address")
-    val socks5CustomBindAddressLabel = t("Custom IPv4 address")
-    val socks5BindThisDeviceLabel = t("This device")
-    val socks5BindWifiLabel = t("Wi-Fi")
-    val socks5BindAllLabel = t("All")
-    val socks5WifiAddressUnavailable = t("Wi-Fi address")
-    val socks5BindAddressHelper = t("IPv4 address. Leave blank to use the selected preset.")
-    val socks5BindAddressError = t("Use a valid IPv4 address or leave it blank.")
-    val socks5PortRangeError = t("Use port 1024-65535")
-    val socks5ParallelTunnelsLabel = t("Parallel tunnels")
-    val socks5ParallelTunnelsHelper = t("More tunnels can improve throughput. Default: 4.")
-    val socks5TunnelRangeError = t("Use 1-8 tunnels")
-    val socks5OnlyRuntimeDetail = t("Only apps configured for this proxy use Yume.")
     val amoledOn = t("AMOLED on")
     val amoledOff = t("AMOLED off")
     val permissionRequiredHeadline = t("Permission required")
@@ -532,6 +464,8 @@ class AppStrings private constructor(
     val verifyingRouteDetail = t("Route is up. Verifying traffic.")
     val protectedHeadline = t("Protected")
     val protectedDetail = t("Traffic is flowing through Yume.")
+    val startingSharedClientDetail = t("Starting the shared YUME client.")
+    val packetTransportConnectedDetail = t("Shared native packet transport is connected. Android device traffic, lifecycle, and throughput gates are still open.")
     val authenticatingNotification = t("Authenticating to Yume over 443")
     val protectedNotification = t("Protected via Yume")
     val notificationConnected = t("Protected")
@@ -551,7 +485,6 @@ class AppStrings private constructor(
     val claudeCreditRole = t("Selected code reviews, refactors, and bug-fix contributions.")
     val codexTitleLabel = t("Primary AI engineering partner")
     val codexCreditRole = t("Architecture, implementation, security hardening, testing, and documentation across Yume, BaseFWX, desktop, and Android.")
-    val openSourceComponentLabel = t("Open source component")
     val openSourceComponentsTitle = t("Open-source components")
     val openSourceComponentsLink = t("View open-source components")
     val openSourceComponentsSubtitle = t("Third-party code Yume builds on, with licences.")
@@ -568,11 +501,11 @@ class AppStrings private constructor(
     val componentLiboqsLicense = "MIT"
 
     val componentHevTunnelTitle = "hev-socks5-tunnel · hev-task-system · lwIP"
-    val componentHevTunnelUsage = t("TUN-to-SOCKS user-space stack for the legacy tun2socks engine. Heavily edited for YUME; upstream is no longer tracked.")
+    val componentHevTunnelUsage = t("TUN-to-SOCKS user-space stack from the legacy tun2socks engine. Still packaged, but not on the shared native packet data path. Heavily edited for YUME; upstream is no longer tracked.")
     val componentHevTunnelLicense = "MIT · MIT · BSD-3-Clause"
 
     val componentConscryptTitle = "Conscrypt"
-    val componentConscryptUsage = t("TLS provider for the Android app, wrapping BoringSSL through the JVM.")
+    val componentConscryptUsage = t("JVM-side TLS provider wrapping BoringSSL. The YUME carrier's TLS lives in the shared native client, not here.")
     val componentConscryptLicense = "Apache-2.0"
 
     val componentComposeTitle = "Jetpack Compose · Material 3"
@@ -582,7 +515,6 @@ class AppStrings private constructor(
     val componentCoroutinesTitle = "kotlinx.coroutines"
     val componentCoroutinesUsage = t("Structured concurrency under every suspend/await in the VPN service.")
     val componentCoroutinesLicense = "Apache-2.0"
-    val yumeSocksTunnelCreditRole = t("See Open-source components for the libraries Yume is built on.")
     val liveTrafficTitle = t("Live traffic")
     val trafficCollectingSamples = t("Collecting samples…")
     val trafficConnectToStart = t("Connect to start measuring traffic")
@@ -593,40 +525,6 @@ class AppStrings private constructor(
     )
 
     val founderQuote = t("\"Building on open source is one of the most empowering experiences in software development. You do not have to wait for someone else to fix an issue or add a feature — you can build the solution yourself.\"")
-
-    fun connectionTechniqueName(technique: ConnectionTechnique): String = when (technique) {
-        ConnectionTechnique.Tun2SocksStable -> technique.canonicalLabel()
-        ConnectionTechnique.NativeDirectBeta -> technique.canonicalLabel()
-        ConnectionTechnique.Socks5ProxyOnly -> technique.canonicalLabel()
-    }
-
-    fun connectionTechniqueDescription(technique: ConnectionTechnique): String = when (technique) {
-        ConnectionTechnique.Tun2SocksStable -> t("Stable VPN routing through tun2socks.")
-        ConnectionTechnique.NativeDirectBeta -> t("Packet-native IPv4 over one Yume TLS carrier when the server supports it.")
-        ConnectionTechnique.Socks5ProxyOnly -> t("Local proxy for apps you configure manually.")
-    }
-
-    val nativeDirectFixedTuningName = t("Fixed native tuning")
-
-    val nativeDirectFixedTuningDescription = t("Native direct uses fixed tuning.")
-
-    fun socks5BindModeName(mode: Socks5BindMode): String = when (mode) {
-        Socks5BindMode.Loopback -> socks5BindThisDeviceLabel
-        Socks5BindMode.Wifi -> socks5BindWifiLabel
-        Socks5BindMode.Wildcard -> socks5BindAllLabel
-    }
-
-    fun performanceProfileName(profile: PerformanceProfile): String = when (profile) {
-        PerformanceProfile.Latency -> t(profile.canonicalLabel())
-        PerformanceProfile.Balanced -> t(profile.canonicalLabel())
-        PerformanceProfile.Throughput -> t(profile.canonicalLabel())
-    }
-
-    fun performanceProfileDescription(profile: PerformanceProfile): String = when (profile) {
-        PerformanceProfile.Latency -> t("Lower queueing for interactive traffic.")
-        PerformanceProfile.Balanced -> t("Default mixed-use profile.")
-        PerformanceProfile.Throughput -> t("Larger buffers for sustained transfers.")
-    }
 
     fun themeColorModeName(mode: ThemeColorMode): String = when (mode) {
         ThemeColorMode.Yume -> "Yume"
@@ -801,9 +699,6 @@ class AppStrings private constructor(
 
     fun logCredentialsReady(): String = t("Local CA and auth key are ready. Starting the Android VPN service.")
 
-    fun logTechnique(summary: String): String =
-        tf("Technique: %s.", summary)
-
     fun localizedHeadline(headline: String): String = when (headline) {
         "Disconnected" -> disconnectedHeadline
         "Connection failed" -> connectionFailedHeadline
@@ -821,6 +716,9 @@ class AppStrings private constructor(
         "" -> ""
         "Route is up. Verifying traffic." -> verifyingRouteDetail
         "Traffic is flowing through Yume." -> protectedDetail
+        "Starting the shared YUME client." -> startingSharedClientDetail
+        "Shared native packet transport is connected. Android device traffic, lifecycle, and throughput gates are still open." ->
+            packetTransportConnectedDetail
         "Wi-Fi or cellular is unavailable, so Yume cannot rebuild the protected control path yet." -> waitingForNetworkDetail
         "Wi-Fi or cellular disappeared. Yume is waiting to rebuild the authenticated control path." -> upstreamLostDetail
         "Android needs permission to start the VPN." -> permissionRequiredDetail
@@ -887,20 +785,12 @@ class AppStrings private constructor(
 
     fun removed(displayName: String): String = tf("%s removed", displayName)
 
-    fun reconnectFor(label: String): String {
-        return tf("Reconnect for %s.", label)
-    }
-
     fun checkingKeysFor(endpointLabel: String): String {
         return tf("Checking keys and VPN permission for %s.", endpointLabel)
     }
 
     fun loadingKeysFor(endpointLabel: String): String {
         return tf("Loading keys and opening a control path to %s.", endpointLabel)
-    }
-
-    fun usingAnonymCa(displayName: String): String {
-        return tf("Using %s", displayName)
     }
 
     fun selectedServerSummary(
@@ -911,15 +801,11 @@ class AppStrings private constructor(
         return tf("Selected server: %s, %s: %s, %s: %s", profileName, anonymCaLabel, selectedCaName, authKeyLabel, selectedAuthKeyName)
     }
 
-    fun currentPhaseSummary(phase: String, technique: String, profile: String): String {
-        return tf("Current phase: %s • Technique: %s • Profile: %s", phase, technique, profile)
+    fun currentPhaseSummary(phase: String, route: String): String {
+        return tf("Current phase: %s • Route: %s", phase, route)
     }
 
     fun appVersion(value: String): String = tf("App: %s", value)
-
-    fun routePath(technique: String, profile: String): String {
-        return tf("Path: %s • %s", technique, profile)
-    }
 
     fun exitIpAndUpstream(exitIp: String, upstream: String): String {
         return tf("Exit IP: %s • Upstream: %s", exitIp, upstream)
@@ -970,7 +856,7 @@ class AppStrings private constructor(
         }
     }
 
-    fun phaseStatus(phase: VpnPhase, protected: Boolean, proxyReady: Boolean): String {
+    fun phaseStatus(phase: VpnPhase, protected: Boolean, routeReady: Boolean): String {
         return when (phase) {
             VpnPhase.Idle -> t("Idle")
             VpnPhase.PermissionRequired -> t("Permission needed")
@@ -978,7 +864,7 @@ class AppStrings private constructor(
             VpnPhase.Verifying -> t("Verifying")
             VpnPhase.Connected -> when {
                 protected -> t("Protected")
-                proxyReady -> t("Proxy ready")
+                routeReady -> t("Route ready")
                 else -> t("Connected")
             }
             VpnPhase.Disconnecting -> t("Disconnecting")
@@ -999,14 +885,7 @@ class AppStrings private constructor(
                 .forEach { runCatching { it.invoke(seedStrings) } }
             collector += listOf(
                 "Idle", "Permission needed", "Connecting", "Verifying",
-                "Protected", "Proxy ready", "Connected", "Disconnecting", "Error",
-                "Latency", "Balanced", "Throughput",
-                "Stable VPN routing through tun2socks.",
-                "Direct Yume TCP streams. UDP falls back to TCP; IPv6 is blocked.",
-                "Local proxy for apps you configure manually.",
-                "Lower queueing for interactive traffic.",
-                "Default mixed-use profile.",
-                "Larger buffers for sustained transfers.",
+                "Protected", "Route ready", "Connected", "Disconnecting", "Error",
             )
             collector.toList()
         }

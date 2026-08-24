@@ -7,6 +7,7 @@
 package com.fixcraft.yume.share
 
 import com.fixcraft.basefwx.FwxAES
+import com.fixcraft.basefwx.Constants
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -56,6 +57,8 @@ object ShareFile {
         val obfsJitterMs: Int = 0,
         val tlsPinSha256: String = "",
         val tlsStealthProfile: String = "",
+        val tlsCaCertPem: String = "",
+        val tlsServerName: String = "",
         // Operator-identity trust material + PQ (legacy serialized field names).
         val anonymCaCertPem: String = "",
         val anonymPubkey: String = "",
@@ -66,6 +69,8 @@ object ShareFile {
         val innerHop: Boolean = true,
         val innerPsk: String = "",
         val hopIntervalMs: Int = 500,
+        val tunnelCount: Int = 1,
+        val requireOperatorIdentity: Boolean = false,
         val allowUdp: Boolean = false,
         val allowLocalIp: Boolean = false,
     )
@@ -99,7 +104,9 @@ object ShareFile {
      * the caller can log.
      */
     fun encode(bundle: Bundle, password: String): ByteArray {
-        require(password.isNotEmpty()) { "password must not be empty" }
+        require(password.length >= Constants.SHORT_PASSWORD_MIN) {
+            "password must be at least ${Constants.SHORT_PASSWORD_MIN} characters"
+        }
         require(bundle.serverHost.isNotBlank()) { "bundle missing server host" }
         require(bundle.serverPort in 1..65535) { "bundle has invalid server port" }
         // No auth-key requirement here: an info-only backup (server
@@ -184,6 +191,13 @@ object ShareFile {
         if (b.tlsStealthProfile.isNotEmpty()) stealth.put("tls_stealth_profile", b.tlsStealthProfile)
         out.put("stealth", stealth)
 
+        if (b.tlsCaCertPem.isNotEmpty() || b.tlsServerName.isNotEmpty()) {
+            val tls = JSONObject()
+            if (b.tlsCaCertPem.isNotEmpty()) tls.put("ca_cert_pem", b.tlsCaCertPem)
+            if (b.tlsServerName.isNotEmpty()) tls.put("server_name", b.tlsServerName)
+            out.put("tls", tls)
+        }
+
         if (b.anonymCaCertPem.isNotEmpty() || b.anonymPubkey.isNotEmpty()) {
             val anonym = JSONObject()
             if (b.anonymCaCertPem.isNotEmpty()) anonym.put("ca_cert_pem", b.anonymCaCertPem)
@@ -200,6 +214,8 @@ object ShareFile {
             .put("inner_hop",      b.innerHop)
             .put("inner_psk",      b.innerPsk)
             .put("hop_interval_ms", b.hopIntervalMs)
+            .put("tunnels", b.tunnelCount.coerceIn(1, 16))
+            .put("require_operator_identity", b.requireOperatorIdentity)
             .put("allow_udp",      b.allowUdp)
             .put("allow_local_ip", b.allowLocalIp))
         return out
@@ -224,9 +240,11 @@ object ShareFile {
         val auth = j.optJSONObject("auth")
         val stealth = j.optJSONObject("stealth")
         val anonym = j.optJSONObject("anonym")
+        val tls = j.optJSONObject("tls")
         val pq = j.optJSONObject("pq")
         val cs = j.optJSONObject("client_settings")
 
+        val operatorCa = anonym?.optString("ca_cert_pem").orEmpty()
         return Bundle(
             type = typeByte,
             createdAtIso8601 = j.optString("created_at"),
@@ -241,7 +259,9 @@ object ShareFile {
             obfsJitterMs       = stealth?.optInt("obfs_jitter_ms", 0) ?: 0,
             tlsPinSha256       = stealth?.optString("tls_pin_sha256").orEmpty(),
             tlsStealthProfile  = stealth?.optString("tls_stealth_profile").orEmpty(),
-            anonymCaCertPem    = anonym?.optString("ca_cert_pem").orEmpty(),
+            tlsCaCertPem       = tls?.optString("ca_cert_pem").orEmpty().ifBlank { operatorCa },
+            tlsServerName      = tls?.optString("server_name").orEmpty(),
+            anonymCaCertPem    = operatorCa,
             anonymPubkey       = anonym?.optString("pubkey").orEmpty(),
             pqPublicKeyPem     = pq?.optString("public_key_pem").orEmpty(),
             innerCrypto        = cs?.optBoolean("inner_crypto", true) ?: true,
@@ -249,6 +269,10 @@ object ShareFile {
             innerHop           = cs?.optBoolean("inner_hop", true) ?: true,
             innerPsk           = cs?.optString("inner_psk").orEmpty(),
             hopIntervalMs      = cs?.optInt("hop_interval_ms", 500) ?: 500,
+            tunnelCount        = (cs?.optInt("tunnels", 1) ?: 1).coerceIn(1, 16),
+            requireOperatorIdentity = cs?.optBoolean(
+                "require_operator_identity", operatorCa.isNotEmpty(),
+            ) ?: operatorCa.isNotEmpty(),
             allowUdp           = cs?.optBoolean("allow_udp", false) ?: false,
             allowLocalIp       = cs?.optBoolean("allow_local_ip", false) ?: false,
         )

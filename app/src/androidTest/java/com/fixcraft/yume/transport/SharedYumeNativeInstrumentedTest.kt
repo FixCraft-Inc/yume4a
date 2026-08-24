@@ -14,7 +14,7 @@ class SharedYumeNativeInstrumentedTest {
         SharedYumeNative { true }.use { native ->
             val build = native.buildInfo
             assertEquals(1, build.abiVersion)
-            assertEquals("2.0-dev1", build.yumeVersion)
+            assertEquals("0.2.0-dev6", build.yumeVersion)
             assertFalse(build.pqBackend.equals("unavailable", ignoreCase = true))
             assertTrue(build.featureFlags and 0x10 != 0)
             assertTrue(build.featureFlags and 0x20 != 0)

@@ -296,7 +296,7 @@ class SharedYumeNative(
 
         private const val STATUS_INTERNAL_ERROR = -3
         private const val REQUIRED_ABI_VERSION = 1
-        private const val REQUIRED_YUME_VERSION = "2.0-dev1"
+        private const val REQUIRED_YUME_VERSION = "0.2.0-dev6"
         private const val FEATURE_PQ_MLKEM1024 = 0x10
         private const val FEATURE_PACKET_BULK = 0x20
         private const val MIN_PACKET_MTU = 576

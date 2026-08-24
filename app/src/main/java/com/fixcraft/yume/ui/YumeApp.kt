@@ -58,9 +58,7 @@ import com.fixcraft.yume.MainUiState
 import com.fixcraft.yume.BusyUiState
 import com.fixcraft.yume.R
 import com.fixcraft.yume.data.AppLanguage
-import com.fixcraft.yume.data.ConnectionTechnique
 import com.fixcraft.yume.data.LogLanguage
-import com.fixcraft.yume.data.PerformanceProfile
 import com.fixcraft.yume.data.ThemeColorMode
 import com.fixcraft.yume.i18n.ProvideAppStrings
 import com.fixcraft.yume.i18n.appStrings
@@ -106,7 +104,7 @@ fun YumeApp(
     onDisconnect: () -> Unit,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, String, String, String, Boolean, String, String, String, String, String, String) -> String?,
     onImportCaFile: () -> Unit,
     onImportAuthKeyFile: () -> Unit,
     onSaveCaText: suspend (String, String) -> String?,
@@ -119,12 +117,6 @@ fun YumeApp(
     onDismissAuthKeyUnlock: () -> Unit,
     onUnlockAuthKey: (String) -> Unit,
     onDeleteMaterial: (String) -> Unit,
-    onSelectTechnique: (ConnectionTechnique) -> Unit,
-    onSelectPerformanceProfile: (PerformanceProfile) -> Unit,
-    onSelectSocks5BindMode: (com.fixcraft.yume.data.Socks5BindMode) -> Unit,
-    onUpdateSocks5BindAddress: (String) -> Unit,
-    onUpdateSocks5Port: (Int) -> Unit,
-    onUpdateSocks5TunnelCount: (Int) -> Unit,
     onSelectThemeColorMode: (ThemeColorMode) -> Unit,
     onSetAmoledDarkTheme: (Boolean) -> Unit,
     isDarkTheme: Boolean,
@@ -134,7 +126,6 @@ fun YumeApp(
     onSelectLanguage: (AppLanguage) -> Unit,
     onSelectLogLanguage: (LogLanguage) -> Unit,
     onSetAdvancedMode: (Boolean) -> Unit,
-    onSetSelfDpiEnabled: (Boolean) -> Unit,
     onDeleteDownloadedLanguage: (AppLanguage.AutoTranslated) -> Unit,
     languagePreparationState: LanguagePreparationUiState?,
     busyState: BusyUiState?,
@@ -258,12 +249,6 @@ fun YumeApp(
                 composable(AppRoute.Settings) {
                     SettingsScreen(
                         uiState = uiState,
-                        onSelectTechnique = onSelectTechnique,
-                        onSelectPerformanceProfile = onSelectPerformanceProfile,
-                        onSelectSocks5BindMode = onSelectSocks5BindMode,
-                        onUpdateSocks5BindAddress = onUpdateSocks5BindAddress,
-                        onUpdateSocks5Port = onUpdateSocks5Port,
-                        onUpdateSocks5TunnelCount = onUpdateSocks5TunnelCount,
                         onSelectThemeColorMode = onSelectThemeColorMode,
                         onSetAmoledDarkTheme = onSetAmoledDarkTheme,
                         isDarkTheme = isDarkTheme,
@@ -297,7 +282,6 @@ fun YumeApp(
                     DiagnosticsScreen(
                         uiState = uiState,
                         diagnosticsReport = diagnosticsReport,
-                        onSetSelfDpiEnabled = onSetSelfDpiEnabled,
                     )
                 }
             }

@@ -98,7 +98,6 @@ internal data class ProfileDraft(
     val host: String = "",
     val port: String = "443",
     val sni: String = "",
-    val obfuscation: Boolean = true,
     val obfsSecret: String = "",
     val dnsServers: String = "1.1.1.1, 9.9.9.9",
     val mtu: String = "1500",
@@ -137,7 +136,7 @@ fun HomeScreen(
     onDisconnect: () -> Unit,
     onSelectProfile: (String) -> Unit,
     onDeleteProfile: (String) -> Unit,
-    onSaveProfile: suspend (String?, String, String, String, String, Boolean, String, String, String, Boolean, String, String, String, String, String, String) -> String?,
+    onSaveProfile: suspend (String?, String, String, String, String, String, String, String, Boolean, String, String, String, String, String, String) -> String?,
     onImportCaFile: () -> Unit,
     onImportAuthKeyFile: () -> Unit,
     onSaveCaText: suspend (String, String) -> String?,
@@ -320,7 +319,6 @@ fun HomeScreen(
                     updated.host,
                     updated.port,
                     updated.sni,
-                    updated.obfuscation,
                     updated.obfsSecret,
                     updated.dnsServers,
                     updated.mtu,
@@ -533,28 +531,15 @@ private fun SelectedServerCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "${strings.relayShortLabel}: ${uiState.vpnState.relaySummary}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (uiState.vpnState.exitIp == null) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-            Text(
                 text = "${strings.routingShortLabel}: ${
                     when {
                         uiState.vpnState.trafficRoutedThroughYume -> strings.tunnelActive
-                        uiState.vpnState.localProxyAddress != null -> strings.phaseStatus(VpnPhase.Verifying, protected = false, proxyReady = false)
-                        else -> strings.phaseStatus(VpnPhase.Idle, protected = false, proxyReady = false)
+                        uiState.vpnState.activeRouteLabel != null -> strings.phaseStatus(VpnPhase.Verifying, protected = false, routeReady = false)
+                        else -> strings.phaseStatus(VpnPhase.Idle, protected = false, routeReady = false)
                     }
-                }",
+                }${uiState.vpnState.activeRouteLabel?.let { "  •  $it" }.orEmpty()}",
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (uiState.vpnState.trafficRoutedThroughYume || uiState.vpnState.localProxyAddress != null) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.error
-                },
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
                 text = "${strings.anonymCaLabel}: ${selectedCa?.displayName ?: strings.missing}",
@@ -565,11 +550,6 @@ private fun SelectedServerCard(
                 text = "${strings.authKeyLabel}: ${selectedAuthKey?.displayName ?: strings.notAssigned}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (selectedAuthKey == null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = "${strings.httpsMaskingLabel}: ${if (profile.obfuscation) strings.enabled else strings.disabled}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             profile.notes.takeIf { it.isNotBlank() }?.let { notes ->
@@ -1208,10 +1188,10 @@ private fun StatusDialog(
     }
     val routingValue = if (uiState.vpnState.trafficRoutedThroughYume) {
         strings.tunnelActive
-    } else if (uiState.vpnState.localProxyAddress != null) {
-        strings.phaseStatus(VpnPhase.Verifying, protected = false, proxyReady = false)
+    } else if (uiState.vpnState.activeRouteLabel != null) {
+        strings.phaseStatus(VpnPhase.Verifying, protected = false, routeReady = false)
     } else {
-        strings.phaseStatus(VpnPhase.Idle, protected = false, proxyReady = false)
+        strings.phaseStatus(VpnPhase.Idle, protected = false, routeReady = false)
     }
 
     AlertDialog(
@@ -1236,15 +1216,14 @@ private fun StatusDialog(
                 StatusFactRow(strings.protectionShortLabel, uiState.vpnState.requestedProtection)
                 StatusFactRow(strings.serverModeLabel, uiState.vpnState.serverMode ?: strings.unknown)
                 StatusFactRow(strings.innerLabel, uiState.vpnState.innerSummary)
-                StatusFactRow(strings.hopLabel, uiState.vpnState.hopSummary)
+                StatusFactRow(strings.ratchetLabel, uiState.vpnState.ratchetSummary)
                 StatusFactRow(strings.verityLabel, uiState.vpnState.veritySummary)
-                StatusFactRow(strings.relayShortLabel, uiState.vpnState.relaySummary)
                 StatusFactRow(strings.exitIpLabel, uiState.vpnState.exitIp ?: strings.unknown)
-                StatusFactRow(strings.localSocks5Label, uiState.vpnState.localProxyAddress ?: strings.unavailable)
+                StatusFactRow(strings.routeLabel, uiState.vpnState.activeRouteLabel ?: strings.unavailable)
                 StatusFactRow(strings.peerCertLabel, uiState.vpnState.peerCertificateFingerprint ?: strings.unknown)
                 StatusFactRow(strings.routingShortLabel, routingValue)
                 StatusFactRow(strings.loopSafeLabel, strings.boolValue(uiState.vpnState.controlSocketProtected))
-                StatusFactRow(strings.interfaceLabel, if (uiState.vpnState.vpnInterfaceEstablished) strings.established else strings.phaseStatus(VpnPhase.Idle, protected = false, proxyReady = false))
+                StatusFactRow(strings.interfaceLabel, if (uiState.vpnState.vpnInterfaceEstablished) strings.established else strings.phaseStatus(VpnPhase.Idle, protected = false, routeReady = false))
                 StatusFactRow(strings.backgroundLabel, if (batteryExempt) strings.unrestricted else strings.batteryOptimized)
                 StatusFactRow(strings.upstreamLabel, uiState.vpnState.upstreamNetworkLabel ?: strings.unavailable)
                 StatusFactRow(strings.endpointLabel, selectedProfile?.endpointLabel ?: strings.noServerSelected)
@@ -1418,105 +1397,88 @@ internal fun ProfileEditorDialog(
                         Text(strings.tlsServerNameHelper)
                     },
                 )
+                // Posture is stated, not offered: the shared native client
+                // refuses a profile without the carrier and both 32-byte
+                // secrets, so the only real inputs are the secrets themselves.
                 Surface(
                     shape = RoundedCornerShape(18.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                localDraft = localDraft.copy(obfuscation = !localDraft.obfuscation)
-                            }
                             .padding(horizontal = 14.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            Text(
-                                text = "YUME 2.0 authenticated carrier",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                text = if (localDraft.obfuscation) {
-                                    "Required TLS 1.3 + HTTP/2 + WebSocket carrier"
-                                } else {
-                                    "Enable this to use exact YUME 2.0"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            modifier = Modifier.align(Alignment.Top),
-                            checked = localDraft.obfuscation,
-                            onCheckedChange = { checked ->
-                                localDraft = localDraft.copy(obfuscation = checked)
-                            },
-                        )
-                    }
-                }
-                if (localDraft.obfuscation) {
-                    OutlinedTextField(
-                        value = localDraft.obfsSecret,
-                        onValueChange = { localDraft = localDraft.copy(obfsSecret = it) },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("YUME 2.0 admission secret") },
-                        singleLine = true,
-                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                        supportingText = {
-                            Text("Required: 64 lowercase hex characters")
-                        },
-                    )
-                    OutlinedTextField(
-                        value = localDraft.innerPsk,
-                        onValueChange = { localDraft = localDraft.copy(innerPsk = it) },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("YUME 2.0 inner PSK") },
-                        singleLine = true,
-                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                        supportingText = { Text("Required: 64 lowercase hex characters") },
-                    )
-                    OutlinedTextField(
-                        value = localDraft.tlsPinSha256,
-                        onValueChange = { localDraft = localDraft.copy(tlsPinSha256 = it) },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("TLS leaf SHA-256 pin (optional)") },
-                        singleLine = true,
-                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                        supportingText = { Text("64 lowercase hex characters when set") },
-                    )
-                    // This configures the shared native TLS profile. Kotlin
-                    // does not synthesize ClientHello or HTTP/2 carrier bytes.
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            text = "TLS stealth profile",
+                            text = strings.transportSecurityTitle,
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            ServerProfile.TLS_STEALTH_PROFILE_OPTIONS.forEach { option ->
-                                FilterChip(
-                                    selected = localDraft.tlsStealthProfile == option,
-                                    onClick = { localDraft = localDraft.copy(tlsStealthProfile = option) },
-                                    label = { Text(option.replaceFirstChar { it.uppercaseChar() }) },
-                                    colors = FilterChipDefaults.filterChipColors(),
-                                )
-                            }
-                        }
                         Text(
-                            text = "Applied by the shared native YUME transport.",
+                            text = strings.transportSecurityFixedDescription,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                }
+                OutlinedTextField(
+                    value = localDraft.obfsSecret,
+                    onValueChange = { localDraft = localDraft.copy(obfsSecret = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(strings.admissionSecretLabel) },
+                    singleLine = true,
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    supportingText = {
+                        Text("${strings.admissionSecretHelper} ${strings.hex64Requirement}.")
+                    },
+                )
+                OutlinedTextField(
+                    value = localDraft.innerPsk,
+                    onValueChange = { localDraft = localDraft.copy(innerPsk = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(strings.innerPskLabel) },
+                    singleLine = true,
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    supportingText = {
+                        Text("${strings.innerPskHelper} ${strings.hex64Requirement}.")
+                    },
+                )
+                OutlinedTextField(
+                    value = localDraft.tlsPinSha256,
+                    onValueChange = { localDraft = localDraft.copy(tlsPinSha256 = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(strings.tlsPinLabel) },
+                    singleLine = true,
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    supportingText = { Text(strings.tlsPinHelper) },
+                )
+                // Selects the shared native TLS/H2 fixture. Kotlin never
+                // synthesizes ClientHello or carrier bytes itself.
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = strings.tlsProfileLabel,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        ServerProfile.TLS_STEALTH_PROFILE_OPTIONS.forEach { option ->
+                            FilterChip(
+                                selected = localDraft.tlsStealthProfile == option,
+                                onClick = { localDraft = localDraft.copy(tlsStealthProfile = option) },
+                                label = { Text(option.replaceFirstChar { it.uppercaseChar() }) },
+                                colors = FilterChipDefaults.filterChipColors(),
+                            )
+                        }
+                    }
+                    Text(
+                        text = strings.tlsProfileHelper,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 OutlinedTextField(
                     value = localDraft.dnsServers,
@@ -2128,7 +2090,6 @@ internal fun ServerProfile.toDraft(): ProfileDraft {
         host = host,
         port = port.toString(),
         sni = sni,
-        obfuscation = obfuscation,
         obfsSecret = obfsSecret,
         dnsServers = dnsServers.joinToString(", "),
         mtu = mtu.toString(),

@@ -1,6 +1,9 @@
 package com.fixcraft.yume.vpn
 
 import android.os.ParcelFileDescriptor
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import com.fixcraft.yume.data.ConnectionTechnique
 import com.fixcraft.yume.transport.YumePacketStreamOpen
 import com.fixcraft.yume.transport.YumePacketBulk
@@ -18,8 +21,9 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import java.io.FileInputStream
-import java.io.FileOutputStream
+import java.io.FileDescriptor
 import java.io.IOException
+import java.io.FileOutputStream
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -75,7 +79,7 @@ internal class SharedYumePacketEngine(
         tunRead = ParcelFileDescriptor.dup(tun.fileDescriptor)
         tunWrite = ParcelFileDescriptor.dup(tun.fileDescriptor)
         val input = FileInputStream(requireNotNull(tunRead).fileDescriptor)
-        val output = FileOutputStream(requireNotNull(tunWrite).fileDescriptor)
+        val output = requireNotNull(tunWrite).fileDescriptor
         outboundThread = Thread({ runTunToNative(input) }, "yume-tun-to-native").apply { start() }
         inboundThread = Thread({ runNativeToTun(output) }, "yume-native-to-tun").apply { start() }
         log(
@@ -197,7 +201,7 @@ internal class SharedYumePacketEngine(
         }
     }
 
-    private fun runNativeToTun(output: FileOutputStream) {
+    private fun runNativeToTun(output: FileDescriptor) {
         var storage = ByteBuffer.allocateDirect(BATCH_STORAGE_BYTES)
         val offsets = IntArray(SharedYumeNative.MAX_BATCH_PACKETS)
         val lengths = IntArray(SharedYumeNative.MAX_BATCH_PACKETS)
@@ -209,12 +213,13 @@ internal class SharedYumePacketEngine(
                 when (result.status) {
                     SharedYumeNative.STATUS_OK -> {
                         for (index in 0 until result.packetCount) {
+                            val offset = offsets[index]
                             val length = lengths[index]
-                            val packet = ByteArray(length)
-                            storage.position(offsets[index])
-                            storage.get(packet)
-                            if (!isCompleteIpv4(packet, length)) continue
-                            writeTunPacket(output, packet)
+                            if (!isCompleteIpv4(storage, offset, length)) continue
+                            storage.position(offset)
+                            storage.limit(offset + length)
+                            writeTunPacket(output, storage.slice(), length)
+                            storage.clear()
                             rxPackets.incrementAndGet()
                             rxBytes.addAndGet(length.toLong())
                         }
@@ -235,18 +240,22 @@ internal class SharedYumePacketEngine(
             Thread.currentThread().interrupt()
         } catch (error: Throwable) {
             failWorker("native-to-TUN", error)
-        } finally {
-            runCatching { output.close() }
         }
     }
 
-    private fun writeTunPacket(output: FileOutputStream, packet: ByteArray) {
+    private fun writeTunPacket(output: FileDescriptor, packet: ByteBuffer, length: Int) {
         while (running.get()) {
+            packet.position(0)
             try {
-                output.write(packet)
+                val written = Os.write(output, packet)
+                if (written != length) {
+                    throw IOException("Short Android TUN packet write: $written/$length bytes")
+                }
                 return
-            } catch (error: IOException) {
-                if (!isWouldBlockMessage(error)) throw error
+            } catch (error: ErrnoException) {
+                if (error.errno != OsConstants.EAGAIN) {
+                    throw IOException("Android TUN write failed", error)
+                }
                 Thread.sleep(1)
             }
         }
@@ -272,6 +281,16 @@ internal class SharedYumePacketEngine(
         val headerLength = (packet[0].toInt() and 0x0f) * 4
         val totalLength = ((packet[2].toInt() and 0xff) shl 8) or
             (packet[3].toInt() and 0xff)
+        return headerLength in 20..length && totalLength == length
+    }
+
+    private fun isCompleteIpv4(packet: ByteBuffer, offset: Int, length: Int): Boolean {
+        if (offset < 0 || length < 20 || offset > packet.capacity() - length) return false
+        val first = packet.get(offset).toInt() and 0xff
+        if (first ushr 4 != 4) return false
+        val headerLength = (first and 0x0f) * 4
+        val totalLength = ((packet.get(offset + 2).toInt() and 0xff) shl 8) or
+            (packet.get(offset + 3).toInt() and 0xff)
         return headerLength in 20..length && totalLength == length
     }
 
@@ -570,7 +589,7 @@ internal class NativeDirectTechniqueDataPlane(
     private val runtimeConfig: NativeDirectRuntimeConfig,
     private val packetEngine: NativeDirectPacketEngine,
 ) : TechniqueDataPlane {
-    override val technique: ConnectionTechnique = ConnectionTechnique.NativeDirectBeta
+    override val technique: ConnectionTechnique = ConnectionTechnique.SharedNativePacket
     override val summary: String = runtimeConfig.summary
 
     override suspend fun start() {
@@ -586,6 +605,4 @@ internal class NativeDirectTechniqueDataPlane(
     }
 
     override fun stats(): TechniqueStats? = packetEngine.stats()
-
-    override fun diagnosticsSummary(): String = runtimeConfig.diagnosticsSummary
 }
