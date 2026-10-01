@@ -622,7 +622,6 @@ class YumeVpnService : VpnService() {
         // lifecycle transition on every reconnect.
         runCatching { sharedClient?.close() }
         runCatching { sharedConfig?.close() }
-        runCatching { configureNativeDirectTransport(enabled = false) }
         runCatching { pool?.closeAll() ?: session?.close() }
         runCatching { inFlightSocket?.close() }
         runCatching { tunInterface?.close() }

@@ -482,7 +482,6 @@ internal object LanguageUk : LanguageBundle {
         "Route ready" to "Маршрут готовий",
         "Starting the shared YUME client." to "Запуск спільного клієнта YUME.",
         "Shared native packet transport is connected. Android device traffic, lifecycle, and throughput gates are still open." to "Спільний нативний пакетний транспорт підключено. Перевірки трафіку, життєвого циклу та пропускної здатності на пристроях Android ще не пройдено.",
-        "TUN-to-SOCKS user-space stack from the legacy tun2socks engine. Still packaged, but not on the shared native packet data path. Heavily edited for YUME; upstream is no longer tracked." to "Користувацький TUN→SOCKS-стек зі застарілого рушія tun2socks. Досі входить до пакета, але не бере участі у спільному нативному пакетному тракті даних. Сильно змінений для YUME; апстрим більше не відстежується.",
         "JVM-side TLS provider wrapping BoringSSL. The YUME carrier's TLS lives in the shared native client, not here." to "TLS-провайдер на боці JVM поверх BoringSSL. TLS несучого каналу YUME міститься у спільному нативному клієнті, а не тут.",
     )
 }

@@ -500,10 +500,6 @@ class AppStrings private constructor(
     val componentLiboqsUsage = t("Post-quantum primitives (ML-KEM, ML-DSA) consumed through BaseFWX.")
     val componentLiboqsLicense = "MIT"
 
-    val componentHevTunnelTitle = "hev-socks5-tunnel · hev-task-system · lwIP"
-    val componentHevTunnelUsage = t("TUN-to-SOCKS user-space stack from the legacy tun2socks engine. Still packaged, but not on the shared native packet data path. Heavily edited for YUME; upstream is no longer tracked.")
-    val componentHevTunnelLicense = "MIT · MIT · BSD-3-Clause"
-
     val componentConscryptTitle = "Conscrypt"
     val componentConscryptUsage = t("JVM-side TLS provider wrapping BoringSSL. The YUME carrier's TLS lives in the shared native client, not here.")
     val componentConscryptLicense = "Apache-2.0"

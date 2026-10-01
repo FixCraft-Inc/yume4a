@@ -10,7 +10,7 @@
 #
 # Why a shell script instead of CMake's ExternalProject_Add: Android
 # Gradle Plugin only allows ONE externalNativeBuild path per module
-# (we already use ndk-build for yume-route-core), so the OpenSSL build
+# (we already use ndk-build for the shared YUME JNI adapter), so the OpenSSL build
 # has to happen OUTSIDE the AGP native-build phase. This script is
 # invoked by a Gradle task that runs before externalNativeBuild starts.
 

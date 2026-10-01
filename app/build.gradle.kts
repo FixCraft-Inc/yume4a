@@ -215,7 +215,7 @@ android {
 
     externalNativeBuild {
         ndkBuild {
-            path = file("src/main/jni/yume-route-core/Android.mk")
+            path = file("src/main/jni/shared-yume/Android.mk")
         }
     }
 

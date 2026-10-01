@@ -57,11 +57,6 @@ fun OpenSourceComponentsScreen() {
             blurb = strings.componentGroupAndroidOnlyBlurb,
             entries = listOf(
                 ComponentEntry(
-                    title = strings.componentHevTunnelTitle,
-                    description = strings.componentHevTunnelUsage,
-                    license = strings.componentHevTunnelLicense,
-                ),
-                ComponentEntry(
                     title = strings.componentConscryptTitle,
                     description = strings.componentConscryptUsage,
                     license = strings.componentConscryptLicense,
