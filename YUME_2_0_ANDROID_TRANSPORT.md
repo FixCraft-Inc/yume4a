@@ -187,6 +187,14 @@ retired Kotlin wire; all three are gone. The status sheet reports Route rather
 than "Local SOCKS5" and Ratchet rather than "Hop", and no longer shows a relay
 canary row the packet path never fills.
 
+The source no longer builds or credits the former hev-derived SOCKS-to-TUN
+native stack. The current ARM64 `directAgent` APK proves it is no longer
+packaged; Android's new ndk-build input contains only the shared `libyume.so`
+prebuilt and the narrow `libyumeandroid.so` JNI adapter. The next ordinary
+release APK must repeat that package gate. Retired Kotlin wire sources remain
+separate cleanup debt, but they are not selectable or part of the supported
+native routing path.
+
 The maintained Russian, Japanese, and Ukrainian bundles cover every English
 source string; `AppStringsTranslationTest` enforces that at build time.
 
@@ -201,7 +209,57 @@ A Gradle configuration-only check may need network access when the Foojay
 toolchain plugin is absent from the local cache. Full APK/device validation is
 still a separate gate even when Kotlin and the selected native ABI compile.
 
+When the operator explicitly authorizes a bounded local physical-device run,
+`tools/android-agent.sh` builds and controls the isolated `directAgent` APK.
+See `ANDROID_AGENT_TESTING.md`. Its structured snapshot exposes the actual
+`YumeVpnRuntime` state, packet totals/rates, connection milestones, process
+resources, and event log; its network benchmark runs inside the Android VPN
+path. The agent manifest is not merged into release/debug APKs, and one-time
+VPN consent remains an Android-controlled user action.
+
 ## Required remote/device gates
+
+### Current bounded physical-device evidence
+
+On the attached Pixel 9 Pro (Android 17/API 37, arm64-v8a), the isolated
+`directAgent` APK builds with two Gradle workers and a 4-GiB heap, installs, and
+reports the loaded native boundary: ABI 1, feature flags 63, exact YUME
+`0.2.0-dev6`, BaseFWX `3.8.0-dev1`, and an available ML-KEM backend. The APK
+packages `libyume.so`, `libyumeandroid.so`, and `libc++_shared.so`, not the
+removed route core. A full local self-test, a 120-second sustained workload,
+three quick runs, repeated native create/stop/close, and bounded idle command
+loops pass without continuing fd/thread growth. Ordinary debug/release merged
+manifests contain no ADB-agent component.
+
+The exact full run completed in 147.886 seconds. Its eight-thread diagnostic
+rows measured 1,234.7 MiB/s packet-bulk encode, 924.8 MiB/s packet-bulk decode,
+and 723.9 MiB/s during the 120-second mixed workload. Three 1-thread quick runs
+measured a cold post-install 201.8/284.5 MiB/s and warm 411.6/420.1 and
+404.2/411.7 MiB/s packet encode/decode; the three-run medians are 404.2/411.7.
+These rows exercise the Kotlin `YumePacketBulk` diagnostic and BaseFWX Java
+paths in the debuggable agent. They do **not** exercise the supported
+TUN -> `SharedYumePacketEngine` -> native `libyume.so` network route and must
+not be published as VPN throughput or compared directly with desktop C++
+component rows.
+
+For orientation only, an exact-current regular-core refresh on the i9-14900K
+host measured 15,763.0/15,223.9 MiB/s median packet-bulk encode/decode in the
+same 1-thread/32-MiB component geometry, and 239.4/252.1 Mbit/s median
+upload/download through the production DATA/ratchet/H2/WebSocket/TLS path at
+60 ms RTT. The first pair is different code on different hardware; the second
+pair excludes the packet ABI, TUN, Android framework, JNI, and device network.
+Neither is a valid Android/core speed ratio. The supported Android route remains
+performance-unclassified until the connected in-app benchmark and matched
+packet-ABI/TUN test can run.
+
+This is deliberately not routed-VPN acceptance. The isolated vault has no
+operator-approved profile, and no approved `.yss`/password or generated server
+kit was present on the authorized hosts. Real connect, traffic, exit/DNS/IPv6,
+timing/throughput, connected lifecycle/backpressure, and server/credential
+negative gates remain open. The Android build also currently reports liboqs
+0.15.0 from the pinned official vcpkg registry while YUME dependency metadata
+declares 0.16.0 as the minimum; release provenance remains open until that is
+resolved without an unreviewed dependency fork.
 
 On the confirmed build host, copy both repositories into an isolated exact
 snapshot without overwriting a live checkout, retain the YUME Git metadata

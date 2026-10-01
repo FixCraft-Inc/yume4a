@@ -181,6 +181,9 @@ android {
         // mandatory: there is no Kotlin-wire or tun2socks fallback when
         // packet_bulk_v1 is unavailable, so neither is a build option.
         buildConfigField("String", "YUME_PROTECTION_POLICY", "\"Exact YUME $yumeProtocolVersion\"")
+        // ADB automation is compiled only into the dedicated `agent` build
+        // type below. Production and ordinary debug APKs fail closed.
+        buildConfigField("boolean", "ENABLE_ADB_TEST_CONTROL", "false")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -227,6 +230,15 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        create("agent") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".agent"
+            versionNameSuffix = "-agent"
+            isDebuggable = true
+            signingConfig = signingConfigs.getByName("debug")
+            buildConfigField("boolean", "ENABLE_ADB_TEST_CONTROL", "true")
+            matchingFallbacks += listOf("release")
         }
     }
 

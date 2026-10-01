@@ -16,6 +16,7 @@
 .DS_Store
 /build
 /captures
+/artifacts/android-agent/
 .externalNativeBuild
 .cxx
 local.properties

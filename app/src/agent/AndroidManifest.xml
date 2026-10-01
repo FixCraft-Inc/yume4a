@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- A foreground activity is used because current Android versions do
+             not allow a background broadcast receiver to launch an FGS. The
+             activity is transparent and immediately finishes after dispatch. -->
+        <activity
+            android:name="com.fixcraft.yume.agent.AgentCommandActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:theme="@style/Theme.Yume.Agent.Transparent">
+            <intent-filter>
+                <action android:name="com.fixcraft.yume.agent.SNAPSHOT" />
+                <action android:name="com.fixcraft.yume.agent.PROFILES" />
+                <action android:name="com.fixcraft.yume.agent.CONNECT" />
+                <action android:name="com.fixcraft.yume.agent.DISCONNECT" />
+                <action android:name="com.fixcraft.yume.agent.IMPORT_BUNDLE" />
+                <action android:name="com.fixcraft.yume.agent.SELF_TEST" />
+                <action android:name="com.fixcraft.yume.agent.NETWORK_BENCH" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name="com.fixcraft.yume.agent.AgentCommandService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="ADB-controlled Yume test and benchmark command" />
+        </service>
+
+        <activity
+            android:name="com.fixcraft.yume.agent.AgentVpnConsentActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:theme="@style/Theme.YumeVPN" />
+    </application>
+</manifest>
