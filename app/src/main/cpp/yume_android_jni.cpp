@@ -121,7 +121,7 @@ int socket_protector(std::intptr_t socket_handle, void* user_data) {
     bool attached = false;
     const jint env_status = g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
     if (env_status == JNI_EDETACHED) {
-        if (g_vm->AttachCurrentThread(reinterpret_cast<void**>(&env), nullptr) != JNI_OK) return 0;
+        if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return 0;
         attached = true;
     } else if (env_status != JNI_OK || !env) {
         return 0;
