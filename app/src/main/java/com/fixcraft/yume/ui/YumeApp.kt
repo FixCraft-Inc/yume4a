@@ -58,21 +58,17 @@ import com.fixcraft.yume.MainUiState
 import com.fixcraft.yume.BusyUiState
 import com.fixcraft.yume.R
 import com.fixcraft.yume.data.AppLanguage
-import com.fixcraft.yume.data.LogLanguage
+import com.fixcraft.yume.data.KitImport
 import com.fixcraft.yume.data.ThemeColorMode
 import com.fixcraft.yume.i18n.ProvideAppStrings
 import com.fixcraft.yume.i18n.appStrings
-import com.fixcraft.yume.ui.diagnostics.DiagnosticsScreen
-import com.fixcraft.yume.ui.home.AuthKeyImportDialog
-import com.fixcraft.yume.ui.home.AuthKeyUnlockDialog
-import com.fixcraft.yume.ui.home.HomeDashboardScreen
-import com.fixcraft.yume.ui.home.PendingAuthKeyImport
-import com.fixcraft.yume.ui.security.SecurityScreen
-import com.fixcraft.yume.ui.servers.ServersScreen
+import com.fixcraft.yume.ui.kits.KitsScreen
+import com.fixcraft.yume.ui.logs.LogsScreen
+import com.fixcraft.yume.ui.overview.OverviewScreen
+import com.fixcraft.yume.ui.posture.PostureScreen
 import com.fixcraft.yume.ui.settings.CreditsScreen
 import com.fixcraft.yume.ui.settings.OpenSourceComponentsScreen
 import com.fixcraft.yume.ui.settings.SettingsScreen
-import com.fixcraft.yume.ui.tools.ToolsScreen
 
 private data class TopLevelDestination(
     val route: String,
@@ -81,12 +77,11 @@ private data class TopLevelDestination(
 )
 
 private object AppRoute {
-    const val Home = "home"
-    const val Servers = "servers"
-    const val Security = "security"
-    const val Tools = "tools"
+    const val Overview = "overview"
+    const val Connect = "connect"
+    const val Logs = "logs"
+    const val Posture = "posture"
     const val Settings = "settings"
-    const val Diagnostics = "diagnostics"
     const val Credits = "credits"
     const val Components = "components"
 }
@@ -102,21 +97,13 @@ fun YumeApp(
     uiState: MainUiState,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
-    onSelectProfile: (String) -> Unit,
-    onDeleteProfile: (String) -> Unit,
-    onSaveProfile: suspend (String?, String, String, String, String, String, String, String, Boolean, String, String, String, String, String, String) -> String?,
-    onImportCaFile: () -> Unit,
-    onImportAuthKeyFile: () -> Unit,
-    onSaveCaText: suspend (String, String) -> String?,
-    onSaveAuthKeyText: suspend (String, String, Boolean, String) -> String?,
-    pendingAuthKeyImport: PendingAuthKeyImport?,
-    onImportAuthKeyPayload: suspend (String, ByteArray, Boolean, String) -> String?,
-    onDismissAuthKeyImport: () -> Unit,
-    pendingAuthKeyUnlockName: String?,
-    pendingAuthKeyUnlockError: String?,
-    onDismissAuthKeyUnlock: () -> Unit,
-    onUnlockAuthKey: (String) -> Unit,
-    onDeleteMaterial: (String) -> Unit,
+    onSelectKit: (String) -> Unit,
+    onRenameKit: (String, String) -> Unit,
+    onDeleteKit: (String) -> Unit,
+    onImportKit: suspend (ByteArray, CharArray, String) -> KitImport,
+    onReportNotice: (String) -> Unit,
+    onBuildReport: () -> String,
+    onClearLog: () -> Unit,
     onSelectThemeColorMode: (ThemeColorMode) -> Unit,
     onSetAmoledDarkTheme: (Boolean) -> Unit,
     isDarkTheme: Boolean,
@@ -124,12 +111,11 @@ fun YumeApp(
     onChangeAppDataPassword: suspend (String, String, String) -> String?,
     onDisableAppDataPassword: suspend (String) -> String?,
     onSelectLanguage: (AppLanguage) -> Unit,
-    onSelectLogLanguage: (LogLanguage) -> Unit,
     onSetAdvancedMode: (Boolean) -> Unit,
+    onSetDnsServers: (String) -> Boolean,
+    onSetCarryIpv6: (Boolean) -> Unit,
     onDeleteDownloadedLanguage: (AppLanguage.AutoTranslated) -> Unit,
     languagePreparationState: LanguagePreparationUiState?,
-    busyState: BusyUiState?,
-    diagnosticsReport: String,
     onClearNotice: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -138,25 +124,20 @@ fun YumeApp(
         val navController = rememberNavController()
         val snackbarHostState = remember { SnackbarHostState() }
         val backStackEntry by navController.currentBackStackEntryAsState()
-        val currentDestination = backStackEntry?.destination
-        val currentRoute = currentDestination?.route ?: AppRoute.Home
-        val showToolsTab = uiState.appSettings.advancedMode || currentRoute == AppRoute.Tools
-        val topLevelDestinations = buildList {
-            add(TopLevelDestination(AppRoute.Home, strings.homeTab, R.drawable.ic_home_nav))
-            add(TopLevelDestination(AppRoute.Servers, strings.serversTab, R.drawable.ic_server_nav))
-            add(TopLevelDestination(AppRoute.Security, strings.securityTab, R.drawable.ic_security_nav))
-            if (showToolsTab) {
-                add(TopLevelDestination(AppRoute.Tools, strings.toolsTab, R.drawable.ic_tools_nav))
-            }
-            add(TopLevelDestination(AppRoute.Settings, strings.settingsTab, R.drawable.ic_settings_nav))
-        }
+        val currentRoute = backStackEntry?.destination?.route ?: AppRoute.Overview
+        val topLevelDestinations = listOf(
+            TopLevelDestination(AppRoute.Overview, strings.overviewTab, R.drawable.ic_home_nav),
+            TopLevelDestination(AppRoute.Connect, strings.connectTab, R.drawable.ic_server_nav),
+            TopLevelDestination(AppRoute.Logs, strings.logsTab, R.drawable.ic_logs_nav),
+            TopLevelDestination(AppRoute.Posture, strings.postureTab, R.drawable.ic_security_nav),
+            TopLevelDestination(AppRoute.Settings, strings.settingsTab, R.drawable.ic_settings_nav),
+        )
+        val nested = currentRoute == AppRoute.Credits || currentRoute == AppRoute.Components
         val title = when (currentRoute) {
-            AppRoute.Home -> "Yume"
-            AppRoute.Servers -> strings.serversTitle
-            AppRoute.Security -> strings.securityTab
-            AppRoute.Tools -> strings.toolsTitle
+            AppRoute.Connect -> strings.connectTab
+            AppRoute.Logs -> strings.logsTab
+            AppRoute.Posture -> strings.postureTab
             AppRoute.Settings -> strings.settingsTab
-            AppRoute.Diagnostics -> strings.diagnosticsTitle
             AppRoute.Credits -> strings.creditsTitle
             AppRoute.Components -> strings.openSourceComponentsTitle
             else -> "Yume"
@@ -176,9 +157,6 @@ fun YumeApp(
             }
         }
 
-        LaunchedEffect(uiState.bannerMessage) {
-            uiState.bannerMessage?.let { snackbarHostState.showSnackbar(it) }
-        }
         LaunchedEffect(uiState.noticeMessage) {
             uiState.noticeMessage?.let { message ->
                 snackbarHostState.showSnackbar(message)
@@ -190,16 +168,12 @@ fun YumeApp(
             topBar = {
                 AppTopBar(
                     title = title,
-                    showBack = currentRoute == AppRoute.Diagnostics ||
-                        currentRoute == AppRoute.Credits ||
-                        currentRoute == AppRoute.Components,
+                    showBack = nested,
                     onBack = { navController.popBackStack() },
                 )
             },
             bottomBar = {
-                if (currentRoute != AppRoute.Diagnostics &&
-                    currentRoute != AppRoute.Credits &&
-                    currentRoute != AppRoute.Components) {
+                if (!nested) {
                     BottomNavBar(
                         currentRoute = currentRoute,
                         destinations = topLevelDestinations,
@@ -213,38 +187,41 @@ fun YumeApp(
         ) { innerPadding ->
             NavHost(
                 navController = navController,
-                startDestination = AppRoute.Home,
+                startDestination = AppRoute.Overview,
                 modifier = Modifier.padding(innerPadding),
                 enterTransition = { fadeIn(animationSpec = tween(120)) },
                 exitTransition = { fadeOut(animationSpec = tween(90)) },
                 popEnterTransition = { fadeIn(animationSpec = tween(120)) },
                 popExitTransition = { fadeOut(animationSpec = tween(90)) },
             ) {
-                composable(AppRoute.Home) {
-                    HomeDashboardScreen(
+                composable(AppRoute.Overview) {
+                    OverviewScreen(
                         uiState = uiState,
                         onConnect = onConnect,
                         onDisconnect = onDisconnect,
-                        onOpenServers = { navigateToTopLevel(AppRoute.Servers) },
+                        onOpenKits = { navigateToTopLevel(AppRoute.Connect) },
                     )
                 }
-                composable(AppRoute.Servers) {
-                    ServersScreen(
+                composable(AppRoute.Connect) {
+                    KitsScreen(
                         uiState = uiState,
-                        onSelectProfile = onSelectProfile,
-                        onDeleteProfile = onDeleteProfile,
-                        onSaveProfile = onSaveProfile,
+                        onSelectKit = onSelectKit,
+                        onRenameKit = onRenameKit,
+                        onDeleteKit = onDeleteKit,
+                        onImportKit = onImportKit,
+                        onReportNotice = onReportNotice,
                     )
                 }
-                composable(AppRoute.Security) {
-                    SecurityScreen(
+                composable(AppRoute.Logs) {
+                    LogsScreen(
                         uiState = uiState,
-                        onImportCaFile = onImportCaFile,
-                        onImportAuthKeyFile = onImportAuthKeyFile,
-                        onSaveCaText = onSaveCaText,
-                        onSaveAuthKeyText = onSaveAuthKeyText,
-                        onDeleteMaterial = onDeleteMaterial,
+                        onBuildReport = onBuildReport,
+                        onClearLog = onClearLog,
+                        onReportNotice = onReportNotice,
                     )
+                }
+                composable(AppRoute.Posture) {
+                    PostureScreen(uiState = uiState)
                 }
                 composable(AppRoute.Settings) {
                     SettingsScreen(
@@ -256,19 +233,14 @@ fun YumeApp(
                         onChangeAppDataPassword = onChangeAppDataPassword,
                         onDisableAppDataPassword = onDisableAppDataPassword,
                         onSelectLanguage = onSelectLanguage,
-                        onSelectLogLanguage = onSelectLogLanguage,
                         onSetAdvancedMode = onSetAdvancedMode,
+                        onSetDnsServers = onSetDnsServers,
+                        onSetCarryIpv6 = onSetCarryIpv6,
                         onDeleteDownloadedLanguage = onDeleteDownloadedLanguage,
                         onOpenCredits = {
                             navController.navigate(AppRoute.Credits)
                         },
-                        onOpenDiagnostics = {
-                            navController.navigate(AppRoute.Diagnostics)
-                        },
                     )
-                }
-                composable(AppRoute.Tools) {
-                    ToolsScreen()
                 }
                 composable(AppRoute.Credits) {
                     CreditsScreen(
@@ -278,33 +250,12 @@ fun YumeApp(
                 composable(AppRoute.Components) {
                     OpenSourceComponentsScreen()
                 }
-                composable(AppRoute.Diagnostics) {
-                    DiagnosticsScreen(
-                        uiState = uiState,
-                        diagnosticsReport = diagnosticsReport,
-                    )
-                }
             }
-        }
-        pendingAuthKeyImport?.let { pendingImport ->
-            AuthKeyImportDialog(
-                pending = pendingImport,
-                onDismiss = onDismissAuthKeyImport,
-                onImport = onImportAuthKeyPayload,
-            )
-        }
-        pendingAuthKeyUnlockName?.let { authKeyName ->
-            AuthKeyUnlockDialog(
-                authKeyName = authKeyName,
-                initialError = pendingAuthKeyUnlockError,
-                onDismiss = onDismissAuthKeyUnlock,
-                onUnlock = onUnlockAuthKey,
-            )
         }
         languagePreparationState?.let { state ->
             LanguagePreparationDialog(state)
         }
-        busyState?.let { state ->
+        uiState.busyState?.let { state ->
             BusyDialog(state)
         }
     }
@@ -474,7 +425,7 @@ private fun BottomNavBar(
                             Icon(
                                 painter = painterResource(destination.iconRes),
                                 contentDescription = destination.label,
-                                modifier = if (destination.route == AppRoute.Home) {
+                                modifier = if (destination.route == AppRoute.Overview) {
                                     Modifier.offset(y = (-1).dp)
                                 } else {
                                     Modifier

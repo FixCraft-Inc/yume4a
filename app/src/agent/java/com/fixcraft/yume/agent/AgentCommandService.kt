@@ -11,15 +11,8 @@ import android.os.SystemClock
 import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.R
 import com.fixcraft.yume.data.AppVaultManager
-import com.fixcraft.yume.data.SecureMaterialStore
-import com.fixcraft.yume.data.SecureMaterialSummary
-import com.fixcraft.yume.data.SecureMaterialType
-import com.fixcraft.yume.data.ServerProfile
-import com.fixcraft.yume.data.ServerProfileStore
-import com.fixcraft.yume.diagnostics.YumeLocalSelfTest
-import com.fixcraft.yume.diagnostics.YumeLocalSelfTestMode
-import com.fixcraft.yume.share.ShareFile
-import com.fixcraft.yume.transport.SharedYumeNative
+import com.fixcraft.yume.data.KitImport
+import com.fixcraft.yume.data.KitStore
 import com.fixcraft.yume.vpn.VpnPhase
 import com.fixcraft.yume.vpn.YumeVpnRuntime
 import com.fixcraft.yume.vpn.YumeVpnService
@@ -99,11 +92,11 @@ class AgentCommandService : Service() {
         try {
             when (action) {
                 AgentProtocol.ACTION_SNAPSHOT -> snapshot(commandId)
-                AgentProtocol.ACTION_PROFILES -> profiles(commandId)
+                AgentProtocol.ACTION_KITS -> kits(commandId)
                 AgentProtocol.ACTION_CONNECT -> connect(intent, commandId)
                 AgentProtocol.ACTION_DISCONNECT -> disconnect(commandId)
-                AgentProtocol.ACTION_IMPORT_BUNDLE -> importBundle(commandId)
-                AgentProtocol.ACTION_SELF_TEST -> selfTest(intent, commandId)
+                AgentProtocol.ACTION_IMPORT_KIT -> importKit(commandId)
+                AgentProtocol.ACTION_DELETE_KIT -> deleteKit(intent, commandId)
                 AgentProtocol.ACTION_NETWORK_BENCH -> networkBench(intent, commandId)
                 else -> complete(commandId, action, false, "Unsupported action")
             }
@@ -122,66 +115,53 @@ class AgentCommandService : Service() {
         complete(commandId, "snapshot", true, "Snapshot captured", snapshot)
     }
 
-    private fun profiles(commandId: String) {
+    private fun kits(commandId: String) {
         require(AppVaultManager.ensureReady(this)) { "The app vault is locked" }
-        val store = ServerProfileStore.get(this)
-        val selected = store.selectedProfileId.value
-        val profiles = JSONArray().apply {
-            store.profiles.value.forEach { profile ->
+        val store = KitStore.get(this)
+        val selected = store.selectedId.value
+        val kits = JSONArray().apply {
+            store.kits.value.forEach { kit ->
                 put(JSONObject()
-                    .put("id", profile.id)
-                    .put("name", profile.name)
-                    .put("endpoint", profile.endpointLabel)
-                    .put("sni", profile.serverName)
-                    .put("selected", profile.id == selected)
-                    .put("has_auth_key", profile.authKeyMaterialId.isNotBlank())
-                    .put("requires_operator_identity", profile.requireAnonymProof))
+                    .put("id", kit.id)
+                    .put("name", kit.name)
+                    .put("endpoint", kit.endpointLabel)
+                    .put("selected", kit.id == selected))
             }
         }
         complete(
             commandId,
-            "profiles",
+            "kits",
             true,
-            "Found ${profiles.length()} profile(s)",
-            JSONObject().put("profiles", profiles).put("selected_profile_id", selected ?: JSONObject.NULL),
+            "Found ${kits.length()} kit(s)",
+            JSONObject().put("kits", kits).put("selected_kit_id", selected ?: JSONObject.NULL),
         )
     }
 
     private fun connect(intent: Intent, commandId: String) {
-        val password = consumeSecret(
-            AgentProtocol.authPasswordFile(commandId),
-            MAX_PASSWORD_BYTES,
-        )
-        try {
-            val profileId = intent.getStringExtra(AgentProtocol.EXTRA_PROFILE_ID)
-                ?.trim().orEmpty()
-            require(profileId.isNotEmpty()) { "profile_id is required" }
-            require(AppVaultManager.ensureReady(this)) { "The app vault is locked" }
-            require(ServerProfileStore.get(this).getProfile(profileId) != null) {
-                "Profile not found"
-            }
-            if (VpnService.prepare(this) != null) {
-                complete(
-                    commandId,
-                    "connect",
-                    false,
-                    "VPN consent is required; run the harness prepare command and approve it once",
-                    JSONObject().put("consent_required", true),
-                )
-                return
-            }
-            AgentTelemetry.beginConnect(commandId)
-            YumeVpnService.startConnect(this, profileId, password?.decodeToString())
+        require(AppVaultManager.ensureReady(this)) { "The app vault is locked" }
+        val store = KitStore.get(this)
+        val kitId = intent.getStringExtra(AgentProtocol.EXTRA_KIT_ID)?.trim()
+            ?.takeIf { it.isNotEmpty() } ?: store.selectedId.value.orEmpty()
+        require(store.get(kitId) != null) { "Kit not found" }
+        if (VpnService.prepare(this) != null) {
             complete(
                 commandId,
                 "connect",
-                true,
-                "Connect command accepted",
-                JSONObject().put("profile_id", profileId),
+                false,
+                "VPN consent is required. Run the harness prepare command and approve it once",
+                JSONObject().put("consent_required", true),
             )
-        } finally {
-            password?.fill(0)
+            return
         }
+        AgentTelemetry.beginConnect(commandId)
+        YumeVpnService.startConnect(this, kitId)
+        complete(
+            commandId,
+            "connect",
+            true,
+            "Connect command accepted",
+            JSONObject().put("kit_id", kitId),
+        )
     }
 
     private fun disconnect(commandId: String) {
@@ -189,194 +169,73 @@ class AgentCommandService : Service() {
         complete(commandId, "disconnect", true, "Disconnect command accepted")
     }
 
-    private suspend fun importBundle(commandId: String) = withContext(Dispatchers.IO) {
-        var bundleBytes: ByteArray? = null
-        var passwordBytes: ByteArray? = null
-        var ca: SecureMaterialSummary? = null
-        var authKey: SecureMaterialSummary? = null
-        var profileStore: ServerProfileStore? = null
-        var importedProfile: ServerProfile? = null
-        var previousSelectedProfileId: String? = null
+    // The sealed kit and its code arrive as one-shot files that are deleted
+    // as they are read. The code never appears in a command line or a result.
+    private suspend fun importKit(commandId: String) = withContext(Dispatchers.IO) {
+        var sealed: ByteArray? = null
+        var code: ByteArray? = null
         try {
             var inputFailure: Throwable? = null
             try {
-                bundleBytes = consumeRequired(
-                    AgentProtocol.importBundleFile(commandId),
-                    MAX_BUNDLE_BYTES,
-                )
+                sealed = consumeRequired(AgentProtocol.importKitFile(commandId), MAX_KIT_BYTES)
             } catch (throwable: Throwable) {
                 inputFailure = throwable
             }
             try {
-                passwordBytes = consumeRequired(
-                    AgentProtocol.importPasswordFile(commandId),
-                    MAX_PASSWORD_BYTES,
-                )
+                code = consumeSecret(AgentProtocol.importCodeFile(commandId), MAX_CODE_BYTES)
+                    ?: throw IllegalArgumentException("Missing one-shot input for the kit's code")
             } catch (throwable: Throwable) {
-                val precedingFailure = inputFailure
-                if (precedingFailure == null) {
-                    inputFailure = throwable
-                } else {
-                    precedingFailure.addSuppressed(throwable)
-                }
+                val preceding = inputFailure
+                if (preceding == null) inputFailure = throwable else preceding.addSuppressed(throwable)
             }
             inputFailure?.let { throw it }
-            val consumedBundle = checkNotNull(bundleBytes)
-            val consumedPassword = checkNotNull(passwordBytes)
-            require(AppVaultManager.ensureReady(this@AgentCommandService)) {
-                "The app vault is locked"
-            }
-            val password = consumedPassword.decodeToString().trimEnd('\r', '\n')
-            val bundle = ShareFile.decode(consumedBundle, password)
-            validateBundle(bundle)
-
-            val materials = SecureMaterialStore.get(this@AgentCommandService)
-            if (bundle.anonymCaCertPem.isNotBlank()) {
-                ca = materials.saveMaterialText(
-                    SecureMaterialType.AnonymCa,
-                    "ADB imported CA (${bundle.serverHost})",
-                    bundle.anonymCaCertPem,
-                    sourceLabel = "ADB agent .yss import",
-                )
-            }
-            if (bundle.authPrivateKeyPem.isNotBlank()) {
-                authKey = materials.saveImportedAuthKeyText(
-                    displayName = "ADB imported key (${bundle.serverHost})",
-                    rawText = bundle.authPrivateKeyPem,
-                    encrypted = false,
-                    password = "",
-                    sourceLabel = "ADB agent .yss import",
-                )
-            }
-            val profile = ServerProfile(
-                name = bundle.label.trim().ifEmpty { bundle.serverHost },
-                host = bundle.serverHost.trim(),
-                port = bundle.serverPort,
-                sni = bundle.tlsServerName.trim(),
-                obfsSecret = bundle.obfsSecret.trim(),
-                requireAnonymProof = bundle.requireOperatorIdentity,
-                anonymCaMaterialId = ca?.id.orEmpty(),
-                authKeyMaterialId = authKey?.id.orEmpty(),
-                notes = "Imported by the ADB agent harness",
-                tlsStealthProfile = bundle.tlsStealthProfile.trim().ifEmpty {
-                    ServerProfile.DEFAULT_TLS_STEALTH_PROFILE
-                },
-                innerPsk = bundle.innerPsk.trim(),
-                tlsPinSha256 = bundle.tlsPinSha256.trim(),
-            )
-            profileStore = ServerProfileStore.get(this@AgentCommandService)
-            previousSelectedProfileId = profileStore.selectedProfileId.value
-            importedProfile = profile
-            profileStore.saveProfile(profile)
-            profileStore.selectProfile(profile.id)
-            complete(
-                commandId,
-                "import_bundle",
-                true,
-                "Imported and selected profile ${profile.name}",
-                JSONObject()
-                    .put("profile_id", profile.id)
-                    .put("name", profile.name)
-                    .put("endpoint", profile.endpointLabel)
-                    .put("has_auth_key", authKey != null),
-            )
-        } catch (throwable: Throwable) {
-            var profileRollbackSucceeded = true
-            importedProfile?.let { profile ->
-                runCatching {
-                    val store = checkNotNull(profileStore)
-                    store.deleteProfile(profile.id)
-                    store.selectProfile(previousSelectedProfileId)
-                }.onFailure { rollbackFailure ->
-                    profileRollbackSucceeded = false
-                    throwable.addSuppressed(rollbackFailure)
+            require(AppVaultManager.ensureReady(this@AgentCommandService)) { "The app vault is locked" }
+            val codeBytes = checkNotNull(code)
+            val typed = CharArray(codeBytes.size) { index -> (codeBytes[index].toInt() and 0xff).toChar() }
+            val store = KitStore.get(this@AgentCommandService)
+            when (val result = store.importSealed(checkNotNull(sealed), typed, "")) {
+                is KitImport.Imported -> {
+                    store.select(result.kit.id)
+                    complete(
+                        commandId,
+                        "import_kit",
+                        true,
+                        "Imported and selected kit ${result.kit.name}",
+                        JSONObject()
+                            .put("kit_id", result.kit.id)
+                            .put("name", result.kit.name)
+                            .put("endpoint", result.kit.endpointLabel),
+                    )
                 }
+
+                is KitImport.Refused -> complete(
+                    commandId,
+                    "import_kit",
+                    false,
+                    "Refused: ${result.reason.name} ${result.detail}".trim(),
+                    JSONObject().put("reason", result.reason.name),
+                )
             }
-            // If profile rollback failed, retain its referenced materials so
-            // the store does not contain dangling material IDs.
-            if (profileRollbackSucceeded) {
-                val materials = runCatching {
-                    SecureMaterialStore.get(this@AgentCommandService)
-                }.getOrNull()
-                authKey?.let { runCatching { materials?.deleteMaterial(it.id) } }
-                ca?.let { runCatching { materials?.deleteMaterial(it.id) } }
-            }
-            throw throwable
         } finally {
-            bundleBytes?.fill(0)
-            passwordBytes?.fill(0)
+            sealed?.fill(0)
+            code?.fill(0)
         }
     }
 
-    private suspend fun selfTest(intent: Intent, commandId: String) = withContext(Dispatchers.Default) {
-        val mode = when (intent.getStringExtra(AgentProtocol.EXTRA_MODE)?.lowercase()) {
-            "full" -> YumeLocalSelfTestMode.Full
-            else -> YumeLocalSelfTestMode.Quick
-        }
-        val nativeLifecycle = nativeLifecycleCheck()
-        val report = YumeLocalSelfTest.run(mode, cacheDir) { progress ->
-            startForeground(
-                NOTIFICATION_ID,
-                notification("${mode.id} self-test: ${progress.percent}% ${progress.label}"),
-            )
-        }
-        val reportFile = AgentTelemetry.file(this@AgentCommandService, AgentProtocol.SELF_TEST_REPORT_FILE)
-        AgentTelemetry.writeText(reportFile, report.toPlainText() + "\n")
-        val failed = report.rows.filterNot { it.ok }.map { it.name }
-        complete(
-            commandId,
-            "self_test",
-            failed.isEmpty(),
-            if (failed.isEmpty()) "${mode.id} self-test passed" else "Failed: ${failed.joinToString()}",
-            JSONObject()
-                .put("mode", mode.id)
-                .put("elapsed_ms", report.elapsedMs)
-                .put("global_score", report.globalScore ?: JSONObject.NULL)
-                .put("platform_score", report.leagueScore ?: JSONObject.NULL)
-                .put("failed_rows", JSONArray(failed))
-                .put("native_lifecycle", nativeLifecycle)
-                .put("report_file", AgentProtocol.SELF_TEST_REPORT_FILE),
-        )
+    private fun deleteKit(intent: Intent, commandId: String) {
+        require(AppVaultManager.ensureReady(this)) { "The app vault is locked" }
+        val kitId = intent.getStringExtra(AgentProtocol.EXTRA_KIT_ID)?.trim().orEmpty()
+        val store = KitStore.get(this)
+        require(store.get(kitId) != null) { "Kit not found" }
+        val state = YumeVpnRuntime.state.value
+        require(!(state.isActive && state.kitId == kitId)) { "The kit is in use. Disconnect first" }
+        store.delete(kitId)
+        complete(commandId, "delete_kit", true, "Deleted the kit", JSONObject().put("kit_id", kitId))
     }
-
-    private fun nativeLifecycleCheck(): JSONObject {
-        SharedYumeNative { true }.close() // Load libraries before the baseline.
-        val fdsBefore = openFdCount()
-        val threadsBefore = processThreadCount()
-        repeat(NATIVE_LIFECYCLE_ITERATIONS) {
-            val native = SharedYumeNative { true }
-            try {
-                native.stop()
-                native.stop()
-            } finally {
-                native.close()
-                native.close()
-            }
-        }
-        val fdsAfter = openFdCount()
-        val threadsAfter = processThreadCount()
-        check(fdsAfter <= fdsBefore + MAX_NATIVE_FD_GROWTH) {
-            "Native create/stop/close leaked file descriptors: $fdsBefore -> $fdsAfter"
-        }
-        return JSONObject()
-            .put("iterations", NATIVE_LIFECYCLE_ITERATIONS)
-            .put("fd_before", fdsBefore)
-            .put("fd_after", fdsAfter)
-            .put("threads_before", threadsBefore)
-            .put("threads_after", threadsAfter)
-    }
-
-    private fun openFdCount(): Int =
-        File("/proc/self/fd").list()?.size ?: error("Could not inspect process fds")
-
-    private fun processThreadCount(): Int =
-        File("/proc/self/task").list()?.size ?: error("Could not inspect process threads")
 
     private suspend fun networkBench(intent: Intent, commandId: String) = withContext(Dispatchers.IO) {
         val state = YumeVpnRuntime.state.value
-        require(state.phase == VpnPhase.Connected && state.trafficRoutedThroughYume) {
-            "VPN is not connected with verified routed traffic"
-        }
+        require(state.phase == VpnPhase.Connected) { "The VPN is not connected" }
         val rawUrl = intent.getStringExtra(AgentProtocol.EXTRA_URL)?.trim().orEmpty()
         val uri = validateBenchmarkUri(rawUrl)
         val maxBytes = intent.getLongExtra(AgentProtocol.EXTRA_MAX_BYTES, DEFAULT_BENCH_BYTES)
@@ -433,23 +292,8 @@ class AgentCommandService : Service() {
                 .put("time_to_first_byte_ms", firstByteAt?.minus(started) ?: JSONObject.NULL)
                 .put("megabits_per_second", megabitsPerSecond)
                 .put("tunnel_rx_delta_bytes", tunnelRxDelta)
-                .put("tunnel_tx_delta_bytes", tunnelTxDelta)
-                .put("route", state.activeRouteLabel ?: JSONObject.NULL),
+                .put("tunnel_tx_delta_bytes", tunnelTxDelta),
         )
-    }
-
-    private fun validateBundle(bundle: ShareFile.Bundle) {
-        require(bundle.serverHost.isNotBlank() && bundle.serverHost.length <= 253) { "Invalid server host" }
-        require(bundle.serverHost.none { it.isWhitespace() || it.isISOControl() }) { "Invalid server host" }
-        require(bundle.serverPort in 1..65535) { "Invalid server port" }
-        require(SECRET_HEX.matches(bundle.obfsSecret.trim())) { "Admission secret must be 64 lowercase hex characters" }
-        require(SECRET_HEX.matches(bundle.innerPsk.trim())) { "Inner PSK must be 64 lowercase hex characters" }
-        require(bundle.tlsPinSha256.isBlank() || SECRET_HEX.matches(bundle.tlsPinSha256.trim())) {
-            "TLS pin must be 64 lowercase hex characters"
-        }
-        require(!bundle.requireOperatorIdentity || bundle.anonymCaCertPem.isNotBlank()) {
-            "Operator identity is required but the bundle has no CA certificate"
-        }
     }
 
     private fun validateBenchmarkUri(raw: String): URI {
@@ -523,8 +367,9 @@ class AgentCommandService : Service() {
     private companion object {
         const val CHANNEL_ID = "yume_adb_agent"
         const val NOTIFICATION_ID = 1108
-        const val MAX_PASSWORD_BYTES = 4 * 1024
-        const val MAX_BUNDLE_BYTES = 2 * 1024 * 1024
+        const val MAX_CODE_BYTES = 128
+        // The largest sealed kit (docs/protocol/SEALED_KIT_1.md in YUME).
+        const val MAX_KIT_BYTES = 16 + 12 + 4 + 1024 * 1024 + 1024 + 16
         const val BENCH_BUFFER_BYTES = 256 * 1024
         const val MIN_BENCH_BYTES = 1_024L
         const val DEFAULT_BENCH_BYTES = 64L * 1024L * 1024L
@@ -532,8 +377,5 @@ class AgentCommandService : Service() {
         const val MIN_BENCH_TIMEOUT_MS = 1_000L
         const val DEFAULT_BENCH_TIMEOUT_MS = 30_000L
         const val MAX_BENCH_TIMEOUT_MS = 180_000L
-        const val NATIVE_LIFECYCLE_ITERATIONS = 100
-        const val MAX_NATIVE_FD_GROWTH = 2
-        val SECRET_HEX = Regex("^[0-9a-f]{64}$")
     }
 }

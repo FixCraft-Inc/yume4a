@@ -168,16 +168,6 @@ object AppVaultManager {
         blobFile(context, name).delete()
     }
 
-    fun derivePassword(context: Context, purpose: String): String {
-        val key = requireSessionKey(context)
-        return try {
-            val derived = Crypto.hkdfSha256(key, purpose.toByteArray(Charsets.UTF_8), 32)
-            android.util.Base64.encodeToString(derived, android.util.Base64.NO_WRAP)
-        } finally {
-            key.fill(0)
-        }
-    }
-
     private fun verifyPassword(context: Context, password: String): ByteArray {
         require(isPasswordEnabled(context)) { "Password protection is not enabled" }
         val wrapped = readPasswordWrappedKey(context)

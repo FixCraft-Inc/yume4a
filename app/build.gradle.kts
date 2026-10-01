@@ -20,8 +20,8 @@ fun readTrimmedFile(file: java.io.File, fallback: String): String {
 }
 
 val sharedYumeRoot = rootProject.file("../../yume")
-val yumeProtocolVersion = readQuotedConstant(
-    sharedYumeRoot.resolve("src/core/version.hpp"),
+val yumeVersion = readQuotedConstant(
+    sharedYumeRoot.resolve("src/common/version.hpp"),
     "kVersion",
     "Unknown",
 )
@@ -173,14 +173,12 @@ android {
         minSdk = 28
         targetSdk = 36
         versionCode = 3
-        // Track the shared transport identity exactly; dev6 refuses dev1.
-        versionName = yumeProtocolVersion
-        buildConfigField("String", "YUME_PROTOCOL_VERSION", "\"$yumeProtocolVersion\"")
+        // The app carries the product version of the YUME checkout its
+        // library is built from. What the linked library is at run time comes
+        // from the library itself (yume_get_compatibility).
+        versionName = yumeVersion
+        buildConfigField("String", "YUME_VERSION", "\"$yumeVersion\"")
         buildConfigField("String", "BASEFWX_ENGINE_VERSION", "\"$basefwxEngineVersion\"")
-        // dev6 posture is fixed by the protocol. The shared packet ABI is
-        // mandatory: there is no Kotlin-wire or tun2socks fallback when
-        // packet_bulk_v1 is unavailable, so neither is a build option.
-        buildConfigField("String", "YUME_PROTECTION_POLICY", "\"Exact YUME $yumeProtocolVersion\"")
         // ADB automation is compiled only into the dedicated `agent` build
         // type below. Production and ordinary debug APKs fail closed.
         buildConfigField("boolean", "ENABLE_ADB_TEST_CONTROL", "false")
@@ -319,6 +317,11 @@ val configuredAbis: List<String> = (project.findProperty("yumeAbi") as? String)
     ?.takeIf { it.isNotEmpty() }
     ?: listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
 val configuredMinSdk: String = (android.defaultConfig.minSdk ?: 28).toString()
+// A YUME tree without Git metadata, such as a copy synchronized to a build
+// host, cannot be tied to a signed commit. -PyumeUnverifiedSource=true builds
+// it anyway, for testing only: never release such an APK.
+val unverifiedYumeSource: Boolean =
+    (project.findProperty("yumeUnverifiedSource") as? String)?.toBoolean() ?: false
 
 fun resolveNdkRoot(): String? {
     // A reproducible native build must use the pinned NDK revision. Do not
@@ -360,11 +363,15 @@ fun resolveNdkRoot(): String? {
 }
 
 val buildYumeSharedAbi by tasks.registering {
-    description = "Cross-compiles the signed shared YUME client and packet ABI for Android."
+    description = "Cross-compiles libyume, the YUME C ABI library, for Android."
     group = "yume native"
     inputs.file(yumeSharedAbiBuildScript)
     inputs.file(sharedYumeRoot.resolve("include/yume/yume.h"))
     inputs.file(sharedYumeRoot.resolve("vcpkg.json"))
+    inputs.file(sharedYumeRoot.resolve("scripts/ensure-openssl.sh"))
+    inputs.file(sharedYumeRoot.resolve("config/dependencies.json"))
+    inputs.files(fileTree(sharedYumeRoot.resolve("patches/openssl")) { include("**/*") })
+    inputs.files(fileTree(sharedYumeRoot.resolve("third_party/nlohmann_json")) { include("**/*") })
     inputs.files(fileTree(sharedYumeRoot.resolve("src")) {
         include("**/*.cpp", "**/*.hpp", "**/*.h", "**/*.map", "**/CMakeLists.txt")
     })
@@ -377,6 +384,7 @@ val buildYumeSharedAbi by tasks.registering {
     inputs.property("minSdk", configuredMinSdk)
     inputs.property("ndkVersion", pinnedNdkVersion)
     inputs.property("yumeCommit", sharedYumeHead)
+    inputs.property("unverifiedSource", unverifiedYumeSource)
     outputs.dir(yumeSharedAbiOutputDir)
     doLast {
         val ndkPath = resolveNdkRoot()
@@ -401,6 +409,9 @@ val buildYumeSharedAbi by tasks.registering {
         )
         for (abi in configuredAbis) {
             command += listOf("--abi", abi)
+        }
+        if (unverifiedYumeSource) {
+            command += "--unverified-source"
         }
         val proc = ProcessBuilder(command)
             .redirectErrorStream(true)
@@ -490,9 +501,10 @@ dependencies {
     implementation(libs.google.material)
     implementation(libs.bouncycastle.prov)
     implementation(libs.bouncycastle.pkix)
-    implementation(libs.conscrypt.android)
     implementation(libs.google.mlkit.translate)
     testImplementation(libs.junit)
+    // android.jar's org.json is a stub in local unit tests.
+    testImplementation(libs.json)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

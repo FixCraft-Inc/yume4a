@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application>
+    <!-- The bench command downloads from a LAN test server over plain HTTP.
+         Only this test build allows it. The release app keeps Android's
+         default refusal. -->
+    <application android:usesCleartextTraffic="true">
         <!-- A foreground activity is used because current Android versions do
              not allow a background broadcast receiver to launch an FGS. The
              activity is transparent and immediately finishes after dispatch. -->
@@ -12,11 +15,11 @@
             android:theme="@style/Theme.Yume.Agent.Transparent">
             <intent-filter>
                 <action android:name="com.fixcraft.yume.agent.SNAPSHOT" />
-                <action android:name="com.fixcraft.yume.agent.PROFILES" />
+                <action android:name="com.fixcraft.yume.agent.KITS" />
                 <action android:name="com.fixcraft.yume.agent.CONNECT" />
                 <action android:name="com.fixcraft.yume.agent.DISCONNECT" />
-                <action android:name="com.fixcraft.yume.agent.IMPORT_BUNDLE" />
-                <action android:name="com.fixcraft.yume.agent.SELF_TEST" />
+                <action android:name="com.fixcraft.yume.agent.IMPORT_KIT" />
+                <action android:name="com.fixcraft.yume.agent.DELETE_KIT" />
                 <action android:name="com.fixcraft.yume.agent.NETWORK_BENCH" />
             </intent-filter>
         </activity>

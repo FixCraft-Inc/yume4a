@@ -37,40 +37,25 @@ fun OpenSourceComponentsScreen() {
     val strings = appStrings()
     val groups = listOf(
         ComponentGroup(
-            heading = strings.componentGroupAllImpls,
-            blurb = strings.componentGroupAllImplsBlurb,
+            heading = strings.componentGroupLibrary,
+            blurb = strings.componentGroupLibraryBlurb,
             entries = listOf(
-                ComponentEntry(
-                    title = strings.componentBasefwxTitle,
-                    description = strings.componentBasefwxUsage,
-                    license = strings.componentBasefwxLicense,
-                ),
-                ComponentEntry(
-                    title = strings.componentLiboqsTitle,
-                    description = strings.componentLiboqsUsage,
-                    license = strings.componentLiboqsLicense,
-                ),
+                ComponentEntry("OpenSSL", strings.componentOpensslUsage, "Apache-2.0"),
+                ComponentEntry("Boost (Asio, Beast, System)", strings.componentBoostUsage, "BSL-1.0"),
+                ComponentEntry("nghttp2", strings.componentNghttp2Usage, "MIT"),
+                ComponentEntry("zlib · Zstandard · Brotli", strings.componentCompressionUsage, "Zlib · BSD-3-Clause · MIT"),
+                ComponentEntry("JSON for Modern C++", strings.componentJsonUsage, "MIT"),
             ),
         ),
         ComponentGroup(
             heading = strings.componentGroupAndroidOnly,
             blurb = strings.componentGroupAndroidOnlyBlurb,
             entries = listOf(
-                ComponentEntry(
-                    title = strings.componentConscryptTitle,
-                    description = strings.componentConscryptUsage,
-                    license = strings.componentConscryptLicense,
-                ),
-                ComponentEntry(
-                    title = strings.componentComposeTitle,
-                    description = strings.componentComposeUsage,
-                    license = strings.componentComposeLicense,
-                ),
-                ComponentEntry(
-                    title = strings.componentCoroutinesTitle,
-                    description = strings.componentCoroutinesUsage,
-                    license = strings.componentCoroutinesLicense,
-                ),
+                ComponentEntry("BaseFWX", strings.componentBasefwxUsage, "GPL-3.0"),
+                ComponentEntry("Bouncy Castle", strings.componentBouncyCastleUsage, "MIT"),
+                ComponentEntry("Jetpack Compose · Material 3", strings.componentComposeUsage, "Apache-2.0"),
+                ComponentEntry("kotlinx.coroutines", strings.componentCoroutinesUsage, "Apache-2.0"),
+                ComponentEntry("ML Kit Translation", strings.componentMlKitUsage, "ML Kit Terms of Service"),
             ),
         ),
     )

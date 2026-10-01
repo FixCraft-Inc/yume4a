@@ -9,8 +9,9 @@ PRIVATE_DIR="no_backup/adb-agent"
 SNAPSHOT_FILE="$PRIVATE_DIR/snapshot.json"
 CONSENT_FILE="$PRIVATE_DIR/consent.json"
 DEFAULT_ABI="arm64-v8a"
-MAX_BUNDLE_BYTES=$((2 * 1024 * 1024))
-MAX_PASSWORD_BYTES=$((4 * 1024))
+# The largest sealed kit (docs/protocol/SEALED_KIT_1.md in YUME).
+MAX_KIT_BYTES=$((16 + 12 + 4 + 1024 * 1024 + 1024 + 16))
+MAX_CODE_BYTES=128
 
 usage() {
   cat <<'EOF'
@@ -24,32 +25,32 @@ Build/device:
   prepare                        Open Android's one-time VPN consent dialog and wait
 
 Configuration/control:
-  import BUNDLE.yss              Import a .yss bundle; reads its password from stdin
-  profiles                       List non-secret profile metadata
-  connect PROFILE_ID [--password-stdin]
+  import KIT_FILE                Import a sealed kit. Its code is read from stdin
+  kits                           List the stored kits (names and endpoints only)
+  delete KIT_ID                  Remove a stored kit
+  connect [KIT_ID]               Connect the named kit, or the selected one
   disconnect
   status                         Print the current machine-readable runtime snapshot
-  wait PHASE [TIMEOUT_SECONDS]   Wait for Idle/Connecting/Connected/Error/etc.
+  wait PHASE [TIMEOUT_SECONDS]   Wait for Idle/Connecting/Connected/Reconnecting/Error
 
 Tests/telemetry:
-  self-test [quick|full]         Run the existing on-device crypto/packet benchmark
   bench URL [MAX_BYTES] [TIMEOUT_MS]
                                  Download through the VPN and report timing/throughput
-  smoke PROFILE_ID [URL]         Connect, verify routed state, optionally bench, disconnect
+  smoke [KIT_ID] [URL]           Connect, optionally bench, print status, disconnect
   logs                           Print Yume logcat plus the structured event log
   collect [OUTPUT_DIR]           Capture state, logs, package/device/memory evidence
-
-Generated server kit helpers:
-  server-start local|HOST SERVER_DIR [--packet]
-  server-status local|HOST SERVER_DIR
-  server-stop local|HOST SERVER_DIR [--packet]
 
 Environment:
   ANDROID_SERIAL                 Select a device when more than one is attached
   YUME_ANDROID_AGENT_PACKAGE     Override the default com.fixcraft.yume.agent
+  YUME_UNVERIFIED_SOURCE=1       Build from a YUME copy without Git metadata.
+                                 Testing only: never release that APK.
 
-Secrets are never accepted as command-line arguments. `import` and optional encrypted
-auth-key passwords use stdin and one-shot app-private files deleted by the APK.
+A kit's code is never accepted as a command-line argument. `import` reads it
+from stdin and hands it to the app as a one-shot private file, which the app
+deletes as it reads it. The server side is YUME's own: create a kit with
+`yume-setup`, run `yumed`, and seal the client directory with
+`yume --seal-kit` (docs/QUICKSTART.md in YUME).
 EOF
 }
 
@@ -96,7 +97,10 @@ write_private_stdin() {
   validate_private_path "$target"
   validate_private_path "$temporary"
   "${ADB[@]}" shell "run-as $PACKAGE mkdir -p -- $PRIVATE_DIR" </dev/null >/dev/null
-  if ! "${ADB[@]}" exec-in \
+  # adb shell's protocol carries the end of stdin as its own message. exec-in
+  # closes the whole stream instead, and Android 17 then ended the remote
+  # process before cat finished or the rename ran.
+  if ! "${ADB[@]}" shell \
       "run-as $PACKAGE sh -c 'umask 077; cat > $temporary && mv -f -- $temporary $target'"; then
     clear_private "$temporary" || true
     return 1
@@ -180,9 +184,13 @@ doctor() {
 build_agent() {
   local abi="${1:-$DEFAULT_ABI}"
   cd "$ROOT_DIR"
+  local extra=()
+  if [[ "${YUME_UNVERIFIED_SOURCE:-0}" == "1" ]]; then
+    extra+=("-PyumeUnverifiedSource=true")
+  fi
   GRADLE_OPTS="${GRADLE_OPTS:--Dorg.gradle.jvmargs=-Xmx4g}" \
     ./gradlew --no-daemon --max-workers=2 --console=plain \
-      :app:assembleDirectAgent "-PyumeAbi=$abi"
+      :app:assembleDirectAgent "-PyumeAbi=$abi" "${extra[@]}"
   newest_agent_apk
 }
 
@@ -219,66 +227,60 @@ prepare_vpn() {
   die "VPN consent was not granted within 90 seconds"
 }
 
-import_bundle() {
-  local bundle="${1:-}"
-  [[ -f "$bundle" ]] || die "bundle not found: $bundle"
-  local bundle_bytes command_id bundle_file password_file
-  bundle_bytes="$(stat -c '%s' -- "$bundle")" || die "could not inspect bundle: $bundle"
-  [[ "$bundle_bytes" =~ ^[0-9]+$ ]] || die "invalid bundle size: $bundle"
-  (( bundle_bytes >= 1 && bundle_bytes <= MAX_BUNDLE_BYTES )) || \
-    die "bundle must be between 1 and $MAX_BUNDLE_BYTES bytes"
+import_kit() {
+  local kit="${1:-}"
+  [[ -f "$kit" ]] || die "kit file not found: $kit"
+  local kit_bytes command_id kit_file code_file
+  kit_bytes="$(stat -c '%s' -- "$kit")" || die "could not inspect kit file: $kit"
+  [[ "$kit_bytes" =~ ^[0-9]+$ ]] || die "invalid kit file size: $kit"
+  (( kit_bytes >= 1 && kit_bytes <= MAX_KIT_BYTES )) || \
+    die "a sealed kit is between 1 and $MAX_KIT_BYTES bytes"
   command_id="$(new_command_id)"
-  bundle_file="$PRIVATE_DIR/import-$command_id.yss"
-  password_file="$PRIVATE_DIR/import-password-$command_id"
+  kit_file="$PRIVATE_DIR/import-$command_id.kit"
+  code_file="$PRIVATE_DIR/import-code-$command_id"
   (
-    trap 'clear_private "$bundle_file" || true; clear_private "$bundle_file.partial" || true; clear_private "$password_file" || true; clear_private "$password_file.partial" || true' EXIT
-    local password password_bytes result
-    IFS= read -r -s password || true
-    [[ -n "$password" ]] || die "read the .yss password from stdin"
-    password_bytes="$(LC_ALL=C printf '%s' "$password" | wc -c)"
-    (( password_bytes <= MAX_PASSWORD_BYTES )) || \
-      die "password exceeds $MAX_PASSWORD_BYTES bytes"
-    write_private_stdin "$bundle_file" < "$bundle"
-    printf '%s' "$password" | write_private_stdin "$password_file"
-    unset password
-    result="$(send_command_with_id "$command_id" IMPORT_BUNDLE 180)"
+    trap 'clear_private "$kit_file" || true; clear_private "$kit_file.partial" || true; clear_private "$code_file" || true; clear_private "$code_file.partial" || true' EXIT
+    local code code_bytes result
+    IFS= read -r -s code || true
+    [[ -n "$code" ]] || die "read the kit's code from stdin"
+    code_bytes="$(LC_ALL=C printf '%s' "$code" | wc -c)"
+    (( code_bytes <= MAX_CODE_BYTES )) || die "the code exceeds $MAX_CODE_BYTES bytes"
+    write_private_stdin "$kit_file" < "$kit"
+    printf '%s' "$code" | write_private_stdin "$code_file"
+    unset code
+    result="$(send_command_with_id "$command_id" IMPORT_KIT 180)"
     require_ok "$result"
     jq . <<<"$result"
   )
 }
 
-profiles() {
+kits() {
   local result
-  result="$(send_command PROFILES 30)"
+  result="$(send_command KITS 30)"
   require_ok "$result"
   jq '.data' <<<"$result"
 }
 
-connect_profile() {
-  local profile_id="${1:-}"
-  [[ -n "$profile_id" ]] || die "connect requires PROFILE_ID"
-  [[ "${2:-}" == "" || "${2:-}" == "--password-stdin" ]] || \
-    die "unknown connect option: ${2:-}"
-  [[ -z "${3:-}" ]] || die "connect accepts only one option"
-  local command_id password_file
-  command_id="$(new_command_id)"
-  password_file="$PRIVATE_DIR/auth-password-$command_id"
-  (
-    trap 'clear_private "$password_file" || true; clear_private "$password_file.partial" || true' EXIT
-    local password password_bytes result
-    if [[ "${2:-}" == "--password-stdin" ]]; then
-      IFS= read -r -s password || true
-      [[ -n "$password" ]] || die "read the auth-key password from stdin"
-      password_bytes="$(LC_ALL=C printf '%s' "$password" | wc -c)"
-      (( password_bytes <= MAX_PASSWORD_BYTES )) || \
-        die "password exceeds $MAX_PASSWORD_BYTES bytes"
-      printf '%s' "$password" | write_private_stdin "$password_file"
-      unset password
-    fi
-    result="$(send_command_with_id "$command_id" CONNECT 30 --es profile_id "$profile_id")"
-    require_ok "$result"
-    jq . <<<"$result"
-  )
+delete_kit() {
+  local kit_id="${1:-}"
+  [[ -n "$kit_id" ]] || die "delete requires KIT_ID"
+  local result
+  result="$(send_command DELETE_KIT 30 --es kit_id "$kit_id")"
+  require_ok "$result"
+  jq . <<<"$result"
+}
+
+connect_kit() {
+  local kit_id="${1:-}"
+  [[ -z "${2:-}" ]] || die "connect accepts at most one KIT_ID"
+  local result
+  if [[ -n "$kit_id" ]]; then
+    result="$(send_command CONNECT 30 --es kit_id "$kit_id")"
+  else
+    result="$(send_command CONNECT 30)"
+  fi
+  require_ok "$result"
+  jq . <<<"$result"
 }
 
 disconnect_vpn() {
@@ -318,17 +320,6 @@ wait_phase() {
   die "timed out waiting for VPN phase $wanted (last: ${phase:-unknown})"
 }
 
-self_test() {
-  local mode="${1:-quick}" timeout=240
-  [[ "$mode" == "quick" || "$mode" == "full" ]] || die "self-test mode must be quick or full"
-  [[ "$mode" == "full" ]] && timeout=1200
-  local result
-  result="$(send_command SELF_TEST "$timeout" --es mode "$mode")"
-  require_ok "$result"
-  jq . <<<"$result"
-  read_private "$PRIVATE_DIR/self-test.txt"
-}
-
 network_bench() {
   local url="${1:-}"
   local max_bytes="${2:-67108864}"
@@ -341,9 +332,14 @@ network_bench() {
 }
 
 smoke() {
-  local profile_id="${1:-}"
-  local url="${2:-}"
-  [[ -n "$profile_id" ]] || die "smoke requires PROFILE_ID"
+  local kit_id="" url=""
+  # One argument that looks like a URL is the URL, with the selected kit.
+  if [[ "${1:-}" == http://* || "${1:-}" == https://* ]]; then
+    url="$1"
+  else
+    kit_id="${1:-}"
+    url="${2:-}"
+  fi
   local connected=0
   cleanup_smoke() {
     if (( connected )); then
@@ -351,7 +347,7 @@ smoke() {
     fi
   }
   trap cleanup_smoke EXIT INT TERM
-  connect_profile "$profile_id"
+  connect_kit "$kit_id"
   connected=1
   wait_phase Connected 90 >/dev/null
   if [[ -n "$url" ]]; then
@@ -380,236 +376,12 @@ collect() {
   local output="${1:-$ROOT_DIR/artifacts/android-agent/$(date -u +%Y%m%dT%H%M%SZ)}"
   mkdir -p "$output"
   status > "$output/snapshot.json"
-  profiles > "$output/profiles.json"
+  kits > "$output/kits.json"
   doctor > "$output/device.json"
   "${ADB[@]}" shell dumpsys meminfo "$PACKAGE" > "$output/meminfo.txt"
   "${ADB[@]}" shell dumpsys package "$PACKAGE" > "$output/package.txt"
   logs > "$output/logs.txt"
-  read_private "$PRIVATE_DIR/self-test.txt" > "$output/self-test.txt" 2>/dev/null || true
   printf '%s\n' "$output"
-}
-
-server_exec() {
-  local host="$1"
-  shift
-  if [[ "$host" == "local" ]]; then
-    bash -s -- "$@"
-  else
-    ssh -o BatchMode=yes "$host" bash -s -- "$@"
-  fi
-}
-
-server_start() {
-  local host="${1:-}" server_dir="${2:-}" packet="${3:-}"
-  [[ -n "$host" && -n "$server_dir" ]] || die "server-start requires local|HOST SERVER_DIR"
-  [[ "$packet" == "" || "$packet" == "--packet" ]] || die "unknown server-start option: $packet"
-  server_exec "$host" "$server_dir" "$packet" <<'REMOTE'
-set -euo pipefail
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-server_dir="$1"
-packet="$2"
-cd -- "$server_dir"
-[[ -x ./start-cover && -x ./start-yumed ]] || { echo "server kit scripts are missing" >&2; exit 1; }
-mkdir -p .android-agent
-if [[ -f .android-agent/cleanup.required ]]; then
-  echo "managed server cleanup is required; run server-stop before restart" >&2
-  exit 1
-fi
-if [[ "$packet" == "--packet" ]]; then
-  [[ -x ./packet-up && -x ./packet-down ]] || {
-    echo "packet-enabled server kit requires executable packet-up and packet-down" >&2
-    exit 1
-  }
-elif [[ -f .android-agent/packet.enabled ]]; then
-  echo "managed packet routing is still enabled; stop it before a non-packet start" >&2
-  exit 1
-fi
-existing_yumed_pid=""
-existing_cover_pid=""
-for name in yumed cover; do
-  pid_file=".android-agent/$name.pid"
-  [[ -f "$pid_file" ]] || continue
-  existing_pid="$(cat "$pid_file")"
-  [[ "$existing_pid" =~ ^[0-9]+$ ]] || {
-    echo "invalid managed $name PID file; run server-stop before restart" >&2
-    exit 1
-  }
-  kill -0 "$existing_pid" 2>/dev/null || {
-    echo "stale managed $name PID $existing_pid; run server-stop before restart" >&2
-    exit 1
-  }
-  existing_command="$(tr '\0' ' ' < "/proc/$existing_pid/cmdline" 2>/dev/null || true)"
-  case "$name" in
-    yumed) [[ "$existing_command" == *yumed* ]] ;;
-    cover) [[ "$existing_command" == *node* || "$existing_command" == *backend.mjs* ]] ;;
-  esac || {
-    echo "refusing stale $name PID $existing_pid: $existing_command" >&2
-    exit 1
-  }
-  printf -v "existing_${name}_pid" '%s' "$existing_pid"
-done
-if [[ -n "$existing_yumed_pid" || -n "$existing_cover_pid" ]]; then
-  [[ -n "$existing_yumed_pid" && -n "$existing_cover_pid" ]] || {
-    echo "partial managed server state; run server-stop before restart" >&2
-    exit 1
-  }
-  if [[ "$packet" == "--packet" && ! -f .android-agent/packet.enabled ]]; then
-    echo "managed server is already running without packet routing" >&2
-    exit 1
-  fi
-  echo "server already running: yumed=$existing_yumed_pid cover=$existing_cover_pid"
-  exit 0
-fi
-if [[ -f .android-agent/packet.enabled ]]; then
-  echo "managed packet routing marker remains without a live yumed; run server-stop before restart" >&2
-  exit 1
-fi
-packet_attempted=0
-cover_pid=""
-yumed_pid=""
-stop_started_process() {
-  local name="$1" pid="$2"
-  if [[ -z "$pid" ]]; then
-    rm -f ".android-agent/$name.pid"
-    return 0
-  fi
-  if kill -0 "$pid" 2>/dev/null; then
-    kill "$pid" 2>/dev/null || return 1
-    for _ in $(seq 1 50); do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 0.1
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-      echo "failed to stop started $name PID $pid during rollback" >&2
-      return 1
-    fi
-  fi
-  wait "$pid" 2>/dev/null || true
-  rm -f ".android-agent/$name.pid"
-}
-cleanup_failed_start() {
-  status=$?
-  if (( status != 0 )); then
-    rollback_complete=1
-    stop_started_process yumed "$yumed_pid" || rollback_complete=0
-    stop_started_process cover "$cover_pid" || rollback_complete=0
-    if (( packet_attempted != 0 )); then
-      if ./packet-down >>.android-agent/packet-down.log 2>&1; then
-        rm -f .android-agent/packet.enabled
-      else
-        : >.android-agent/packet.enabled
-        rollback_complete=0
-      fi
-    fi
-    if (( rollback_complete == 0 )); then
-      : >.android-agent/cleanup.required
-      echo "server start rollback is incomplete; preserving cleanup-required state for server-stop" >&2
-    else
-      rm -f .android-agent/cleanup.required
-    fi
-  fi
-  return "$status"
-}
-trap cleanup_failed_start EXIT
-nohup ./start-cover >.android-agent/cover.log 2>&1 &
-cover_pid="$!"
-echo "$cover_pid" >.android-agent/cover.pid
-if [[ "$packet" == "--packet" ]]; then
-  packet_attempted=1
-  : >.android-agent/packet.enabled
-  ./packet-up >.android-agent/packet-up.log 2>&1
-fi
-nohup ./start-yumed >.android-agent/yumed.log 2>&1 &
-yumed_pid="$!"
-echo "$yumed_pid" >.android-agent/yumed.pid
-sleep 1
-kill -0 "$cover_pid"
-kill -0 "$yumed_pid"
-trap - EXIT
-echo "yumed pid=$(cat .android-agent/yumed.pid) cover pid=$(cat .android-agent/cover.pid)"
-REMOTE
-}
-
-server_status() {
-  local host="${1:-}" server_dir="${2:-}"
-  [[ -n "$host" && -n "$server_dir" ]] || die "server-status requires local|HOST SERVER_DIR"
-  server_exec "$host" "$server_dir" <<'REMOTE'
-set -euo pipefail
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-cd -- "$1"
-for name in cover yumed; do
-  pid="$(cat ".android-agent/$name.pid" 2>/dev/null || true)"
-  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-    echo "$name running pid=$pid"
-  else
-    echo "$name stopped"
-  fi
-done
-if [[ -f .android-agent/cleanup.required ]]; then
-  echo "server cleanup required (marker present)"
-fi
-if [[ -f .android-agent/packet.enabled ]]; then
-  echo "packet routing managed (marker present)"
-else
-  echo "packet routing disabled"
-fi
-tail -n 20 .android-agent/yumed.log 2>/dev/null || true
-REMOTE
-}
-
-server_stop() {
-  local host="${1:-}" server_dir="${2:-}" packet="${3:-}"
-  [[ -n "$host" && -n "$server_dir" ]] || die "server-stop requires local|HOST SERVER_DIR"
-  [[ "$packet" == "" || "$packet" == "--packet" ]] || die "unknown server-stop option: $packet"
-  server_exec "$host" "$server_dir" "$packet" <<'REMOTE'
-set -euo pipefail
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-cd -- "$1"
-packet="$2"
-mkdir -p .android-agent
-packet_managed=0
-[[ -f .android-agent/packet.enabled ]] && packet_managed=1
-if [[ "$packet" == "--packet" || "$packet_managed" == "1" ]]; then
-  [[ -x ./packet-down ]] || {
-    echo "packet-enabled server stop requires executable packet-down" >&2
-    exit 1
-  }
-fi
-: >.android-agent/cleanup.required
-stop_managed_process() {
-  local name="$1" pid command
-  pid="$(cat ".android-agent/$name.pid" 2>/dev/null || true)"
-  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-    command="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
-    case "$name" in
-      yumed) [[ "$command" == *yumed* ]] ;;
-      cover) [[ "$command" == *node* || "$command" == *backend.mjs* ]] ;;
-    esac || { echo "refusing stale $name PID $pid: $command" >&2; exit 1; }
-    kill "$pid"
-    for _ in $(seq 1 50); do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 0.1
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-      echo "failed to stop managed $name PID $pid" >&2
-      return 1
-    fi
-  fi
-  rm -f ".android-agent/$name.pid"
-}
-stop_managed_process yumed
-stop_managed_process cover
-if [[ "$packet" == "--packet" || "$packet_managed" == "1" ]]; then
-  if ./packet-down >.android-agent/packet-down.log 2>&1; then
-    rm -f .android-agent/packet.enabled
-  else
-    echo "packet-down failed; preserving the managed marker for retry" >&2
-    exit 1
-  fi
-fi
-rm -f .android-agent/yumed.pid .android-agent/cover.pid
-rm -f .android-agent/cleanup.required
-REMOTE
 }
 
 main() {
@@ -618,9 +390,6 @@ main() {
   case "$command" in
     help|-h|--help) usage ;;
     build) build_agent "$@" ;;
-    server-start) server_start "$@" ;;
-    server-status) server_status "$@" ;;
-    server-stop) server_stop "$@" ;;
     *)
       select_device
       case "$command" in
@@ -628,13 +397,13 @@ main() {
         install) install_agent "$@" ;;
         launch) "${ADB[@]}" shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 >/dev/null ;;
         prepare) prepare_vpn ;;
-        import) import_bundle "$@" ;;
-        profiles) profiles ;;
-        connect) connect_profile "$@" ;;
+        import) import_kit "$@" ;;
+        kits) kits ;;
+        delete) delete_kit "$@" ;;
+        connect) connect_kit "$@" ;;
         disconnect) disconnect_vpn ;;
         status) status ;;
         wait) wait_phase "$@" ;;
-        self-test) self_test "$@" ;;
         bench) network_bench "$@" ;;
         smoke) smoke "$@" ;;
         logs) logs ;;

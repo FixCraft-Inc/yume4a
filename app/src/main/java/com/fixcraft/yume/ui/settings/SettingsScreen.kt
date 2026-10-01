@@ -49,7 +49,6 @@ import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.MainUiState
 import com.fixcraft.yume.R
 import com.fixcraft.yume.data.AppLanguage
-import com.fixcraft.yume.data.LogLanguage
 import com.fixcraft.yume.data.ThemeColorMode
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AppLanguageGroup
@@ -69,16 +68,16 @@ fun SettingsScreen(
     onChangeAppDataPassword: suspend (String, String, String) -> String?,
     onDisableAppDataPassword: suspend (String) -> String?,
     onSelectLanguage: (AppLanguage) -> Unit,
-    onSelectLogLanguage: (LogLanguage) -> Unit,
     onSetAdvancedMode: (Boolean) -> Unit,
+    onSetDnsServers: (String) -> Boolean,
+    onSetCarryIpv6: (Boolean) -> Unit,
     onDeleteDownloadedLanguage: (AppLanguage.AutoTranslated) -> Unit,
     onOpenCredits: () -> Unit,
-    onOpenDiagnostics: () -> Unit,
 ) {
     val strings = appStrings()
     val context = LocalContext.current
     var showLanguageDialog by remember { mutableStateOf(false) }
-    var showLogLanguageDialog by remember { mutableStateOf(false) }
+    var showDnsDialog by remember { mutableStateOf(false) }
     var passwordDialogMode by remember { mutableStateOf<AppDataPasswordDialogMode?>(null) }
     val batteryOptimized = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         !AndroidSystemSettings.isIgnoringBatteryOptimizations(context)
@@ -97,7 +96,6 @@ fun SettingsScreen(
     } else {
         strings.languageSummary(uiState.appSettings.language)
     }
-    val logLanguageSummary = strings.logLanguageSummary(uiState.appSettings.logLanguage)
     val notificationsAllowed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         ContextCompat.checkSelfPermission(
             context,
@@ -193,45 +191,39 @@ fun SettingsScreen(
         )
     }
 
-    if (showLogLanguageDialog) {
-        val logLanguageOptions = remember {
-            listOf(
-                LogLanguage.FollowApp,
-                LogLanguage.English,
-                LogLanguage.Russian,
-                LogLanguage.Japanese,
-                LogLanguage.Ukrainian,
-            )
-        }
+    if (showDnsDialog) {
+        var text by remember { mutableStateOf(uiState.appSettings.dnsServers.joinToString(", ")) }
+        var invalid by remember { mutableStateOf(false) }
         AlertDialog(
-            onDismissRequest = { showLogLanguageDialog = false },
+            onDismissRequest = { showDnsDialog = false },
             modifier = Modifier.appDialogWidth(),
-            title = { Text(strings.logLanguageDialogTitle) },
+            title = { Text(strings.dnsServersLabel) },
             text = {
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 360.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(
-                        items = logLanguageOptions,
-                        key = { language -> language.wireValue },
-                    ) { language ->
-                        SettingChoiceCard(
-                            title = strings.logLanguageName(language),
-                            description = strings.logLanguageDescription(language),
-                            selected = uiState.appSettings.logLanguage == language,
-                            enabled = true,
-                            onClick = {
-                                onSelectLogLanguage(language)
-                                showLogLanguageDialog = false
-                            },
-                        )
-                    }
-                }
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = {
+                        text = it.take(200)
+                        invalid = false
+                    },
+                    supportingText = {
+                        Text(if (invalid) strings.dnsServerFormatError else strings.dnsServersHelper)
+                    },
+                    isError = invalid,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             },
             confirmButton = {
-                TextButton(onClick = { showLogLanguageDialog = false }) {
-                    Text(strings.close)
+                TextButton(
+                    onClick = {
+                        if (onSetDnsServers(text)) showDnsDialog = false else invalid = true
+                    },
+                ) {
+                    Text(strings.save)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDnsDialog = false }) {
+                    Text(strings.cancel)
                 }
             },
             properties = appDialogProperties,
@@ -253,24 +245,6 @@ fun SettingsScreen(
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item {
-            SettingGroupCard(
-                title = strings.connectionGroupTitle,
-                subtitle = strings.transportFixedSummary,
-            ) {
-                SettingFact(strings.routingShortLabel, strings.transportModeValue)
-                SettingFact(strings.carrierLabel, strings.carrierValue)
-                SettingFact(strings.authenticationLabel, strings.authenticationValue)
-                SettingFact(strings.innerLabel, strings.innerValue)
-                SettingFact(strings.runtimeIpv6PolicyLabel, strings.runtimeIpv6FailClosedStatus)
-                Text(
-                    text = "${strings.qualificationLabel}: ${strings.androidUnqualifiedStatus}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-
         item {
             SettingGroupCard(
                 title = strings.themeGroupTitle,
@@ -341,14 +315,6 @@ fun SettingsScreen(
                     iconRes = R.drawable.ic_translate_action,
                     onClick = { showLanguageDialog = true },
                 )
-                if (uiState.appSettings.advancedMode) {
-                    SettingActionRow(
-                        label = strings.logLanguageLabel,
-                        value = logLanguageSummary,
-                        iconRes = R.drawable.ic_translate_action,
-                        onClick = { showLogLanguageDialog = true },
-                    )
-                }
             }
         }
 
@@ -363,6 +329,27 @@ fun SettingsScreen(
                     checked = uiState.appSettings.advancedMode,
                     onCheckedChange = onSetAdvancedMode,
                 )
+            }
+        }
+
+        if (uiState.appSettings.advancedMode) {
+            item {
+                SettingGroupCard(
+                    title = strings.networkGroupTitle,
+                    subtitle = strings.appliesOnNextConnect,
+                ) {
+                    SettingActionRow(
+                        label = strings.dnsServersLabel,
+                        value = uiState.appSettings.dnsServers.joinToString(", "),
+                        onClick = { showDnsDialog = true },
+                    )
+                    SettingToggleRow(
+                        title = strings.carryIpv6Title,
+                        description = strings.carryIpv6Description,
+                        checked = uiState.appSettings.carryIpv6,
+                        onCheckedChange = onSetCarryIpv6,
+                    )
+                }
             }
         }
 
@@ -385,7 +372,7 @@ fun SettingsScreen(
                 SettingFact(strings.authorLabel, "F1xGOD")
                 SettingFact(strings.companyLabel, "FixCraft, Inc.")
                 SettingFact(strings.appLabel, "${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_TYPE})")
-                SettingFact(strings.yumeLabel, BuildConfig.YUME_PROTOCOL_VERSION)
+                SettingFact(strings.yumeLabel, BuildConfig.YUME_VERSION)
                 SettingFact(strings.basefwxLabel, BuildConfig.BASEFWX_ENGINE_VERSION)
                 OutlinedButton(
                     onClick = onOpenCredits,
@@ -401,12 +388,6 @@ fun SettingsScreen(
                 title = strings.systemGroupTitle,
                 subtitle = null,
             ) {
-                FilledTonalButton(
-                    onClick = onOpenDiagnostics,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(strings.diagnosticsButton)
-                }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     OutlinedButton(
                         onClick = { AndroidSystemSettings.openBatteryOptimizationControls(context) },

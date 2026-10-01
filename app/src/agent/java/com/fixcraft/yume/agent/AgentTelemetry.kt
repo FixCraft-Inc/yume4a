@@ -9,7 +9,8 @@ import com.fixcraft.yume.vpn.TrafficHistory
 import com.fixcraft.yume.vpn.VpnConnectionState
 import com.fixcraft.yume.vpn.VpnPhase
 import com.fixcraft.yume.vpn.YumeVpnRuntime
-import com.fixcraft.yume.transport.SharedYumeNative
+import com.fixcraft.yume.core.YumeLibrary
+import com.fixcraft.yume.core.YumeStatus
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
@@ -30,15 +31,15 @@ internal object AgentTelemetry {
     private var connectStartedElapsedMs: Long? = null
     private var lastOperation = JSONObject()
     private val nativeBuildIdentity: JSONObject by lazy {
-        SharedYumeNative { false }.use { native ->
-            val build = native.buildInfo
-            JSONObject()
-                .put("abi_version", build.abiVersion)
-                .put("feature_flags", build.featureFlags)
-                .put("yume_version", build.yumeVersion)
-                .put("basefwx_version", build.basefwxVersion)
-                .put("pq_backend", build.pqBackend)
-        }
+        val build = YumeLibrary.build() ?: return@lazy JSONObject().put("available", false)
+        JSONObject()
+            .put("available", true)
+            .put("abi_version", build.abiVersion)
+            .put("yume_version", build.productVersion)
+            .put("protocol", build.protocolName)
+            .put("suite", build.suite)
+            .put("config_schema", build.configSchema)
+            .put("crypto_backend", build.cryptoBackend)
     }
 
     fun start(context: Context) {
@@ -169,7 +170,7 @@ internal object AgentTelemetry {
         .put("build_type", BuildConfig.BUILD_TYPE)
         .put("debuggable", BuildConfig.DEBUG)
         .put("adb_test_control", BuildConfig.ENABLE_ADB_TEST_CONTROL)
-        .put("yume_protocol", BuildConfig.YUME_PROTOCOL_VERSION)
+        .put("yume", BuildConfig.YUME_VERSION)
         .put("basefwx", BuildConfig.BASEFWX_ENGINE_VERSION)
         .put("native", JSONObject(nativeBuildIdentity.toString()))
 
@@ -198,26 +199,18 @@ internal object AgentTelemetry {
 
     private fun stateJson(state: VpnConnectionState) = JSONObject()
         .put("phase", state.phase.name)
-        .put("brief_status", state.briefStatus)
-        .put("headline", state.headline)
-        .put("detail", state.detail)
-        .put("active_profile_id", state.activeProfileId ?: JSONObject.NULL)
+        .put("kit_id", state.kitId ?: JSONObject.NULL)
+        .put("kit_name", state.kitName ?: JSONObject.NULL)
         .put("endpoint", state.endpointLabel ?: JSONObject.NULL)
-        .put("session_ipv4", state.sessionIpv4 ?: JSONObject.NULL)
-        .put("session_mtu", state.sessionMtu ?: JSONObject.NULL)
-        .put("session_dns", JSONArray(state.sessionDnsServers))
-        .put("upstream_network", state.upstreamNetworkLabel ?: JSONObject.NULL)
-        .put("control_socket_protected", state.controlSocketProtected)
-        .put("vpn_interface_established", state.vpnInterfaceEstablished)
-        .put("traffic_routed_through_yume", state.trafficRoutedThroughYume)
-        .put("route", state.activeRouteLabel ?: JSONObject.NULL)
-        .put("transport", state.transportSummary)
-        .put("inner", state.innerSummary)
-        .put("ratchet", state.ratchetSummary)
-        .put("verity", state.veritySummary)
-        .put("server_mode", state.serverMode ?: JSONObject.NULL)
-        .put("server_version", state.serverVersion ?: JSONObject.NULL)
-        .put("exit_ip", state.exitIp ?: JSONObject.NULL)
+        .put("failure", state.failure.name)
+        .put("failure_detail", state.failureDetail)
+        .put("waiting_for_network", state.waitingForNetwork)
+        .put("upstream", state.upstream?.name ?: JSONObject.NULL)
+        .put("server_address", state.serverAddress ?: JSONObject.NULL)
+        .put("mtu", state.mtu)
+        .put("dns", JSONArray(state.dnsServers))
+        .put("carries_ipv6", state.carriesIpv6)
+        .put("endpoint_status", state.status?.let(::statusJson) ?: JSONObject.NULL)
         .put("events", JSONArray().apply {
             state.eventLog.forEach { entry ->
                 put(JSONObject()
@@ -226,6 +219,27 @@ internal object AgentTelemetry {
                     .put("message", entry.message))
             }
         })
+
+    // yume_endpoint_status as the library reported it. The fingerprint is the
+    // server's public identity, not a secret.
+    private fun statusJson(status: YumeStatus) = JSONObject()
+        .put("state", status.state)
+        .put("session", status.session)
+        .put("last_failure", status.lastFailure)
+        .put("last_failure_message", status.lastFailureMessage)
+        .put("sessions", status.sessions)
+        .put("failed_attempts", status.failedAttempts)
+        .put("connected_ms", status.connectedMs)
+        .put("retry_ms", status.retryMs)
+        .put("epoch_bytes", status.epochBytes)
+        .put("idle_epoch_rotation", status.idleEpochRotation)
+        .put("payload_bytes_sent", status.payloadBytesSent)
+        .put("payload_bytes_received", status.payloadBytesReceived)
+        .put("record_bytes_sent", status.recordBytesSent)
+        .put("record_bytes_received", status.recordBytesReceived)
+        .put("tcp_connections", status.tcpConnections)
+        .put("udp_destinations", status.udpDestinations)
+        .put("peer_fingerprint_sha256", status.peerFingerprint)
 
     private fun trafficJson(traffic: TrafficHistory) = JSONObject()
         .put("total_rx_bytes", traffic.totalRxBytes)

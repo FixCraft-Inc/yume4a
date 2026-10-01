@@ -26,8 +26,7 @@ class AgentCommandActivity : Activity() {
         val serviceIntent = Intent(this, AgentCommandService::class.java).apply {
             action = intent.action
             putExtra(AgentProtocol.EXTRA_COMMAND_ID, commandId)
-            copyBoundedString(intent, this, AgentProtocol.EXTRA_PROFILE_ID, 128)
-            copyBoundedString(intent, this, AgentProtocol.EXTRA_MODE, 16)
+            copyBoundedString(intent, this, AgentProtocol.EXTRA_KIT_ID, 128)
             copyBoundedString(intent, this, AgentProtocol.EXTRA_URL, 2_048)
             putExtra(
                 AgentProtocol.EXTRA_MAX_BYTES,
@@ -61,11 +60,11 @@ class AgentCommandActivity : Activity() {
     private companion object {
         val ALLOWED_ACTIONS = setOf(
             AgentProtocol.ACTION_SNAPSHOT,
-            AgentProtocol.ACTION_PROFILES,
+            AgentProtocol.ACTION_KITS,
             AgentProtocol.ACTION_CONNECT,
             AgentProtocol.ACTION_DISCONNECT,
-            AgentProtocol.ACTION_IMPORT_BUNDLE,
-            AgentProtocol.ACTION_SELF_TEST,
+            AgentProtocol.ACTION_IMPORT_KIT,
+            AgentProtocol.ACTION_DELETE_KIT,
             AgentProtocol.ACTION_NETWORK_BENCH,
         )
         val COMMAND_ID = Regex("^[A-Za-z0-9._-]{1,96}$")

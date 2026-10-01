@@ -1,23 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-
-   Actual secret blobs (auth keys, CA material, vault data, secure material files)
-   are stored in noBackupFilesDir, so Android already excludes them. These rules
-   cover the three SharedPreferences files that contain sensitive metadata and
-   legacy migration data that should not land in cloud backup.
-
-   yume_app_settings is intentionally kept — it holds only UI preferences
-   (theme, language, connection technique) with no credentials.
+   Nothing this application stores is backed up or transferred to another
+   device. Kits hold private keys, and they live in noBackupFilesDir, which
+   Android never includes. The preference files below hold the wrapped vault
+   key and the identifier of the kit to reconnect, so they are excluded too.
+   The manifest also sets allowBackup to false, which older releases honour.
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <exclude domain="sharedpref" path="yume_app_vault_boot"/>
-        <exclude domain="sharedpref" path="yume_secure_materials"/>
-        <exclude domain="sharedpref" path="yume_vpn_profiles"/>
+        <exclude domain="root" path="."/>
+        <exclude domain="file" path="."/>
+        <exclude domain="database" path="."/>
+        <exclude domain="sharedpref" path="."/>
+        <exclude domain="external" path="."/>
     </cloud-backup>
     <device-transfer>
-        <exclude domain="sharedpref" path="yume_app_vault_boot"/>
-        <exclude domain="sharedpref" path="yume_secure_materials"/>
-        <exclude domain="sharedpref" path="yume_vpn_profiles"/>
+        <exclude domain="root" path="."/>
+        <exclude domain="file" path="."/>
+        <exclude domain="database" path="."/>
+        <exclude domain="sharedpref" path="."/>
+        <exclude domain="external" path="."/>
     </device-transfer>
 </data-extraction-rules>

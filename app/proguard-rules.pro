@@ -6,10 +6,11 @@
 -keepclasseswithmembernames,includedescriptorclasses class * {
     native <methods>;
 }
--keep class com.fixcraft.yume.transport.YumeNativeTransport { *; }
--keep class com.fixcraft.yume.transport.SharedYumeNative { *; }
--keep class com.fixcraft.yume.tunnel.YumeTunnelBridge { *; }
--keep class com.fixcraft.yume.vpn.NativeDirectPacketEngine { *; }
+# yume_android_jni.cpp registers YumeNative's entries and calls these two
+# interfaces by name and signature.
+-keep class com.fixcraft.yume.core.YumeNative { *; }
+-keep interface com.fixcraft.yume.core.SocketProtector { *; }
+-keep interface com.fixcraft.yume.core.KitSink { *; }
 
 # Vault/JSON storage uses class names to round-trip enums and sealed values.
 -keepclassmembers enum * { *; }
@@ -29,10 +30,6 @@
 -keep class org.bouncycastle.asn1.** { *; }
 -dontwarn org.bouncycastle.**
 -dontnote org.bouncycastle.**
-
-# Conscrypt is auto-discovered via Provider SPI from META-INF/services.
--keep class org.conscrypt.** { *; }
--dontwarn org.conscrypt.**
 
 # ML Kit / Firebase use ComponentRegistrar discovered through MlKitInitProvider
 # at startup. R8 sees no direct call site for the no-arg ctor and strips it,
