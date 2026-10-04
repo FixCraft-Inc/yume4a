@@ -132,9 +132,14 @@ class YumeVpnService : VpnService() {
     }
 
     override fun onRevoke() {
+        // Another VPN took over, or the user disconnected this one in
+        // Settings. The base class would stop the service at once, and
+        // onDestroy would then cancel this stop before it publishes the end,
+        // leaving the app at Disconnecting with its connect button disabled.
+        // stop() ends the service itself once the run has cleaned up.
         restartPreferences.edit().remove(KEY_KIT_ID).apply()
+        YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Android revoked the VPN.")
         stop()
-        super.onRevoke()
     }
 
     override fun onDestroy() {
@@ -144,6 +149,9 @@ class YumeVpnService : VpnService() {
         client.get()?.stop()
         networks.unregister()
         scope.cancel()
+        // Nothing of this service runs any more. A stop the cancelled scope
+        // cut short would otherwise leave the state active for good.
+        YumeVpnRuntime.update { if (it.isActive) VpnConnectionState() else it }
         super.onDestroy()
     }
 
