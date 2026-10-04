@@ -1,5 +1,8 @@
 package com.fixcraft.yume.i18n
 
+// Built only with -PyumeMlKitTranslation=true. The default build uses
+// src/nomlkit's version, which offers no automatic translation.
+
 import android.content.Context
 import androidx.core.content.edit
 import com.fixcraft.yume.data.AppLanguage
@@ -27,14 +30,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-enum class LanguagePreparationStage { Downloading, Translating }
-
-data class LanguagePreparationProgress(
-    val stage: LanguagePreparationStage,
-    val done: Int,
-    val total: Int,
-)
 
 private data class TranslationRequest(
     val targetLocaleTag: String,

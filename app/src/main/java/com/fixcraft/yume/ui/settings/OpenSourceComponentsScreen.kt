@@ -18,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.i18n.appStrings
 
 private data class ComponentEntry(
@@ -50,12 +51,14 @@ fun OpenSourceComponentsScreen() {
         ComponentGroup(
             heading = strings.componentGroupAndroidOnly,
             blurb = strings.componentGroupAndroidOnlyBlurb,
-            entries = listOf(
+            entries = listOfNotNull(
                 ComponentEntry("BaseFWX", strings.componentBasefwxUsage, "GPL-3.0"),
                 ComponentEntry("Bouncy Castle", strings.componentBouncyCastleUsage, "MIT"),
                 ComponentEntry("Jetpack Compose · Material 3", strings.componentComposeUsage, "Apache-2.0"),
                 ComponentEntry("kotlinx.coroutines", strings.componentCoroutinesUsage, "Apache-2.0"),
-                ComponentEntry("ML Kit Translation", strings.componentMlKitUsage, "ML Kit Terms of Service"),
+                // Only a build with -PyumeMlKitTranslation=true contains it.
+                ComponentEntry("ML Kit Translation", strings.componentMlKitUsage, "ML Kit Terms of Service")
+                    .takeIf { BuildConfig.ML_KIT_TRANSLATION },
             ),
         ),
     )

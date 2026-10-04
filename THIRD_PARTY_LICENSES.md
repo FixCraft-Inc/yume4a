@@ -23,7 +23,8 @@ YUME's `docs/release/SBOM.spdx.json` lists their exact versions.
 - Bouncy Castle (MIT)
 - Jetpack Compose, Material 3 and AndroidX (Apache-2.0)
 - kotlinx.coroutines (Apache-2.0)
-- ML Kit Translation (ML Kit Terms of Service)
+- ML Kit Translation (ML Kit Terms of Service), only in builds made with
+  `-PyumeMlKitTranslation=true`
 
 The vendored hev-socks5-tunnel, lwIP and libyaml route stack, Conscrypt and
 the transport-v2 Kotlin code were removed and are no longer source or binary

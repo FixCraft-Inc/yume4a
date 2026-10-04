@@ -159,6 +159,13 @@ val syncBasefwxJavaResources by tasks.registering(Sync::class) {
     into(basefwxJavaResourcesOutputDir)
 }
 
+// Google ML Kit translates the interface into languages without bundled
+// strings. Its APIs send usage metrics to Google, the configured languages
+// among them, through Firebase, and it adds about 16 MB, so the default build
+// leaves it out entirely: no dependency, code or keep rules. Build with
+// -PyumeMlKitTranslation=true to include it (src/mlkit, proguard-mlkit.pro).
+val mlKitTranslation = (project.findProperty("yumeMlKitTranslation") as? String) == "true"
+
 android {
     namespace = "com.fixcraft.yume"
     compileSdk {
@@ -182,6 +189,7 @@ android {
         // ADB automation is compiled only into the dedicated `agent` build
         // type below. Production and ordinary debug APKs fail closed.
         buildConfigField("boolean", "ENABLE_ADB_TEST_CONTROL", "false")
+        buildConfigField("boolean", "ML_KIT_TRANSLATION", mlKitTranslation.toString())
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -228,6 +236,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (mlKitTranslation) proguardFiles("proguard-mlkit.pro")
         }
         create("agent") {
             initWith(getByName("release"))
@@ -287,6 +296,7 @@ android {
                 clear()
                 add(basefwxJavaOutputDir.get().asFile.absolutePath)
             }
+            kotlin.directories.add(if (mlKitTranslation) "src/mlkit/java" else "src/nomlkit/java")
             resources.directories.apply {
                 clear()
                 add(basefwxJavaResourcesOutputDir.get().asFile.absolutePath)
@@ -501,7 +511,7 @@ dependencies {
     implementation(libs.google.material)
     implementation(libs.bouncycastle.prov)
     implementation(libs.bouncycastle.pkix)
-    implementation(libs.google.mlkit.translate)
+    if (mlKitTranslation) implementation(libs.google.mlkit.translate)
     testImplementation(libs.junit)
     // android.jar's org.json is a stub in local unit tests.
     testImplementation(libs.json)
