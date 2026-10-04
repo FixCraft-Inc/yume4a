@@ -94,6 +94,7 @@ class YumeVpnService : VpnService() {
 
     private sealed interface MonitorEnd {
         data object AddressChanged : MonitorEnd
+        data object UnmeteredNetwork : MonitorEnd
         data class EndpointStopped(val detail: String) : MonitorEnd
     }
 
@@ -363,6 +364,12 @@ class YumeVpnService : VpnService() {
                     MonitorEnd.AddressChanged ->
                         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "The server's address changed. Reconnecting to it.")
 
+                    MonitorEnd.UnmeteredNetwork ->
+                        YumeVpnRuntime.appendLog(
+                            VpnLogLevel.Info,
+                            "An unmetered network is back. Moving the tunnel off mobile data.",
+                        )
+
                     is MonitorEnd.EndpointStopped ->
                         throw RunFailure(VpnFailure.Device, end.detail)
                 }
@@ -392,6 +399,9 @@ class YumeVpnService : VpnService() {
         var lastMessage = 0L
         var lastSession = YumeStatus.SESSION_NONE
         var addressChecked = false
+        // The network the current session came up on. Its socket stays
+        // there until the session ends, even after Android prefers another.
+        var sessionNetwork: Network? = null
         networkChanged.set(false)
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Connected. Traffic now goes through YUME.")
         while (true) {
@@ -425,8 +435,20 @@ class YumeVpnService : VpnService() {
                 )
             }
             if (status.session != lastSession) {
+                if (active) sessionNetwork = networks.current()
                 lastSession = status.session
                 refreshNotification()
+            }
+            // A session that moved to mobile data when Wi-Fi went away would
+            // otherwise stay there after Wi-Fi returns, costing the user's
+            // data while Android shows Wi-Fi. Android prefers a validated
+            // unmetered network, so this moves at most once per return.
+            val preferred = networks.current()
+            val onMetered = sessionNetwork?.let { !networks.isUnmetered(it) } == true
+            if (active && onMetered && preferred != null && preferred != sessionNetwork &&
+                networks.isUnmetered(preferred)
+            ) {
+                return MonitorEnd.UnmeteredNetwork
             }
             // After repeated failures, see whether the name now leads
             // somewhere else, as it does when a server moves or the new

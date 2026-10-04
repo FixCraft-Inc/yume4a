@@ -56,6 +56,11 @@ internal class UnderlyingNetworks(
 
     fun current(): Network? = synchronized(lock) { chosen }
 
+    /** Whether the network is known and unmetered, as Wi-Fi and Ethernet usually are. */
+    fun isUnmetered(network: Network): Boolean = synchronized(lock) {
+        known[network]?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == true
+    }
+
     fun kind(): UpstreamKind? {
         val capabilities = synchronized(lock) { chosen?.let(known::get) } ?: return null
         return when {
