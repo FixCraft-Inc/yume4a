@@ -22,9 +22,9 @@ import java.util.Locale
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
- * One bundle per maintained non-English language. Add a language: drop a file
- * under `i18n/translations/` that implements this interface, then add it to
- * [maintainedBundles] in this file. Nothing else needs touching.
+ * One generated bundle per maintained non-English language. Add or edit messages
+ * in YUME's canonical `translations/catalog.json`, then regenerate this checkout;
+ * do not hand-edit the Kotlin maps.
  */
 internal interface LanguageBundle {
     val localeTag: String
@@ -55,7 +55,8 @@ class AppStrings private constructor(
     private fun t(english: String): String {
         seedCollector?.add(english)
         if (language == ResolvedAppLanguage.English) return english
-        return translationMap?.get(english)
+        val id = TranslationCatalog.sourceToId[english]
+        return (id?.let { translationMap?.get(it) })
             ?: autoTranslate?.invoke(english)
             ?: english
     }
@@ -245,6 +246,37 @@ class AppStrings private constructor(
     val appDataGroupTitle = t("App data")
     val advancedModeTitle = t("Advanced mode")
     val advancedModeDescription = t("Show network settings.")
+    val tuningGroupTitle = t("Connection tuning")
+    val tuningSubtitle = t("Choose the shared YUME posture for the selected kit. Changes apply the next time you connect.")
+    val tuningNoKit = t("Select a kit to tune its connection.")
+    val tuningStealth = t("Stealth")
+    val tuningSpeed = t("Speed")
+    val tuningSecurity = t("Security")
+    val tuningStealthNote = t("Changes windows, credit returns, and idle rotation; it does not promise classifier results.")
+    val tuningSpeedNote = t("Measured positions under the stated host and network conditions; fast and max need higher host TCP ceilings.")
+    val tuningSecurityNote = t("Data per key epoch; algorithms and mandatory rotation stay the same.")
+    val tuningLevelTemplate = t("Level %1\$d of 5")
+    val tuningApply = t("Apply tuning")
+    val tuningSaved = t("Tuning saved. It will be used on the next connection.")
+    val tuningSaveFailed = t("Yume refused these limits. Nothing was changed.")
+    val tuningCustom = t("Custom limits")
+    val tuningExpert = t("Expert editing")
+    val tuningExpertWarning = t("Expert values change the connection's resource limits. Invalid or unsafe values are refused by YUME. Edit one field at a time only if you understand the protocol.")
+    val tuningExpertConfirm = t("I know what I'm doing")
+    val tuningExpertUnlock = t("Unlock expert editing")
+    val tuningExpertLocked = t("Expert editing is locked until you acknowledge the warning.")
+    val tuningExpertOneAtTime = t("Apply one field at a time. The native core checks each value before saving.")
+    val tuningFieldEpoch = t("Data per key epoch")
+    val tuningFieldFlow = t("Flow budget")
+    val tuningFieldCredits = t("Credit returns per window")
+    val tuningFieldIdle = t("Rotate keys while idle")
+    val tuningOn = t("On")
+    val tuningOff = t("Off")
+    val tuningMeasuredTitle = t("Measured speed conditions")
+    val tuningEpochConditions = t("One host, one session, one download, loss-free emulated RTTs of 40, 100 and 200 ms, 6 MiB host TCP ceilings. Six 12-second samples per condition, tail-rate medians. Both peers use the selected limits.")
+    val tuningWindowConditions = t("One host, one session, one download, loss-free emulated RTTs of 40, 100 and 200 ms, host TCP ceilings raised to 64 MiB. Both peers use the selected limits.")
+    val tuningMeasurementLimit = t("Emulated paths only. Not a real-path speed or stealth claim.")
+    val tuningWindowLimit = t("A separate run from epoch-comparison. Host ceilings and the software emulator limit results. Not a real-path speed or stealth claim.")
     val amoledTitle = t("AMOLED black")
     val amoledDescription = t("Use true black in dark mode.")
     val themeSystem = t("System theme")

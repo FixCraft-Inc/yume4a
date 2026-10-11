@@ -88,6 +88,15 @@ object KitConfig {
         return root.toString().toByteArray(StandardCharsets.UTF_8)
     }
 
+    /** Replaces only the four shared tuning members, retaining every other member. */
+    fun withLimits(config: ByteArray, limits: TuningLimits): ByteArray {
+        val root = parse(config)
+        val existing = root.optJSONObject("limits") ?: JSONObject()
+        limits.toJson().keys().forEach { key -> existing.put(key, limits.toJson().get(key)) }
+        root.put("limits", existing)
+        return root.toString().toByteArray(StandardCharsets.UTF_8)
+    }
+
     /** True for an IPv4 or IPv6 literal, which needs no lookup. */
     fun isAddressLiteral(host: String): Boolean {
         if (host.isEmpty()) return false

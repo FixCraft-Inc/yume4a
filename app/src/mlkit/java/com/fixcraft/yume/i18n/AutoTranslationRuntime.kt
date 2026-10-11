@@ -266,8 +266,8 @@ object AutoTranslationRuntime {
         if (!isSupported(normalizedTarget)) return null
         if (formatSpecRegex.containsMatchIn(english)) return null
         val (sourceTag, sourceText) = when (familyForLocale(normalizedTarget)) {
-            TranslationFamily.Cyrillic -> "ru" to (LanguageRu.translations[english] ?: english)
-            TranslationFamily.EastAsian -> "ja" to (LanguageJa.translations[english] ?: english)
+            TranslationFamily.Cyrillic -> "ru" to (TranslationCatalog.sourceToId[english]?.let(LanguageRu.translations::get) ?: english)
+            TranslationFamily.EastAsian -> "ja" to (TranslationCatalog.sourceToId[english]?.let(LanguageJa.translations::get) ?: english)
             TranslationFamily.Global -> "en" to english
         }
         val trimmed = sourceText.trim()

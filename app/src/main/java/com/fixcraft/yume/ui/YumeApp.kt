@@ -117,6 +117,10 @@ fun YumeApp(
     onSetAdvancedMode: (Boolean) -> Unit,
     onSetDnsServers: (String) -> Boolean,
     onSetCarryIpv6: (Boolean) -> Unit,
+    onMoveTuningSlider: (String, Int) -> Unit,
+    onApplyTuning: () -> Unit,
+    onUnlockTuningExpert: () -> Unit,
+    onApplyTuningExpert: (String, String) -> Boolean,
     onDeleteDownloadedLanguage: (AppLanguage.AutoTranslated) -> Unit,
     languagePreparationState: LanguagePreparationUiState?,
     onClearNotice: () -> Unit,
@@ -239,6 +243,10 @@ fun YumeApp(
                         onSetAdvancedMode = onSetAdvancedMode,
                         onSetDnsServers = onSetDnsServers,
                         onSetCarryIpv6 = onSetCarryIpv6,
+                        onMoveTuningSlider = onMoveTuningSlider,
+                        onApplyTuning = onApplyTuning,
+                        onUnlockTuningExpert = onUnlockTuningExpert,
+                        onApplyTuningExpert = onApplyTuningExpert,
                         onDeleteDownloadedLanguage = onDeleteDownloadedLanguage,
                         onOpenCredits = {
                             navController.navigate(AppRoute.Credits)

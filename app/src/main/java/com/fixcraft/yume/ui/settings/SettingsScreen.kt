@@ -29,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -50,9 +51,12 @@ import androidx.core.content.ContextCompat
 import com.fixcraft.yume.AndroidSystemSettings
 import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.MainUiState
+import com.fixcraft.yume.TuningUiState
 import com.fixcraft.yume.R
 import com.fixcraft.yume.data.AppLanguage
 import com.fixcraft.yume.data.ThemeColorMode
+import com.fixcraft.yume.data.TuningLimits
+import com.fixcraft.yume.data.TuningPreset
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AppLanguageGroup
 import com.fixcraft.yume.i18n.AppLocaleManager
@@ -76,6 +80,10 @@ fun SettingsScreen(
     onSetAdvancedMode: (Boolean) -> Unit,
     onSetDnsServers: (String) -> Boolean,
     onSetCarryIpv6: (Boolean) -> Unit,
+    onMoveTuningSlider: (String, Int) -> Unit,
+    onApplyTuning: () -> Unit,
+    onUnlockTuningExpert: () -> Unit,
+    onApplyTuningExpert: (String, String) -> Boolean,
     onDeleteDownloadedLanguage: (AppLanguage.AutoTranslated) -> Unit,
     onOpenCredits: () -> Unit,
 ) {
@@ -84,6 +92,8 @@ fun SettingsScreen(
     var showLanguageDialog by remember { mutableStateOf(false) }
     var showDnsDialog by remember { mutableStateOf(false) }
     var passwordDialogMode by remember { mutableStateOf<AppDataPasswordDialogMode?>(null) }
+    var showExpertWarning by remember { mutableStateOf(false) }
+    var showExpertEditor by remember { mutableStateOf(false) }
     val batteryOptimized = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
         !AndroidSystemSettings.isIgnoringBatteryOptimizations(context)
     } else {
@@ -253,6 +263,15 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
+            TuningCard(
+                uiState = uiState,
+                onMoveSlider = onMoveTuningSlider,
+                onApply = onApplyTuning,
+                onOpenExpert = { showExpertWarning = true },
+            )
+        }
+
+        item {
             SettingGroupCard(
                 title = strings.themeGroupTitle,
                 subtitle = null,
@@ -421,12 +440,204 @@ fun SettingsScreen(
             }
         }
     }
+
+    if (showExpertWarning) {
+        ExpertWarningDialog(
+            onDismiss = { showExpertWarning = false },
+            onConfirm = {
+                showExpertWarning = false
+                onUnlockTuningExpert()
+                showExpertEditor = true
+            },
+        )
+    }
+    if (showExpertEditor && uiState.tuning.expertUnlocked) {
+        ExpertEditorDialog(
+            tuning = uiState.tuning,
+            onDismiss = { showExpertEditor = false },
+            onApply = onApplyTuningExpert,
+        )
+    }
 }
 
 private enum class AppDataPasswordDialogMode {
     Enable,
     Change,
     Disable,
+}
+
+@Composable
+private fun TuningCard(
+    uiState: MainUiState,
+    onMoveSlider: (String, Int) -> Unit,
+    onApply: () -> Unit,
+    onOpenExpert: () -> Unit,
+) {
+    val strings = appStrings()
+    val tuning = uiState.tuning
+    SettingGroupCard(title = strings.tuningGroupTitle, subtitle = strings.tuningSubtitle) {
+        if (uiState.selectedKit == null || tuning.limits == null) {
+            Text(strings.tuningNoKit, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            return@SettingGroupCard
+        }
+        val preset = tuning.preset
+        TuningSliderRow(strings.tuningStealth, strings.tuningStealthNote, "stealth", preset, tuning.saving, onMoveSlider)
+        TuningSliderRow(strings.tuningSpeed, strings.tuningSpeedNote, "speed", preset, tuning.saving, onMoveSlider)
+        TuningSliderRow(strings.tuningSecurity, strings.tuningSecurityNote, "security", preset, tuning.saving, onMoveSlider)
+        TuningLimitsFacts(tuning.limits, strings)
+        preset?.let { selected ->
+            val measured = if (selected.measurementReference == "epoch-comparison") {
+                strings.tuningEpochConditions
+            } else strings.tuningWindowConditions
+            Text(strings.tuningMeasuredTitle, style = MaterialTheme.typography.titleSmall)
+            Text(measured, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                if (selected.measurementReference == "epoch-comparison") strings.tuningMeasurementLimit else strings.tuningWindowLimit,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                selected.measurementValues.mapIndexed { index, value ->
+                    val rtt = selected.measurementRttMs.getOrElse(index) { 0 }
+                    "$rtt ms: $value ${if (selected.measurementReference == "epoch-comparison") "%" else "Mbit/s"}"
+                }.joinToString(" · "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } ?: Text(strings.tuningCustom, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        FilledTonalButton(
+            onClick = onApply,
+            enabled = !tuning.saving,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(strings.tuningApply) }
+        OutlinedButton(onClick = onOpenExpert, modifier = Modifier.fillMaxWidth()) {
+            Text(strings.tuningExpert)
+        }
+    }
+}
+
+@Composable
+private fun TuningSliderRow(
+    label: String,
+    note: String,
+    axis: String,
+    preset: TuningPreset?,
+    saving: Boolean,
+    onMoveSlider: (String, Int) -> Unit,
+) {
+    val strings = appStrings()
+    val level = preset?.levels?.get(axis) ?: 3
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+            Text(label, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                String.format(strings.tuningLevelTemplate, level),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Slider(
+            value = level.toFloat(),
+            onValueChange = { onMoveSlider(axis, it.toInt().coerceIn(1, 5)) },
+            valueRange = 1f..5f,
+            steps = 3,
+            enabled = preset != null && !saving,
+        )
+    }
+}
+
+@Composable
+private fun TuningLimitsFacts(limits: TuningLimits, strings: com.fixcraft.yume.i18n.AppStrings) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        FactRow(strings.tuningFieldEpoch, "${limits.maxEpochBytes / 1048576} MiB")
+        FactRow(strings.tuningFieldFlow, "${limits.maxQueuedBytes / 1048576} MiB")
+        FactRow(strings.tuningFieldCredits, limits.creditReturnsPerWindow.toString())
+        FactRow(strings.tuningFieldIdle, if (limits.idleEpochRotation) strings.tuningOn else strings.tuningOff)
+    }
+}
+
+@Composable
+private fun ExpertWarningDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    val strings = appStrings()
+    var acknowledged by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.appDialogWidth(),
+        title = { Text(strings.tuningExpert) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(strings.tuningExpertWarning)
+                Row(
+                    modifier = Modifier.fillMaxWidth().toggleable(
+                        value = acknowledged,
+                        role = Role.Checkbox,
+                        onValueChange = { acknowledged = it },
+                    ),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(checked = acknowledged, onCheckedChange = null)
+                    Text(strings.tuningExpertConfirm)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, enabled = acknowledged) { Text(strings.tuningExpertUnlock) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(strings.cancel) } },
+        properties = appDialogProperties,
+    )
+}
+
+@Composable
+private fun ExpertEditorDialog(
+    tuning: TuningUiState,
+    onDismiss: () -> Unit,
+    onApply: (String, String) -> Boolean,
+) {
+    val strings = appStrings()
+    val limits = tuning.limits ?: return
+    var epoch by remember(limits) { mutableStateOf(limits.maxEpochBytes.toString()) }
+    var flow by remember(limits) { mutableStateOf(limits.maxQueuedBytes.toString()) }
+    var credits by remember(limits) { mutableStateOf(limits.creditReturnsPerWindow.toString()) }
+    var idle by remember(limits) { mutableStateOf(limits.idleEpochRotation.toString()) }
+    val fields = listOf(
+        Triple(strings.tuningFieldEpoch, "max_epoch_bytes", epoch),
+        Triple(strings.tuningFieldFlow, "max_queued_bytes", flow),
+        Triple(strings.tuningFieldCredits, "credit_returns_per_window", credits),
+        Triple(strings.tuningFieldIdle, "idle_epoch_rotation", idle),
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.appDialogWidth(),
+        title = { Text(strings.tuningExpert) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                fields.forEach { (label, key, value) ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = value,
+                            onValueChange = { next ->
+                                when (key) {
+                                    "max_epoch_bytes" -> epoch = next.take(32)
+                                    "max_queued_bytes" -> flow = next.take(32)
+                                    "credit_returns_per_window" -> credits = next.take(32)
+                                    else -> idle = next.take(32)
+                                }
+                            },
+                            label = { Text(label) },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                        )
+                        TextButton(onClick = { onApply(key, value) }) { Text(strings.save) }
+                    }
+                }
+                Text(strings.tuningExpertOneAtTime, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(strings.close) } },
+        properties = appDialogProperties,
+    )
 }
 
 @Composable

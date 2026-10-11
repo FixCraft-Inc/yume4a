@@ -14,6 +14,9 @@ import com.fixcraft.yume.data.KitImport
 import com.fixcraft.yume.data.KitStore
 import com.fixcraft.yume.data.KitSummary
 import com.fixcraft.yume.data.ThemeColorMode
+import com.fixcraft.yume.data.TuningLimits
+import com.fixcraft.yume.data.TuningPreset
+import com.fixcraft.yume.data.TuningTable
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AutoTranslationRuntime
 import com.fixcraft.yume.i18n.appStrings
@@ -49,9 +52,18 @@ data class MainUiState(
     val vpnState: VpnConnectionState = VpnConnectionState(),
     val noticeMessage: String? = null,
     val busyState: BusyUiState? = null,
+    val tuning: TuningUiState = TuningUiState(),
 ) {
     val selectedKit: KitSummary? = kits.firstOrNull { it.id == selectedKitId }
 }
+
+data class TuningUiState(
+    val kitId: String? = null,
+    val limits: TuningLimits? = null,
+    val preset: TuningPreset? = null,
+    val saving: Boolean = false,
+    val expertUnlocked: Boolean = false,
+)
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val kitStore = KitStore.get(application)
@@ -60,9 +72,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _busyState = MutableStateFlow<BusyUiState?>(null)
     private val _downloadedLanguageTags = MutableStateFlow<Set<String>>(emptySet())
     private val _appDataPasswordEnabled = MutableStateFlow(AppVaultManager.isPasswordEnabled(application))
+    private val tuningTable = TuningTable.load(application)
+    private val _tuning = MutableStateFlow(TuningUiState())
 
     init {
         refreshDownloadedLanguages()
+        refreshTuning(kitStore.selectedId.value)
     }
 
     private val storedState = combine(
@@ -70,12 +85,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         kitStore.selectedId,
         appSettingsStore.settings,
         YumeVpnRuntime.state,
-    ) { kits, selectedId, settings, vpnState ->
+        _tuning,
+    ) { kits, selectedId, settings, vpnState, tuning ->
         MainUiState(
             kits = kits,
             selectedKitId = selectedId,
             appSettings = settings,
             vpnState = vpnState,
+            tuning = tuning,
         )
     }
 
@@ -116,6 +133,75 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectKit(kitId: String) {
         kitStore.select(kitId)
+        refreshTuning(kitId)
+    }
+
+    fun refreshTuning(kitId: String? = uiState.value.selectedKitId) {
+        _tuning.value = TuningUiState(kitId = kitId)
+        if (kitId == null) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val config = kitStore.readConfig(kitId)
+            val loaded = runCatching {
+                val json = org.json.JSONObject(String(config ?: error("kit unavailable"), Charsets.UTF_8))
+                val limits = tuningTable.effectiveLimits(json)
+                TuningUiState(kitId, limits, tuningTable.match(limits))
+            }.getOrNull()
+            if (_tuning.value.kitId == kitId) _tuning.value = loaded ?: TuningUiState(kitId = kitId)
+        }
+    }
+
+    fun selectTuningPreset(id: String) {
+        val preset = tuningTable.presets.firstOrNull { it.id == id } ?: return
+        if (_tuning.value.kitId != null) {
+            _tuning.value = _tuning.value.copy(limits = preset.limits, preset = preset)
+        }
+    }
+
+    fun moveTuningSlider(axis: String, level: Int) {
+        val current = _tuning.value.preset ?: return
+        tuningTable.move(current, axis, level)?.let { preset ->
+            _tuning.value = _tuning.value.copy(limits = preset.limits, preset = preset)
+        }
+    }
+
+    fun unlockTuningExpert() {
+        _tuning.value = _tuning.value.copy(expertUnlocked = true)
+    }
+
+    fun applyTuning() {
+        val state = _tuning.value
+        val kitId = state.kitId ?: return
+        val limits = state.limits ?: return
+        if (state.saving) return
+        viewModelScope.launch(Dispatchers.IO) {
+            _tuning.value = state.copy(saving = true)
+            val result = kitStore.updateLimits(kitId, limits)
+            withContext(Dispatchers.Main) {
+                _tuning.value = _tuning.value.copy(saving = false)
+                if (result.isSuccess) {
+                    _noticeMessage.value = strings().tuningSaved
+                    refreshTuning(kitId)
+                } else {
+                    _noticeMessage.value = strings().tuningSaveFailed
+                }
+            }
+        }
+    }
+
+    fun applyTuningExpert(key: String, value: String): Boolean {
+        val state = _tuning.value
+        if (!state.expertUnlocked || state.saving) return false
+        val old = state.limits ?: return false
+        val updated = when (key) {
+            "max_queued_bytes" -> value.toLongOrNull()?.let { old.copy(maxQueuedBytes = it) }
+            "max_epoch_bytes" -> value.toLongOrNull()?.let { old.copy(maxEpochBytes = it) }
+            "credit_returns_per_window" -> value.toIntOrNull()?.let { old.copy(creditReturnsPerWindow = it) }
+            "idle_epoch_rotation" -> value.toBooleanStrictOrNull()?.let { old.copy(idleEpochRotation = it) }
+            else -> null
+        } ?: return false
+        _tuning.value = state.copy(limits = updated, preset = tuningTable.match(updated))
+        applyTuning()
+        return true
     }
 
     fun renameKit(kitId: String, name: String) {

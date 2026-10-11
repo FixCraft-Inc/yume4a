@@ -207,6 +207,59 @@ class KitStore private constructor(context: Context) {
         }
     }
 
+    /** Returns a copy of the stored yume.json for settings inspection. */
+    fun readConfig(id: String): ByteArray? = synchronized(lock) {
+        val bundle = runCatching {
+            AppVaultManager.readBlobIfAvailable(appContext, blobName(id))
+        }.getOrNull() ?: return@synchronized null
+        try {
+            val files = KitBundle.decode(bundle)
+            return@synchronized files.firstOrNull { it.path == KitBundle.CONFIG_PATH }
+                ?.bytes?.copyOf().also { files.forEach { file -> file.bytes.fill(0) } }
+        } catch (_: Throwable) {
+            return@synchronized null
+        } finally {
+            bundle.fill(0)
+        }
+    }
+
+    /**
+     * Validates a complete edited client document through libyume before replacing
+     * the encrypted kit blob. Every file and every non-limit JSON member survives.
+     */
+    fun updateLimits(id: String, limits: TuningLimits): Result<Unit> = synchronized(lock) {
+        runCatching {
+            val bundle = AppVaultManager.readBlob(appContext, blobName(id))
+                ?: error("kit unavailable")
+            try {
+                val files = KitBundle.decode(bundle).toMutableList()
+                try {
+                    val configFile = files.first { it.path == KitBundle.CONFIG_PATH }
+                    val edited = KitConfig.withLimits(configFile.bytes, limits)
+                    require(YumeLibrary.checkConfig(edited) == YumeLibrary.ROLE_CLIENT) {
+                        "the edited kit is not a client"
+                    }
+                    // Validate the exact form the VPN service will hand to native code too.
+                    require(YumeLibrary.checkConfig(KitConfig.forDevice(edited, null)) == YumeLibrary.ROLE_CLIENT) {
+                        "the edited device kit is not a client"
+                    }
+                    configFile.bytes.fill(0)
+                    files[files.indexOf(configFile)] = KitFile(configFile.path, configFile.executable, edited)
+                    val replacement = KitBundle.encode(files)
+                    try {
+                        AppVaultManager.writeBlob(appContext, blobName(id), replacement)
+                    } finally {
+                        replacement.fill(0)
+                    }
+                } finally {
+                    files.forEach { it.bytes.fill(0) }
+                }
+            } finally {
+                bundle.fill(0)
+            }
+        }
+    }
+
     private fun selectLocked(id: String?) {
         val chosen = id?.takeIf { wanted -> _kits.value.any { it.id == wanted } }
         _selectedId.value = chosen

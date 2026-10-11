@@ -3,6 +3,7 @@ package com.fixcraft.yume.i18n
 import com.fixcraft.yume.data.ResolvedAppLanguage
 import com.fixcraft.yume.i18n.translations.LanguageJa
 import com.fixcraft.yume.i18n.translations.LanguageRu
+import com.fixcraft.yume.i18n.TranslationCatalog
 import com.fixcraft.yume.i18n.translations.LanguageUk
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -36,7 +37,7 @@ class AppStringsTranslationTest {
         val missing = mutableListOf<String>()
         for ((tag, map) in bundles) {
             for (seed in seeds) {
-                if (!map.containsKey(seed)) {
+                if (TranslationCatalog.sourceToId[seed]?.let(map::containsKey) != true) {
                     missing += "[$tag] $seed"
                 }
             }
@@ -49,6 +50,23 @@ class AppStringsTranslationTest {
     }
 
     @Test
+    fun generatedBundlesHaveExactlyTheCatalogIdsAndMatchingFormats() {
+        val ids = TranslationCatalog.sourceToId.values.toSet()
+        for ((tag, map) in bundles) {
+            assertEquals("[$tag] obsolete or missing IDs", ids, map.keys)
+            for ((source, id) in TranslationCatalog.sourceToId) {
+                val sourceKinds = formatKinds(source)
+                assertEquals("[$tag] placeholder mismatch for $id", sourceKinds, formatKinds(map.getValue(id)))
+            }
+        }
+    }
+
+    private fun formatKinds(value: String): List<Char> = Regex("""%(?:\d+\$)?[-+# 0,(]*\d*(?:\.\d+)?([sdif])""")
+        .findAll(value)
+        .map { it.groupValues[1][0] }
+        .toList()
+
+    @Test
     fun englishFallbackForUnknownKeyMatchesEnglish() {
         val russian = AppStrings.forLanguage(ResolvedAppLanguage.Russian)
         // Force a key that is not present in any language bundle by going
@@ -56,10 +74,10 @@ class AppStringsTranslationTest {
         // We test via a known good seed instead: it must return the bundle
         // value, not the english source.
         val seed = "Back"
-        assertNotNull(LanguageRu.translations[seed])
+        assertNotNull(LanguageRu.translations[TranslationCatalog.sourceToId[seed]])
         // Sanity: english-mode never consults the bundle.
         val english = AppStrings.forLanguage(ResolvedAppLanguage.English)
         assertEquals("Back", english.back)
-        assertEquals(LanguageRu.translations["Back"], russian.back)
+        assertEquals(LanguageRu.translations[TranslationCatalog.sourceToId["Back"]], russian.back)
     }
 }

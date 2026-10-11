@@ -14,6 +14,9 @@ local.properties
 .tools-cache/
 .kotlin/
 
+# Private agent context; tracked contracts and this guide remain authoritative.
+.private/
+
 # AI tools — per-machine state, not for the repo
 .claude/
 .codex/
