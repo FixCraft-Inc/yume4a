@@ -16,15 +16,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -39,9 +43,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.fixcraft.yume.AndroidSystemSettings
@@ -54,8 +57,10 @@ import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AppLanguageGroup
 import com.fixcraft.yume.i18n.AppLocaleManager
 import com.fixcraft.yume.i18n.appStrings
+import com.fixcraft.yume.ui.FactRow
 import com.fixcraft.yume.ui.appDialogProperties
 import com.fixcraft.yume.ui.appDialogWidth
+import com.fixcraft.yume.ui.tabMovesFocusOn
 import kotlinx.coroutines.launch
 
 @Composable
@@ -209,7 +214,9 @@ fun SettingsScreen(
                         Text(if (invalid) strings.dnsServerFormatError else strings.dnsServersHelper)
                     },
                     isError = invalid,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .tabMovesFocusOn(),
                 )
             },
             confirmButton = {
@@ -265,6 +272,7 @@ fun SettingsScreen(
                         description = strings.amoledDescription,
                         selected = uiState.appSettings.amoledDarkTheme,
                         enabled = true,
+                        toggles = true,
                         onClick = { onSetAmoledDarkTheme(!uiState.appSettings.amoledDarkTheme) },
                     )
                 }
@@ -567,8 +575,6 @@ private fun SettingGroupCard(
                     text = subtitle,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
             content()
@@ -576,19 +582,30 @@ private fun SettingGroupCard(
     }
 }
 
+/**
+ * One choice of a group, marked by its radio button, or with [toggles] an option that
+ * turns on and off by itself, marked by its checkbox. The card is the one target. Its
+ * state is in its semantics and its mark, not only in its color.
+ */
 @Composable
 private fun SettingChoiceCard(
     title: String,
     description: String?,
     selected: Boolean,
     enabled: Boolean,
+    toggles: Boolean = false,
     trailingContent: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) {
+    val choice = if (toggles) {
+        Modifier.toggleable(value = selected, enabled = enabled, role = Role.Checkbox, onValueChange = { onClick() })
+    } else {
+        Modifier.selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
+    }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = enabled) { onClick() },
+            .then(choice),
         color = when {
             selected -> MaterialTheme.colorScheme.primaryContainer
             !enabled -> MaterialTheme.colorScheme.surfaceContainer
@@ -601,6 +618,11 @@ private fun SettingChoiceCard(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (toggles) {
+                Checkbox(checked = selected, onCheckedChange = null, enabled = enabled)
+            } else {
+                RadioButton(selected = selected, onClick = null, enabled = enabled)
+            }
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -613,16 +635,12 @@ private fun SettingChoiceCard(
                         selected -> MaterialTheme.colorScheme.onPrimaryContainer
                         else -> MaterialTheme.colorScheme.onSurface
                     },
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
                 )
                 if (!description.isNullOrBlank()) {
                     Text(
                         text = description,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -631,6 +649,10 @@ private fun SettingChoiceCard(
     }
 }
 
+/**
+ * A setting that turns on and off. The row is its one target, named by its text, and
+ * the switch only shows the state.
+ */
 @Composable
 private fun SettingToggleRow(
     title: String,
@@ -641,7 +663,7 @@ private fun SettingToggleRow(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) },
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         shape = MaterialTheme.shapes.large,
     ) {
@@ -659,22 +681,18 @@ private fun SettingToggleRow(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.bodyLarge,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
                 )
                 if (!description.isNullOrBlank()) {
                     Text(
                         text = description,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
             Switch(
                 checked = checked,
-                onCheckedChange = onCheckedChange,
+                onCheckedChange = null,
             )
         }
     }
@@ -701,34 +719,23 @@ private fun SettingActionRow(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                iconRes?.let { resId ->
-                    Icon(
-                        painter = painterResource(resId),
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.bodyLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+            iconRes?.let { resId ->
+                Icon(
+                    painter = painterResource(resId),
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.End,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                FactRow(
+                    label = label,
+                    value = value,
+                    labelStyle = MaterialTheme.typography.bodyLarge,
+                    labelColor = MaterialTheme.colorScheme.onSurface,
+                    valueColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -738,24 +745,5 @@ private fun SettingFact(
     label: String,
     value: String,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text(
-            text = label,
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = TextAlign.End,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
+    FactRow(label, value, labelStyle = MaterialTheme.typography.bodySmall)
 }

@@ -22,11 +22,13 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -44,6 +46,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -432,12 +435,7 @@ private fun BottomNavBar(
                                 },
                             )
                         },
-                        label = {
-                            Text(
-                                text = destination.label,
-                                maxLines = 1,
-                            )
-                        },
+                        label = { NavigationLabel(destination.label) },
                         alwaysShowLabel = false,
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -451,4 +449,26 @@ private fun BottomNavBar(
             }
         }
     }
+}
+
+/**
+ * A destination's name at the reader's text size when it fits its item in the bar.
+ * Otherwise it shrinks as far as needed, but not below its unscaled size, and only
+ * then ends in an ellipsis, so large text never cuts it off mid-word. The icon's
+ * description still carries the full name.
+ */
+@Composable
+private fun NavigationLabel(text: String) {
+    val scaled = LocalTextStyle.current.fontSize
+    val unscaled = with(LocalDensity.current) { scaled.value.dp.toSp() }
+    Text(
+        text = text,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        autoSize = if (scaled.isSp && unscaled < scaled) {
+            TextAutoSize.StepBased(minFontSize = unscaled, maxFontSize = scaled)
+        } else {
+            null
+        },
+    )
 }

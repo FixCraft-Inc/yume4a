@@ -1,6 +1,9 @@
 package com.fixcraft.yume.ui.theme
 
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 
 
 val YumePlum = Color(0xFF70536B)
@@ -23,3 +26,13 @@ val YumeVerifyContainer = Color(0xFF4E3B14)
 val YumeVerifyContent = Color(0xFFFFE7A6)
 val YumeErrorContainer = Color(0xFF4B1F27)
 val YumeErrorContent = Color(0xFFFFD8DE)
+
+// Traffic direction colors stay stable even when the application uses dynamic colors.
+internal data class TrafficColors(val upload: Color, val download: Color)
+
+@Composable
+internal fun trafficColors(): TrafficColors = if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) {
+    TrafficColors(Color(0xFFD9BFD4), Color(0xFF91C9F4))
+} else {
+    TrafficColors(YumePlum, Color(0xFF1E628E))
+}
