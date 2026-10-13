@@ -179,10 +179,9 @@ object AutoTranslationRuntime {
                             total = familyRequests.size,
                         )
                     )
-                    runCatching { awaitTask(translator.translate(request.sourceText)) }
-                        .getOrNull()
-                        ?.takeIf { it.isNotBlank() }
-                        ?.let { cacheTranslation(appContext, request, it) }
+                    val translated = awaitTask(translator.translate(request.sourceText))
+                    if (translated.isBlank()) return@all false
+                    cacheTranslation(appContext, request, translated)
                 }
                 true
             } finally {
@@ -198,6 +197,10 @@ object AutoTranslationRuntime {
         scope.launch {
             try {
                 processQueue(context, request.targetLocaleTag)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                synchronized(queue) { queue.clear() }
             } finally {
                 running.remove(request.targetLocaleTag)
                 if (synchronized(queue) { queue.isNotEmpty() }) enqueuePending(context, request.targetLocaleTag)
@@ -210,6 +213,10 @@ object AutoTranslationRuntime {
         scope.launch {
             try {
                 processQueue(context, targetLocaleTag)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                pending[targetLocaleTag]?.let { queue -> synchronized(queue) { queue.clear() } }
             } finally {
                 running.remove(targetLocaleTag)
                 val queue = pending[targetLocaleTag]

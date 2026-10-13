@@ -26,6 +26,30 @@ internal object YumeNative {
     const val STATUS_NUMBERS = 18
     const val MESSAGE_NUMBERS = 3
 
+    // Keep this wire-shaped JNI buffer self-documenting. These indexes mirror
+    // yume_endpoint_status and are intentionally pinned by the native adapter.
+    const val STATUS_STATE = 0
+    const val STATUS_SESSION = 1
+    const val STATUS_LAST_FAILURE = 2
+    const val STATUS_EPOCH_BYTES = 3
+    const val STATUS_CONNECTED_MS = 4
+    const val STATUS_RETRY_MS = 5
+    const val STATUS_SESSIONS = 6
+    const val STATUS_FAILED_ATTEMPTS = 7
+    const val STATUS_IDLE_EPOCH_ROTATION = 8
+    const val STATUS_PAYLOAD_SENT = 9
+    const val STATUS_PAYLOAD_RECEIVED = 10
+    const val STATUS_RECORD_SENT = 11
+    const val STATUS_RECORD_RECEIVED = 12
+    const val STATUS_MAX_QUEUED = 13
+    const val STATUS_MAX_EPOCH = 14
+    const val STATUS_CREDIT_RETURNS = 15
+    const val STATUS_TCP_CONNECTIONS = 16
+    const val STATUS_UDP_DESTINATIONS = 17
+    const val MESSAGE_SEQUENCE = 0
+    const val MESSAGE_MISSED = 1
+    const val MESSAGE_TIME = 2
+
     init {
         System.loadLibrary("yume")
         System.loadLibrary("yumeandroid")

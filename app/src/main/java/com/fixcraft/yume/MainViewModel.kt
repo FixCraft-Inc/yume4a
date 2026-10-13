@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Job
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -46,6 +47,7 @@ data class BusyUiState(
 data class MainUiState(
     val kits: List<KitSummary> = emptyList(),
     val selectedKitId: String? = null,
+    val kitIndexCorrupt: Boolean = false,
     val appSettings: AppSettings = AppSettings(),
     val appDataPasswordEnabled: Boolean = false,
     val downloadedLanguageTags: Set<String> = emptySet(),
@@ -74,21 +76,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _appDataPasswordEnabled = MutableStateFlow(AppVaultManager.isPasswordEnabled(application))
     private val tuningTable = TuningTable.load(application)
     private val _tuning = MutableStateFlow(TuningUiState())
+    private var tuningLoadGeneration = 0L
+    private var tuningLoadJob: Job? = null
 
     init {
         refreshDownloadedLanguages()
-        refreshTuning(kitStore.selectedId.value)
+        viewModelScope.launch {
+            kitStore.selectedId.collect { selectedId -> refreshTuning(selectedId) }
+        }
+    }
+
+    private val kitState = combine(kitStore.kits, kitStore.indexStatus) { kits, status ->
+        kits to (status == com.fixcraft.yume.data.KitIndexStatus.Corrupt)
     }
 
     private val storedState = combine(
-        kitStore.kits,
+        kitState,
         kitStore.selectedId,
         appSettingsStore.settings,
         YumeVpnRuntime.state,
         _tuning,
     ) { kits, selectedId, settings, vpnState, tuning ->
         MainUiState(
-            kits = kits,
+            kits = kits.first,
+            kitIndexCorrupt = kits.second,
             selectedKitId = selectedId,
             appSettings = settings,
             vpnState = vpnState,
@@ -122,7 +133,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _busyState.value = BusyUiState(title = title, detail = detail)
         return try {
             Result.success(withContext(Dispatchers.IO) { block() })
-        } catch (throwable: Throwable) {
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (throwable: Exception) {
             Result.failure(throwable)
         } finally {
             _busyState.value = null
@@ -132,27 +145,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Kits.
 
     fun selectKit(kitId: String) {
-        kitStore.select(kitId)
-        refreshTuning(kitId)
+        runCatching { kitStore.select(kitId) }
+            .onFailure { _noticeMessage.value = strings().kitRefusedStorage }
     }
 
     fun refreshTuning(kitId: String? = uiState.value.selectedKitId) {
+        val generation = ++tuningLoadGeneration
+        tuningLoadJob?.cancel()
         _tuning.value = TuningUiState(kitId = kitId)
         if (kitId == null) return
-        viewModelScope.launch(Dispatchers.IO) {
+        tuningLoadJob = viewModelScope.launch(Dispatchers.IO) {
             val config = kitStore.readConfig(kitId)
             val loaded = runCatching {
                 val json = org.json.JSONObject(String(config ?: error("kit unavailable"), Charsets.UTF_8))
                 val limits = tuningTable.effectiveLimits(json)
                 TuningUiState(kitId, limits, tuningTable.match(limits))
             }.getOrNull()
-            if (_tuning.value.kitId == kitId) _tuning.value = loaded ?: TuningUiState(kitId = kitId)
+            // The generation is owned by the main thread; a newer selection wins.
+            withContext(Dispatchers.Main) {
+                if (generation == tuningLoadGeneration && _tuning.value.kitId == kitId) {
+                    _tuning.value = loaded ?: TuningUiState(kitId = kitId)
+                }
+            }
         }
     }
 
+    fun resetTuningPreset() = selectTuningPreset(tuningTable.defaultId)
+
     fun selectTuningPreset(id: String) {
         val preset = tuningTable.presets.firstOrNull { it.id == id } ?: return
-        if (_tuning.value.kitId != null) {
+        if (_tuning.value.kitId == kitStore.selectedId.value && !_tuning.value.saving) {
             _tuning.value = _tuning.value.copy(limits = preset.limits, preset = preset)
         }
     }
@@ -172,11 +194,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val state = _tuning.value
         val kitId = state.kitId ?: return
         val limits = state.limits ?: return
-        if (state.saving) return
+        if (state.saving || kitId != kitStore.selectedId.value) return
+        val generation = tuningLoadGeneration
+        _tuning.value = state.copy(saving = true)
         viewModelScope.launch(Dispatchers.IO) {
-            _tuning.value = state.copy(saving = true)
             val result = kitStore.updateLimits(kitId, limits)
             withContext(Dispatchers.Main) {
+                if (generation != tuningLoadGeneration || _tuning.value.kitId != kitId) return@withContext
                 _tuning.value = _tuning.value.copy(saving = false)
                 if (result.isSuccess) {
                     _noticeMessage.value = strings().tuningSaved
@@ -204,15 +228,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
+    fun recoverKitIndex() {
+        viewModelScope.launch {
+            val result = runBusy(strings().recoverKitIndex) {
+                kitStore.recoverKits(kitStore.recoverableKits())
+            }
+            if (result.isFailure || result.getOrNull()?.isFailure == true) {
+                _noticeMessage.value = strings().kitRefusedStorage
+            }
+        }
+    }
+
     fun renameKit(kitId: String, name: String) {
-        kitStore.rename(kitId, name)
+        runCatching { kitStore.rename(kitId, name) }
+            .onFailure { _noticeMessage.value = strings().kitRefusedStorage }
     }
 
     fun deleteKit(kitId: String) {
         // A running kit's files are in use until the VPN is stopped.
         val vpnState = YumeVpnRuntime.state.value
         if (vpnState.isActive && vpnState.kitId == kitId) return
-        kitStore.delete(kitId)
+        runCatching { kitStore.delete(kitId) }
+            .onFailure { _noticeMessage.value = strings().kitRefusedStorage }
     }
 
     /**
@@ -228,7 +265,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             KitImport.Refused(com.fixcraft.yume.data.KitRefusal.Storage, throwable.message.orEmpty())
         }
         if (result is KitImport.Imported) {
-            kitStore.select(result.kit.id)
+            runCatching { kitStore.select(result.kit.id) }
             YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Added the kit ${result.kit.name} (${result.kit.endpointLabel}).")
             _noticeMessage.value = strings.kitAdded(result.kit.name)
         }
@@ -323,7 +360,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun enableAppDataPassword(password: String, confirmPassword: String): String? {
         val strings = strings()
         if (password.isBlank()) return strings.passwordRequired
-        if (password.length < 6) return strings.passwordTooShort
+        if (!AppVaultManager.passwordMeetsPolicy(password)) return strings.passwordTooShort
         if (password != confirmPassword) return strings.passwordsDoNotMatch
         return runBusy(strings.setPasswordButton) {
             AppVaultManager.enablePassword(getApplication(), password)
@@ -342,7 +379,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val strings = strings()
         if (currentPassword.isBlank()) return strings.currentPasswordRequired
         if (newPassword.isBlank()) return strings.newPasswordRequired
-        if (newPassword.length < 6) return strings.passwordTooShort
+        if (!AppVaultManager.passwordMeetsPolicy(newPassword)) return strings.passwordTooShort
         if (newPassword != confirmPassword) return strings.passwordsDoNotMatch
         return runBusy(strings.changePasswordButton) {
             AppVaultManager.changePassword(getApplication(), currentPassword, newPassword)
@@ -375,20 +412,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshDownloadedLanguages() {
         viewModelScope.launch(Dispatchers.IO) {
-            _downloadedLanguageTags.value = AutoTranslationRuntime.refreshDownloadedLocaleTags()
+            try {
+                _downloadedLanguageTags.value = AutoTranslationRuntime.refreshDownloadedLocaleTags()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                _noticeMessage.value = strings().languageDownloadsUnavailable
+            }
         }
     }
 
     fun deleteDownloadedLanguage(language: AppLanguage.AutoTranslated) {
         viewModelScope.launch(Dispatchers.IO) {
-            val deleted = AutoTranslationRuntime.deleteDownloadedLanguage(getApplication(), language.localeTag)
-            _downloadedLanguageTags.value = AutoTranslationRuntime.refreshDownloadedLocaleTags()
             val strings = strings()
             val languageName = AppLanguageCatalog.displayName(language)
-            _noticeMessage.value = if (deleted) {
-                strings.deletedLanguageDownload(languageName)
-            } else {
-                strings.failedToDeleteLanguageDownload(languageName)
+            try {
+                val deleted = AutoTranslationRuntime.deleteDownloadedLanguage(getApplication(), language.localeTag)
+                _downloadedLanguageTags.value = AutoTranslationRuntime.refreshDownloadedLocaleTags()
+                _noticeMessage.value = if (deleted) strings.deletedLanguageDownload(languageName)
+                    else strings.failedToDeleteLanguageDownload(languageName)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                _noticeMessage.value = strings.failedToDeleteLanguageDownload(languageName)
             }
         }
     }
@@ -428,8 +474,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (vpn.failure != VpnFailure.None) {
                 appendLine("Failure: ${vpn.failure} ${vpn.failureDetail}".trim())
             }
-            appendLine("DNS: ${state.appSettings.dnsServers.joinToString()}")
-            appendLine("IPv6: ${if (state.appSettings.carryIpv6) "carried" else "blocked while connected"}")
+            // As the posture screen: the running interface's values while a
+            // run is active, otherwise what the next connection will use.
+            val activeIpv6 = if (vpn.isActive) vpn.carriesIpv6 else state.appSettings.carryIpv6
+            val activeDns = vpn.dnsServers.takeIf { vpn.isActive && it.isNotEmpty() }
+                ?: com.fixcraft.yume.vpn.VpnRunPolicy.usableDnsServers(
+                    state.appSettings.dnsServers, activeIpv6, AppSettings.DEFAULT_DNS_SERVERS,
+                )
+            val scope = if (vpn.isActive) "" else " (next connection)"
+            appendLine("DNS$scope: ${activeDns.joinToString()}")
+            appendLine("IPv6$scope: ${if (activeIpv6) "carried" else "blocked while connected"}")
             vpn.status?.let { status ->
                 appendLine()
                 appendLine("Session: ${sessionName(status.session)}, sessions ${status.sessions}, failed attempts ${status.failedAttempts}")

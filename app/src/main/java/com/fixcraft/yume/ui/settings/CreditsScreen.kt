@@ -30,33 +30,20 @@ fun CreditsScreen(
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        // People who shipped this.
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
             ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                ) {
-                    CreditEntry(
-                        name = "F1xGOD",
-                        title = strings.founderCeoRole,
-                        role = strings.leadDeveloperDesignerRole,
-                    )
-                    CreditEntry(
-                        name = "Codex",
-                        title = strings.codexTitleLabel,
-                        role = strings.codexCreditRole,
-                    )
-                    CreditEntry(
-                        name = "Claude",
-                        title = strings.claudeRoleLabel,
-                        role = strings.claudeCreditRole,
-                    )
+                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    // One shared list (YUME config/credits.json), generated for each consumer.
+                    GeneratedCredits.contributors.forEach { credit ->
+                        CreditEntry(
+                            name = credit.name,
+                            title = strings.message(credit.role),
+                            role = strings.message(credit.contribution),
+                        )
+                    }
                 }
             }
         }

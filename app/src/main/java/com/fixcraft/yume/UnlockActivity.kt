@@ -16,9 +16,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -29,6 +34,11 @@ import com.fixcraft.yume.data.AppVaultManager
 import com.fixcraft.yume.i18n.ProvideAppStrings
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.theme.YumeVPNTheme
+import com.fixcraft.yume.vpn.YumeVpnService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 
 class UnlockActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,9 +53,16 @@ class UnlockActivity : ComponentActivity() {
                 ProvideAppStrings(context = LocalContext.current, language = AppLanguage.SystemDefault) {
                     UnlockScreen(
                         onUnlock = { password ->
-                            val result = AppVaultManager.unlockWithPassword(this, password)
-                            result.onSuccess { openMain() }
-                            result.exceptionOrNull()?.message
+                            val reconnect = intent.getBooleanExtra(YumeVpnService.EXTRA_RECONNECT, false)
+                            val success = withContext(Dispatchers.IO) {
+                                // The key derivation and the kit index read stay off the main thread.
+                                AppVaultManager.unlockWithPassword(this@UnlockActivity, password).isSuccess
+                                    .also { unlocked ->
+                                        if (unlocked && reconnect) YumeVpnService.reconnectAfterUnlock(this@UnlockActivity)
+                                    }
+                            }
+                            if (success) openMain()
+                            success
                         },
                     )
                 }
@@ -65,15 +82,20 @@ class UnlockActivity : ComponentActivity() {
 
 @Composable
 private fun UnlockScreen(
-    onUnlock: (String) -> String?,
+    onUnlock: suspend (String) -> Boolean,
 ) {
     val strings = appStrings()
-    var password by rememberSaveable { mutableStateOf("") }
-    var error by rememberSaveable { mutableStateOf<String?>(null) }
+    var password by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    DisposableEffect(Unit) { onDispose { password = "" } }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .imePadding()
+            .verticalScroll(rememberScrollState())
             .padding(24.dp),
         verticalArrangement = Arrangement.Center,
     ) {
@@ -99,6 +121,7 @@ private fun UnlockScreen(
                     },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text(strings.passwordLabel) },
+                    enabled = !busy,
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                 )
@@ -110,7 +133,25 @@ private fun UnlockScreen(
                     )
                 }
                 Button(
-                    onClick = { error = onUnlock(password) },
+                    onClick = {
+                        if (!busy && password.isNotEmpty()) {
+                            busy = true
+                            val submitted = password
+                            password = ""
+                            scope.launch {
+                                try {
+                                    if (!onUnlock(submitted)) error = strings.failedToUnlockAppData
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (_: Exception) {
+                                    error = strings.failedToUnlockAppData
+                                } finally {
+                                    busy = false
+                                }
+                            }
+                        }
+                    },
+                    enabled = !busy,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(strings.unlockButton)

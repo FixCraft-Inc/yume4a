@@ -100,6 +100,7 @@ fun YumeApp(
     uiState: MainUiState,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
+    onRecoverKitIndex: () -> Unit,
     onSelectKit: (String) -> Unit,
     onRenameKit: (String, String) -> Unit,
     onDeleteKit: (String) -> Unit,
@@ -117,6 +118,7 @@ fun YumeApp(
     onSetAdvancedMode: (Boolean) -> Unit,
     onSetDnsServers: (String) -> Boolean,
     onSetCarryIpv6: (Boolean) -> Unit,
+    onSelectTuningPreset: () -> Unit,
     onMoveTuningSlider: (String, Int) -> Unit,
     onApplyTuning: () -> Unit,
     onUnlockTuningExpert: () -> Unit,
@@ -212,6 +214,7 @@ fun YumeApp(
                 composable(AppRoute.Connect) {
                     KitsScreen(
                         uiState = uiState,
+                        onRecoverKitIndex = onRecoverKitIndex,
                         onSelectKit = onSelectKit,
                         onRenameKit = onRenameKit,
                         onDeleteKit = onDeleteKit,
@@ -243,6 +246,7 @@ fun YumeApp(
                         onSetAdvancedMode = onSetAdvancedMode,
                         onSetDnsServers = onSetDnsServers,
                         onSetCarryIpv6 = onSetCarryIpv6,
+                        onSelectTuningPreset = onSelectTuningPreset,
                         onMoveTuningSlider = onMoveTuningSlider,
                         onApplyTuning = onApplyTuning,
                         onUnlockTuningExpert = onUnlockTuningExpert,

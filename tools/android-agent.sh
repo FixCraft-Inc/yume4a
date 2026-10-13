@@ -3,6 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PACKAGE="${YUME_ANDROID_AGENT_PACKAGE:-com.fixcraft.yume.agent}"
+# The package name is interpolated into device shell commands below.
+if [[ ! "$PACKAGE" =~ ^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$ ]]; then
+  printf 'invalid YUME_ANDROID_AGENT_PACKAGE\n' >&2
+  exit 2
+fi
 COMMAND_ACTIVITY="$PACKAGE/com.fixcraft.yume.agent.AgentCommandActivity"
 CONSENT_ACTIVITY="$PACKAGE/com.fixcraft.yume.agent.AgentVpnConsentActivity"
 PRIVATE_DIR="no_backup/adb-agent"
@@ -43,7 +48,7 @@ Tests/telemetry:
 Environment:
   ANDROID_SERIAL                 Select a device when more than one is attached
   YUME_ANDROID_AGENT_PACKAGE     Override the default com.fixcraft.yume.agent
-  YUME_UNVERIFIED_SOURCE=1       Build from a YUME copy without Git metadata.
+  YUME_UNVERIFIED_SOURCE=1       Permit unverified or dirty YUME test sources.
                                  Testing only: never release that APK.
 
 A kit's code is never accepted as a command-line argument. `import` reads it
@@ -71,8 +76,19 @@ select_device() {
   fi
 }
 
+# adb joins arguments into a command interpreted by the device's POSIX shell.
+# Quote every argument, including embedded apostrophes, before that join.
+device_shell() {
+  local command="" argument
+  for argument in "$@"; do
+    argument="${argument//\'/\'\\\'\'}"
+    command+="'${argument}' "
+  done
+  "${ADB[@]}" shell "$command"
+}
+
 run_as() {
-  "${ADB[@]}" shell run-as "$PACKAGE" "$@"
+  device_shell run-as "$PACKAGE" "$@"
 }
 
 validate_private_path() {
@@ -121,7 +137,7 @@ send_command_with_id() {
   # concurrent invocation can merely bring the first transparent dispatcher to
   # the front (am result code 3), dropping the second command before the service
   # sees its command ID.
-  "${ADB[@]}" shell am start -W --activity-multiple-task \
+  device_shell am start -W --activity-multiple-task \
     -a "com.fixcraft.yume.agent.$action" \
     -n "$COMMAND_ACTIVITY" \
     --es command_id "$command_id" \
@@ -211,7 +227,7 @@ install_agent() {
 
 prepare_vpn() {
   clear_private "$CONSENT_FILE"
-  "${ADB[@]}" shell am start -W -n "$CONSENT_ACTIVITY" >/dev/null
+  device_shell am start -W -n "$CONSENT_ACTIVITY" >/dev/null
   printf 'Approve the Android VPN dialog if it appears (one-time setup).\n' >&2
   local deadline=$((SECONDS + 90))
   local value=""
@@ -263,7 +279,7 @@ kits() {
 
 delete_kit() {
   local kit_id="${1:-}"
-  [[ -n "$kit_id" ]] || die "delete requires KIT_ID"
+  [[ "$kit_id" =~ ^[A-Za-z0-9._-]{1,96}$ ]] || die "invalid KIT_ID"
   local result
   result="$(send_command DELETE_KIT 30 --es kit_id "$kit_id")"
   require_ok "$result"
@@ -273,6 +289,7 @@ delete_kit() {
 connect_kit() {
   local kit_id="${1:-}"
   [[ -z "${2:-}" ]] || die "connect accepts at most one KIT_ID"
+  [[ -z "$kit_id" || "$kit_id" =~ ^[A-Za-z0-9._-]{1,96}$ ]] || die "invalid KIT_ID"
   local result
   if [[ -n "$kit_id" ]]; then
     result="$(send_command CONNECT 30 --es kit_id "$kit_id")"
@@ -300,7 +317,9 @@ status() {
 wait_phase() {
   local wanted="${1:-}"
   local timeout_seconds="${2:-60}"
-  [[ -n "$wanted" ]] || die "wait requires a VPN phase"
+  [[ "$wanted" =~ ^(Idle|PermissionRequired|Connecting|Connected|Reconnecting|Disconnecting|Error)$ ]] || die "invalid VPN phase"
+  [[ "$timeout_seconds" =~ ^[1-9][0-9]{0,3}$ ]] || die "invalid wait timeout"
+  (( timeout_seconds <= 3600 )) || die "wait timeout exceeds 3600 seconds"
   local deadline=$((SECONDS + timeout_seconds))
   local snapshot="" phase=""
   while (( SECONDS < deadline )); do
@@ -325,6 +344,10 @@ network_bench() {
   local max_bytes="${2:-67108864}"
   local timeout_ms="${3:-30000}"
   [[ -n "$url" ]] || die "bench requires URL"
+  [[ "$max_bytes" =~ ^[1-9][0-9]{0,9}$ ]] || die "invalid benchmark byte limit"
+  (( max_bytes >= 1024 && max_bytes <= 1073741824 )) || die "benchmark byte limit outside 1024..1073741824"
+  [[ "$timeout_ms" =~ ^[1-9][0-9]{0,5}$ ]] || die "invalid benchmark timeout"
+  (( timeout_ms >= 1000 && timeout_ms <= 180000 )) || die "benchmark timeout outside 1000..180000"
   local wait_seconds=$((timeout_ms / 1000 + 45)) result
   result="$(send_command NETWORK_BENCH "$wait_seconds" --es url "$url" --el max_bytes "$max_bytes" --el timeout_ms "$timeout_ms")"
   require_ok "$result"
@@ -414,4 +437,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

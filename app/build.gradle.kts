@@ -25,33 +25,27 @@ val yumeVersion = readQuotedConstant(
     "kVersion",
     "Unknown",
 )
-// Provenance of the shared YUME checkout this APK's native library is built
-// from. Resolved from the checkout's git refs rather than hand-maintained:
-// the previous hard-coded marker had drifted to a hash that exists in no YUME
-// repository at all, so it identified nothing.
-//
-// This is a provenance label, not the cache key. The native task already
-// hashes the actual source fileTree, which is what makes the build correct
-// when the working tree is dirty.
-fun resolveSharedYumeHead(): String {
-    val gitDir = sharedYumeRoot.resolve(".git")
-    if (!gitDir.isDirectory) return "unknown"
-    val head = gitDir.resolve("HEAD").takeIf { it.isFile }?.readText()?.trim()
-        ?: return "unknown"
-    if (!head.startsWith("ref:")) return head  // detached HEAD
-    val ref = head.removePrefix("ref:").trim()
-    gitDir.resolve(ref).takeIf { it.isFile }?.let { return it.readText().trim() }
-    // Packed-refs fallback. A plain loop, not forEachLine: that overload is
-    // not inline, so a non-local return out of its lambda does not compile.
-    val packed = gitDir.resolve("packed-refs").takeIf { it.isFile } ?: return "unknown"
-    for (line in packed.readLines()) {
-        val parts = line.trim().split(" ")
-        if (parts.size == 2 && parts[1] == ref) return parts[0]
-    }
-    return "unknown"
+// Git itself resolves detached heads, worktrees and packed refs. Unknown
+// metadata is explicitly unverified and never becomes a release identity.
+fun sharedYumeGit(vararg arguments: String): String? = runCatching {
+    val process = ProcessBuilder(listOf("git", "-C", sharedYumeRoot.absolutePath) + arguments)
+        .redirectError(ProcessBuilder.Redirect.DISCARD).start()
+    val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+    if (process.waitFor() == 0) output else null
+}.getOrNull()
+
+val sharedYumeHead = sharedYumeGit("rev-parse", "--verify", "HEAD")
+    ?.takeIf { Regex("[0-9a-f]{40,64}").matches(it) } ?: "unknown"
+val sharedYumeDirty = sharedYumeGit("status", "--porcelain", "--untracked-files=all")
+    ?.isNotEmpty() ?: true
+val unverifiedYumeSource = (project.findProperty("yumeUnverifiedSource") as? String) == "true"
+val configuredAbis = (project.findProperty("yumeAbi") as? String)
+    ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.takeIf { it.isNotEmpty() }
+    ?: listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+require(configuredAbis.all { it in setOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64") }) {
+    "Unsupported Android ABI"
 }
 
-val sharedYumeHead = resolveSharedYumeHead()
 val basefwxEngineVersion = readTrimmedFile(sharedYumeRoot.resolve("basefwx/VERSION"), "Unknown")
 val basefwxBuildUtc = System.getenv("BASEFWX_BUILD_UTC")
     ?: System.getenv("SOURCE_DATE_EPOCH")?.toLongOrNull()?.let(Instant::ofEpochSecond)?.toString()
@@ -185,6 +179,9 @@ android {
         // from the library itself (yume_get_compatibility).
         versionName = yumeVersion
         buildConfigField("String", "YUME_VERSION", "\"$yumeVersion\"")
+        buildConfigField("String", "YUME_COMMIT", "\"$sharedYumeHead\"")
+        buildConfigField("boolean", "YUME_SOURCE_DIRTY", sharedYumeDirty.toString())
+        buildConfigField("boolean", "YUME_SOURCE_VERIFIED", (!unverifiedYumeSource).toString())
         buildConfigField("String", "BASEFWX_ENGINE_VERSION", "\"$basefwxEngineVersion\"")
         // ADB automation is compiled only into the dedicated `agent` build
         // type below. Production and ordinary debug APKs fail closed.
@@ -206,18 +203,11 @@ android {
         }
     }
 
-    val requestedAbis = (project.findProperty("yumeAbi") as? String)
-        ?.split(',')
-        ?.map { it.trim() }
-        ?.filter { it.isNotEmpty() }
-        ?.takeIf { it.isNotEmpty() }
-        ?: listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-
     splits {
         abi {
             isEnable = true
             reset()
-            include(*requestedAbis.toTypedArray())
+            include(*configuredAbis.toTypedArray())
             isUniversalApk = false
         }
     }
@@ -320,18 +310,22 @@ tasks.named("preBuild") {
 val yumeSharedAbiOutputDir = layout.buildDirectory.dir("yume-shared-abi")
 val yumeSharedAbiBuildScript = sharedYumeRoot.resolve("tools/build_android_shared_abi.sh")
 
-val configuredAbis: List<String> = (project.findProperty("yumeAbi") as? String)
-    ?.split(',')
-    ?.map { it.trim() }
-    ?.filter { it.isNotEmpty() }
-    ?.takeIf { it.isNotEmpty() }
-    ?: listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
 val configuredMinSdk: String = (android.defaultConfig.minSdk ?: 28).toString()
-// A YUME tree without Git metadata, such as a copy synchronized to a build
-// host, cannot be tied to a signed commit. -PyumeUnverifiedSource=true builds
-// it anyway, for testing only: never release such an APK.
-val unverifiedYumeSource: Boolean =
-    (project.findProperty("yumeUnverifiedSource") as? String)?.toBoolean() ?: false
+// Verification is deliberately never up-to-date: a previously built native
+// library must not bypass signature/cleanliness checks on a later invocation.
+val verifyYumeSource by tasks.registering {
+    doLast {
+        if (!unverifiedYumeSource) {
+            val process = ProcessBuilder("bash", yumeSharedAbiBuildScript.absolutePath, "--verify-source-only")
+                .inheritIO().start()
+            check(process.waitFor() == 0) { "YUME source verification failed" }
+        }
+    }
+}
+tasks.named("preBuild") { dependsOn(verifyYumeSource) }
+tasks.matching { it.name.matches(Regex("pre.*ReleaseBuild")) }.configureEach {
+    doFirst { check(!unverifiedYumeSource) { "Release APKs require verified YUME source" } }
+}
 
 fun resolveNdkRoot(): String? {
     // A reproducible native build must use the pinned NDK revision. Do not
@@ -375,6 +369,7 @@ fun resolveNdkRoot(): String? {
 val buildYumeSharedAbi by tasks.registering {
     description = "Cross-compiles libyume, the YUME C ABI library, for Android."
     group = "yume native"
+    dependsOn(verifyYumeSource)
     inputs.file(yumeSharedAbiBuildScript)
     inputs.file(sharedYumeRoot.resolve("include/yume/yume.h"))
     inputs.file(sharedYumeRoot.resolve("vcpkg.json"))
@@ -394,6 +389,7 @@ val buildYumeSharedAbi by tasks.registering {
     inputs.property("minSdk", configuredMinSdk)
     inputs.property("ndkVersion", pinnedNdkVersion)
     inputs.property("yumeCommit", sharedYumeHead)
+    inputs.property("yumeDirty", sharedYumeDirty)
     inputs.property("unverifiedSource", unverifiedYumeSource)
     outputs.dir(yumeSharedAbiOutputDir)
     doLast {

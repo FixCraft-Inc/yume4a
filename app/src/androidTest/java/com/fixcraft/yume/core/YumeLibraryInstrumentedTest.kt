@@ -44,6 +44,24 @@ class YumeLibraryInstrumentedTest {
     }
 
     @Test
+    fun anEndpointWithoutSocketProtectionIsRefused() {
+        // Without protection the transport would route into the VPN itself.
+        val directory = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir
+        val status = IntArray(1)
+        val result = arrayOfNulls<String>(2)
+        val handle = YumeNative.nativeCreate(directory.absolutePath, "{}".toByteArray(), null, status, result)
+        assertEquals(0L, handle)
+        assertEquals(YumeStatusCode.INVALID_ARGUMENT, status[0])
+        assertTrue(result[1].orEmpty().contains("protector"))
+    }
+
+    @Test
+    fun aStatusSnapshotNeedsTheWholeLayout() {
+        assertEquals(18, YumeNative.STATUS_NUMBERS)
+        assertEquals(YumeStatusCode.INVALID_ARGUMENT, YumeNative.nativeStatus(0L, LongArray(YumeNative.STATUS_NUMBERS), arrayOfNulls(2)))
+    }
+
+    @Test
     fun aClientWithoutItsCredentialFilesIsNotCreated() {
         val directory = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir
         assertThrows(YumeException::class.java) {

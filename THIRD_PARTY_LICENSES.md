@@ -18,7 +18,7 @@ YUME's `docs/release/SBOM.spdx.json` lists their exact versions.
 
 ## In the application
 
-- BaseFWX (GPL-3.0), whose Java sources are copied from YUME's BaseFWX
+- BaseFWX (LGPL-3.0-or-later), whose Java sources are copied from YUME's BaseFWX
   checkout to wrap stored data under the optional app-data password
 - Bouncy Castle (MIT)
 - Jetpack Compose, Material 3 and AndroidX (Apache-2.0)

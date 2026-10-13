@@ -17,7 +17,7 @@ include $(PREBUILT_SHARED_LIBRARY)
 include $(CLEAR_VARS)
 LOCAL_MODULE := yumeandroid
 LOCAL_SRC_FILES := ../../cpp/yume_android_jni.cpp
-LOCAL_CPPFLAGS := -std=c++20 -fvisibility=hidden -fvisibility-inlines-hidden -O3 \
+LOCAL_CPPFLAGS := -std=c++20 -fexceptions -fvisibility=hidden -fvisibility-inlines-hidden -O3 \
     -ffunction-sections -fdata-sections -fstack-protector-strong \
     -Wall -Wextra -Werror
 LOCAL_SHARED_LIBRARIES := yume_shared

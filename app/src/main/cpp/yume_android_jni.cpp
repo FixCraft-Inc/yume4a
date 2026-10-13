@@ -32,6 +32,30 @@ constexpr std::size_t kMaxSealedBytes = 16U + 12U + 4U + 1024U * 1024U + 1024U +
 constexpr std::size_t kMaxCodeBytes = 128U;
 constexpr std::size_t kMaxTextBytes = 4096U;
 
+enum StatusIndex : jsize {
+    kStatusState = 0,
+    kStatusSession = 1,
+    kStatusLastFailure = 2,
+    kStatusEpochBytes = 3,
+    kStatusConnectedMs = 4,
+    kStatusRetryMs = 5,
+    kStatusSessions = 6,
+    kStatusFailedAttempts = 7,
+    kStatusIdleEpochRotation = 8,
+    kStatusPayloadSent = 9,
+    kStatusPayloadReceived = 10,
+    kStatusRecordSent = 11,
+    kStatusRecordReceived = 12,
+    kStatusMaxQueued = 13,
+    kStatusMaxEpoch = 14,
+    kStatusCreditReturns = 15,
+    kStatusTcpConnections = 16,
+    kStatusUdpDestinations = 17,
+    // YumeNative.STATUS_NUMBERS mirrors this count; the indexes above are
+    // YumeNative.STATUS_* in the same order.
+    kStatusCount = 18,
+};
+
 JavaVM* g_vm = nullptr;
 jclass g_string_class = nullptr;
 jmethodID g_protect = nullptr;
@@ -42,7 +66,26 @@ struct Client final {
     yume_endpoint* endpoint{nullptr};
     // Global reference to the SocketProtector, or null.
     jobject protector{nullptr};
+    // Releases the library handles only. destroy() releases the protector's
+    // global reference after this, once no runner thread can call it.
+    ~Client() noexcept {
+        yume_endpoint_destroy(endpoint);
+        yume_runtime_destroy(runtime);
+    }
 };
+
+struct RuntimeDeleter {
+    void operator()(yume_runtime* value) const noexcept { yume_runtime_destroy(value); }
+};
+struct ConfigDeleter {
+    void operator()(yume_config* value) const noexcept { yume_config_destroy(value); }
+};
+struct KitDeleter {
+    void operator()(yume_kit* value) const noexcept { yume_kit_destroy(value); }
+};
+using RuntimePtr = std::unique_ptr<yume_runtime, RuntimeDeleter>;
+using ConfigPtr = std::unique_ptr<yume_config, ConfigDeleter>;
+using KitPtr = std::unique_ptr<yume_kit, KitDeleter>;
 
 // Diagnostics and peer-reported text are bytes YUME bounds but does not
 // promise to be valid modified UTF-8, which NewStringUTF requires. Anything
@@ -164,12 +207,14 @@ void destroy(JNIEnv* env, Client* client) {
     // Destroying the endpoint stops it and joins its threads, so the
     // protector cannot be called after its reference is released.
     yume_endpoint_destroy(client->endpoint);
-    yume_runtime_destroy(client->runtime);
-    if (client->protector != nullptr) env->DeleteGlobalRef(client->protector);
+    client->endpoint = nullptr;
+    const jobject protector = client->protector;
+    client->protector = nullptr;
     delete client;
+    if (protector != nullptr) env->DeleteGlobalRef(protector);
 }
 
-jobjectArray native_compatibility(JNIEnv* env, jclass) {
+jobjectArray native_compatibility(JNIEnv* env, jclass) try {
     yume_compatibility info{};
     info.struct_size = sizeof(info);
     info.abi_version = YUME_ABI_VERSION;
@@ -205,9 +250,13 @@ jobjectArray native_compatibility(JNIEnv* env, jclass) {
         put(env, result, index, values[index]);
     }
     return result;
+} catch (const std::bad_alloc&) {
+    return nullptr;
+} catch (...) {
+    return nullptr;
 }
 
-jstring native_status_name(JNIEnv* env, jclass, jint code) {
+jstring native_status_name(JNIEnv* env, jclass, jint code) try {
     yume_status_info info{};
     info.struct_size = sizeof(info);
     info.abi_version = YUME_ABI_VERSION;
@@ -216,39 +265,45 @@ jstring native_status_name(JNIEnv* env, jclass, jint code) {
         return text(env, "unknown");
     }
     return text(env, info.name);
+} catch (...) {
+    // text() allocates too, so a failure here returns no name at all.
+    return nullptr;
 }
 
 // Checks a schema-1 document as libyume's strict parser does. role[0]
 // receives YUME_ROLE_CLIENT or YUME_ROLE_SERVER on success.
 jint native_check_config(JNIEnv* env, jclass, jbyteArray json, jintArray role,
-                         jobjectArray result) {
+                         jobjectArray result) try {
     std::vector<std::uint8_t> bytes;
     if (!copy_bytes(env, json, kMaxConfigBytes, bytes)) {
         put(env, result, 1, "the configuration is empty or larger than 1 MiB");
         return YUME_STATUS_INVALID_ARGUMENT;
     }
-    yume_runtime* runtime = make_runtime(nullptr);
-    if (runtime == nullptr) return YUME_STATUS_INTERNAL_ERROR;
-    yume_config* config = nullptr;
+    RuntimePtr runtime(make_runtime(nullptr));
+    if (!runtime) return YUME_STATUS_INTERNAL_ERROR;
+    yume_config* raw_config = nullptr;
     const yume_status status =
-        yume_config_parse_json(runtime, bytes.data(), bytes.size(), &config);
+        yume_config_parse_json(runtime.get(), bytes.data(), bytes.size(), &raw_config);
+    ConfigPtr config(raw_config);
     if (status == YUME_STATUS_OK) {
-        const jint parsed = static_cast<jint>(yume_config_role(config));
+        const jint parsed = static_cast<jint>(yume_config_role(config.get()));
         if (role != nullptr && env->GetArrayLength(role) > 0) {
             env->SetIntArrayRegion(role, 0, 1, &parsed);
         }
     } else {
-        report(env, result, runtime);
+        report(env, result, runtime.get());
     }
-    yume_config_destroy(config);
-    yume_runtime_destroy(runtime);
     return status;
+} catch (const std::bad_alloc&) {
+    return YUME_STATUS_RESOURCE_EXHAUSTED;
+} catch (...) {
+    return YUME_STATUS_INTERNAL_ERROR;
 }
 
 // Opens a sealed kit and hands each file to sink. The code is wiped here.
 // The file bytes become Java arrays that the caller wipes after storing them.
 jint native_open_kit(JNIEnv* env, jclass, jbyteArray sealed, jbyteArray code,
-                     jobject sink, jobjectArray result) {
+                     jobject sink, jobjectArray result) try {
     std::vector<std::uint8_t> sealed_bytes;
     std::vector<std::uint8_t> code_bytes;
     if (sink == nullptr ||
@@ -258,29 +313,29 @@ jint native_open_kit(JNIEnv* env, jclass, jbyteArray sealed, jbyteArray code,
         put(env, result, 1, "a sealed kit and its code are required");
         return YUME_STATUS_INVALID_ARGUMENT;
     }
-    yume_runtime* runtime = make_runtime(nullptr);
+    RuntimePtr runtime(make_runtime(nullptr));
     if (runtime == nullptr) {
         wipe(code_bytes);
         return YUME_STATUS_INTERNAL_ERROR;
     }
-    yume_kit* kit = nullptr;
+    yume_kit* raw_kit = nullptr;
     yume_status status = yume_kit_open(
-        runtime, sealed_bytes.data(), sealed_bytes.size(),
+        runtime.get(), sealed_bytes.data(), sealed_bytes.size(),
         reinterpret_cast<const char*>(code_bytes.data()), code_bytes.size(),
-        &kit);
+        &raw_kit);
+    KitPtr kit(raw_kit);
     wipe(code_bytes);
     if (status != YUME_STATUS_OK) {
-        report(env, result, runtime);
-        yume_runtime_destroy(runtime);
+        report(env, result, runtime.get());
         return status;
     }
-    const std::size_t count = yume_kit_file_count(kit);
+    const std::size_t count = yume_kit_file_count(kit.get());
     for (std::size_t index = 0; index < count && status == YUME_STATUS_OK;
          ++index) {
         yume_kit_file file{};
         file.struct_size = sizeof(file);
         file.abi_version = YUME_ABI_VERSION;
-        status = yume_kit_get_file(kit, index, &file, sizeof(file));
+        status = yume_kit_get_file(kit.get(), index, &file, sizeof(file));
         if (status != YUME_STATUS_OK) break;
         const std::string path(file.path.data, file.path.size);
         jstring name = env->NewStringUTF(path.c_str());
@@ -301,16 +356,18 @@ jint native_open_kit(JNIEnv* env, jclass, jbyteArray sealed, jbyteArray code,
         if (name != nullptr) env->DeleteLocalRef(name);
         if (bytes != nullptr) env->DeleteLocalRef(bytes);
     }
-    yume_kit_destroy(kit);
-    yume_runtime_destroy(runtime);
     return status;
+} catch (const std::bad_alloc&) {
+    return YUME_STATUS_RESOURCE_EXHAUSTED;
+} catch (...) {
+    return YUME_STATUS_INTERNAL_ERROR;
 }
 
 // Creates a client endpoint from a schema-1 document whose credential
 // references resolve against base_dir. status[0] receives the outcome.
 jlong native_create(JNIEnv* env, jclass, jstring base_dir, jbyteArray json,
                     jobject protector, jintArray status_out,
-                    jobjectArray result) {
+                    jobjectArray result) try {
     jint outcome = YUME_STATUS_INVALID_ARGUMENT;
     const auto finish = [&](Client* client) -> jlong {
         if (status_out != nullptr && env->GetArrayLength(status_out) > 0) {
@@ -320,9 +377,11 @@ jlong native_create(JNIEnv* env, jclass, jstring base_dir, jbyteArray json,
     };
     std::string base;
     std::vector<std::uint8_t> bytes;
-    if (!copy_string(env, base_dir, base) || base.empty() ||
+    // A VPN endpoint without socket protection would route its own transport
+    // into the VPN, so a missing protector fails closed.
+    if (protector == nullptr || !copy_string(env, base_dir, base) || base.empty() ||
         !copy_bytes(env, json, kMaxConfigBytes, bytes)) {
-        put(env, result, 1, "a base directory and a configuration are required");
+        put(env, result, 1, "a base directory, a configuration and a socket protector are required");
         return finish(nullptr);
     }
     std::unique_ptr<Client> client(new (std::nothrow) Client());
@@ -335,21 +394,21 @@ jlong native_create(JNIEnv* env, jclass, jstring base_dir, jbyteArray json,
         outcome = YUME_STATUS_INTERNAL_ERROR;
         return finish(nullptr);
     }
-    yume_config* config = nullptr;
+    yume_config* raw_config = nullptr;
     outcome = yume_config_parse_json(client->runtime, bytes.data(), bytes.size(),
-                                     &config);
-    if (outcome == YUME_STATUS_OK && yume_config_role(config) != YUME_ROLE_CLIENT) {
+                                     &raw_config);
+    ConfigPtr config(raw_config);
+    if (outcome == YUME_STATUS_OK && yume_config_role(config.get()) != YUME_ROLE_CLIENT) {
         outcome = YUME_STATUS_INVALID_ARGUMENT;
         put(env, result, 0, "/role");
         put(env, result, 1, "the configuration is not a client's");
     } else if (outcome != YUME_STATUS_OK) {
         report(env, result, client->runtime);
     } else {
-        outcome = yume_endpoint_create(client->runtime, config, &client->endpoint);
+        outcome = yume_endpoint_create(client->runtime, config.get(), &client->endpoint);
         if (outcome != YUME_STATUS_OK) report(env, result, client->runtime);
     }
-    yume_config_destroy(config);
-    if (outcome == YUME_STATUS_OK && protector != nullptr) {
+    if (outcome == YUME_STATUS_OK) {
         client->protector = env->NewGlobalRef(protector);
         if (client->protector == nullptr) {
             outcome = YUME_STATUS_RESOURCE_EXHAUSTED;
@@ -364,6 +423,18 @@ jlong native_create(JNIEnv* env, jclass, jstring base_dir, jbyteArray json,
         return finish(nullptr);
     }
     return finish(client.release());
+} catch (const std::bad_alloc&) {
+    if (status_out != nullptr && env->GetArrayLength(status_out) > 0) {
+        const jint status = YUME_STATUS_RESOURCE_EXHAUSTED;
+        env->SetIntArrayRegion(status_out, 0, 1, &status);
+    }
+    return 0L;
+} catch (...) {
+    if (status_out != nullptr && env->GetArrayLength(status_out) > 0) {
+        const jint status = YUME_STATUS_INTERNAL_ERROR;
+        env->SetIntArrayRegion(status_out, 0, 1, &status);
+    }
+    return 0L;
 }
 
 // Attaches the VPN's device, or detaches it when descriptor is negative.
@@ -371,7 +442,7 @@ jint native_set_device(JNIEnv* env, jclass, jlong handle, jint descriptor,
                        jint mtu, jstring stream_service, jstring packet_service,
                        jstring ipv4_address, jstring ipv4_peer,
                        jstring ipv6_address, jstring ipv6_peer,
-                       jobjectArray result) {
+                       jobjectArray result) try {
     auto* client = reinterpret_cast<Client*>(handle);
     if (client == nullptr) return YUME_STATUS_INVALID_ARGUMENT;
     yume_status status = YUME_STATUS_INVALID_ARGUMENT;
@@ -408,37 +479,53 @@ jint native_set_device(JNIEnv* env, jclass, jlong handle, jint descriptor,
     }
     if (status != YUME_STATUS_OK) report(env, result, client->endpoint);
     return status;
+} catch (const std::bad_alloc&) {
+    return YUME_STATUS_RESOURCE_EXHAUSTED;
+} catch (...) {
+    return YUME_STATUS_INTERNAL_ERROR;
 }
 
 // Blocks until the first session is authenticated, the attempt fails, the
 // deadline passes or another thread stops the endpoint.
 jint native_start(JNIEnv* env, jclass, jlong handle, jint timeout_ms,
-                  jobjectArray result) {
+                  jobjectArray result) try {
     auto* client = reinterpret_cast<Client*>(handle);
     if (client == nullptr || timeout_ms <= 0) return YUME_STATUS_INVALID_ARGUMENT;
     const yume_status status = yume_endpoint_start(
         client->endpoint, static_cast<std::uint32_t>(timeout_ms));
     if (status != YUME_STATUS_OK) report(env, result, client->endpoint);
     return status;
+} catch (const std::bad_alloc&) {
+    return YUME_STATUS_RESOURCE_EXHAUSTED;
+} catch (...) {
+    return YUME_STATUS_INTERNAL_ERROR;
 }
 
-jint native_stop(JNIEnv*, jclass, jlong handle) {
+jint native_stop(JNIEnv*, jclass, jlong handle) try {
     auto* client = reinterpret_cast<Client*>(handle);
     if (client == nullptr) return YUME_STATUS_INVALID_ARGUMENT;
     return yume_endpoint_stop(client->endpoint, 0U);
+} catch (const std::bad_alloc&) {
+    return YUME_STATUS_RESOURCE_EXHAUSTED;
+} catch (...) {
+    return YUME_STATUS_INTERNAL_ERROR;
 }
 
-jint native_retry_now(JNIEnv*, jclass, jlong handle) {
+jint native_retry_now(JNIEnv*, jclass, jlong handle) try {
     auto* client = reinterpret_cast<Client*>(handle);
     if (client == nullptr) return YUME_STATUS_INVALID_ARGUMENT;
     return yume_endpoint_retry_now(client->endpoint);
+} catch (const std::bad_alloc&) {
+    return YUME_STATUS_RESOURCE_EXHAUSTED;
+} catch (...) {
+    return YUME_STATUS_INTERNAL_ERROR;
 }
 
 // numbers receives the snapshot's numeric fields in the order YumeClient
 // reads them, and texts the server's fingerprint in hex and the latest
 // failure's text.
 jint native_status(JNIEnv* env, jclass, jlong handle, jlongArray numbers,
-                   jobjectArray texts) {
+                   jobjectArray texts) try {
     auto* client = reinterpret_cast<Client*>(handle);
     if (client == nullptr || numbers == nullptr) return YUME_STATUS_INVALID_ARGUMENT;
     yume_endpoint_status status{};
@@ -447,27 +534,26 @@ jint native_status(JNIEnv* env, jclass, jlong handle, jlongArray numbers,
     const yume_status outcome =
         yume_endpoint_get_status(client->endpoint, &status, sizeof(status));
     if (outcome != YUME_STATUS_OK) return outcome;
-    const jlong values[] = {
-        static_cast<jlong>(status.state),
-        static_cast<jlong>(status.session),
-        static_cast<jlong>(status.last_failure),
-        static_cast<jlong>(status.epoch_bytes),
-        static_cast<jlong>(status.connected_ms),
-        static_cast<jlong>(status.retry_ms),
-        static_cast<jlong>(status.sessions),
-        static_cast<jlong>(status.failed_attempts),
-        static_cast<jlong>(status.idle_epoch_rotation),
-        static_cast<jlong>(status.payload_bytes_sent),
-        static_cast<jlong>(status.payload_bytes_received),
-        static_cast<jlong>(status.record_bytes_sent),
-        static_cast<jlong>(status.record_bytes_received),
-        static_cast<jlong>(status.max_queued_bytes),
-        static_cast<jlong>(status.max_epoch_bytes),
-        static_cast<jlong>(status.credit_returns_per_window),
-        static_cast<jlong>(status.device_tcp_connections),
-        static_cast<jlong>(status.device_udp_destinations),
-    };
-    constexpr jsize kCount = sizeof(values) / sizeof(values[0]);
+    jlong values[kStatusCount] = {};
+    values[kStatusState] = static_cast<jlong>(status.state);
+    values[kStatusSession] = static_cast<jlong>(status.session);
+    values[kStatusLastFailure] = static_cast<jlong>(status.last_failure);
+    values[kStatusEpochBytes] = static_cast<jlong>(status.epoch_bytes);
+    values[kStatusConnectedMs] = static_cast<jlong>(status.connected_ms);
+    values[kStatusRetryMs] = static_cast<jlong>(status.retry_ms);
+    values[kStatusSessions] = static_cast<jlong>(status.sessions);
+    values[kStatusFailedAttempts] = static_cast<jlong>(status.failed_attempts);
+    values[kStatusIdleEpochRotation] = static_cast<jlong>(status.idle_epoch_rotation);
+    values[kStatusPayloadSent] = static_cast<jlong>(status.payload_bytes_sent);
+    values[kStatusPayloadReceived] = static_cast<jlong>(status.payload_bytes_received);
+    values[kStatusRecordSent] = static_cast<jlong>(status.record_bytes_sent);
+    values[kStatusRecordReceived] = static_cast<jlong>(status.record_bytes_received);
+    values[kStatusMaxQueued] = static_cast<jlong>(status.max_queued_bytes);
+    values[kStatusMaxEpoch] = static_cast<jlong>(status.max_epoch_bytes);
+    values[kStatusCreditReturns] = static_cast<jlong>(status.credit_returns_per_window);
+    values[kStatusTcpConnections] = static_cast<jlong>(status.device_tcp_connections);
+    values[kStatusUdpDestinations] = static_cast<jlong>(status.device_udp_destinations);
+    constexpr jsize kCount = kStatusCount;
     if (env->GetArrayLength(numbers) < kCount) return YUME_STATUS_BUFFER_TOO_SMALL;
     env->SetLongArrayRegion(numbers, 0, kCount, values);
     static constexpr char kHex[] = "0123456789abcdef";
@@ -482,12 +568,16 @@ jint native_status(JNIEnv* env, jclass, jlong handle, jlongArray numbers,
     put(env, texts, 0, present ? fingerprint : "");
     put(env, texts, 1, status.last_failure_message);
     return YUME_STATUS_OK;
+} catch (const std::bad_alloc&) {
+    return YUME_STATUS_RESOURCE_EXHAUSTED;
+} catch (...) {
+    return YUME_STATUS_INTERNAL_ERROR;
 }
 
 // numbers receives the line's sequence number, the count of lines missed
 // before it and its time. texts receives the feed's instance and the line.
 jint native_read_message(JNIEnv* env, jclass, jlong handle, jlong after,
-                         jlongArray numbers, jobjectArray texts) {
+                         jlongArray numbers, jobjectArray texts) try {
     auto* client = reinterpret_cast<Client*>(handle);
     if (client == nullptr || numbers == nullptr || after < 0) {
         return YUME_STATUS_INVALID_ARGUMENT;
@@ -511,10 +601,17 @@ jint native_read_message(JNIEnv* env, jclass, jlong handle, jlong after,
     put(env, texts, 0, message.instance);
     put(env, texts, 1, message.text);
     return outcome;
+} catch (const std::bad_alloc&) {
+    return YUME_STATUS_RESOURCE_EXHAUSTED;
+} catch (...) {
+    return YUME_STATUS_INTERNAL_ERROR;
 }
 
-void native_destroy(JNIEnv* env, jclass, jlong handle) {
+void native_destroy(JNIEnv* env, jclass, jlong handle) try {
     destroy(env, reinterpret_cast<Client*>(handle));
+} catch (...) {
+    // Destruction is noexcept by contract; a third-party destructor must not
+    // unwind through JNI. The handle has already been detached by Kotlin.
 }
 
 const JNINativeMethod kMethods[] = {

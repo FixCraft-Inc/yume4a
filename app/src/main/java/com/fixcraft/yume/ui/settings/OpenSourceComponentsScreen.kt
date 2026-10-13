@@ -38,28 +38,17 @@ fun OpenSourceComponentsScreen() {
     val strings = appStrings()
     val groups = listOf(
         ComponentGroup(
-            heading = strings.componentGroupLibrary,
-            blurb = strings.componentGroupLibraryBlurb,
-            entries = listOf(
-                ComponentEntry("OpenSSL", strings.componentOpensslUsage, "Apache-2.0"),
-                ComponentEntry("Boost (Asio, Beast, System)", strings.componentBoostUsage, "BSL-1.0"),
-                ComponentEntry("nghttp2", strings.componentNghttp2Usage, "MIT"),
-                ComponentEntry("zlib · Zstandard · Brotli", strings.componentCompressionUsage, "Zlib · BSD-3-Clause · MIT"),
-                ComponentEntry("JSON for Modern C++", strings.componentJsonUsage, "MIT"),
-            ),
+            strings.componentGroupLibrary,
+            strings.componentGroupLibraryBlurb,
+            GeneratedCredits.nativeComponents.map { ComponentEntry(it.name, strings.message(it.use), it.license) },
         ),
         ComponentGroup(
-            heading = strings.componentGroupAndroidOnly,
-            blurb = strings.componentGroupAndroidOnlyBlurb,
-            entries = listOfNotNull(
-                ComponentEntry("BaseFWX", strings.componentBasefwxUsage, "GPL-3.0"),
-                ComponentEntry("Bouncy Castle", strings.componentBouncyCastleUsage, "MIT"),
-                ComponentEntry("Jetpack Compose · Material 3", strings.componentComposeUsage, "Apache-2.0"),
-                ComponentEntry("kotlinx.coroutines", strings.componentCoroutinesUsage, "Apache-2.0"),
-                // Only a build with -PyumeMlKitTranslation=true contains it.
-                ComponentEntry("ML Kit Translation", strings.componentMlKitUsage, "ML Kit Terms of Service")
-                    .takeIf { BuildConfig.ML_KIT_TRANSLATION },
-            ),
+            strings.componentGroupAndroidOnly,
+            strings.componentGroupAndroidOnlyBlurb,
+            // Only a build with -PyumeMlKitTranslation=true contains ML Kit.
+            (GeneratedCredits.androidComponents +
+                GeneratedCredits.mlkitComponents.takeIf { BuildConfig.ML_KIT_TRANSLATION }.orEmpty())
+                .map { ComponentEntry(it.name, strings.message(it.use), it.license) },
         ),
     )
     LazyColumn(

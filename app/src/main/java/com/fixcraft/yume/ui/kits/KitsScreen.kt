@@ -67,6 +67,7 @@ private class ChosenFile(val name: String, val bytes: ByteArray)
 @Composable
 fun KitsScreen(
     uiState: MainUiState,
+    onRecoverKitIndex: () -> Unit,
     onSelectKit: (String) -> Unit,
     onRenameKit: (String, String) -> Unit,
     onDeleteKit: (String) -> Unit,
@@ -74,19 +75,38 @@ fun KitsScreen(
     onReportNotice: (String) -> Unit,
 ) {
     val strings = appStrings()
+    var recovering by remember { mutableStateOf(false) }
     var adding by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<KitSummary?>(null) }
     var deleting by remember { mutableStateOf<KitSummary?>(null) }
     val liveKitId = uiState.vpnState.kitId.takeIf { uiState.vpnState.isActive }
 
+    if (recovering) {
+        AlertDialog(
+            onDismissRequest = { recovering = false },
+            title = { Text(strings.recoverKitIndex) },
+            text = { Text(strings.recoverKitIndexDetail) },
+            confirmButton = { TextButton(onClick = { recovering = false; onRecoverKitIndex() }) { Text(strings.recoverKitIndex) } },
+            dismissButton = { TextButton(onClick = { recovering = false }) { Text(strings.cancel) } },
+        )
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        if (uiState.kitIndexCorrupt) {
+            item {
+                SectionCard(title = strings.kitIndexCorrupt, detail = strings.recoverKitIndexDetail) {
+                    Button(onClick = { recovering = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text(strings.recoverKitIndex)
+                    }
+                }
+            }
+        }
         item {
             SectionCard(title = strings.kitsTitle, detail = strings.kitsSubtitle) {
-                Button(onClick = { adding = true }, modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = { adding = true }, enabled = !uiState.kitIndexCorrupt, modifier = Modifier.fillMaxWidth()) {
                     Text(strings.addKit)
                 }
             }

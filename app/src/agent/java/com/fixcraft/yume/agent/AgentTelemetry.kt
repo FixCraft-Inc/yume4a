@@ -171,6 +171,9 @@ internal object AgentTelemetry {
         .put("debuggable", BuildConfig.DEBUG)
         .put("adb_test_control", BuildConfig.ENABLE_ADB_TEST_CONTROL)
         .put("yume", BuildConfig.YUME_VERSION)
+        .put("yume_commit", BuildConfig.YUME_COMMIT)
+        .put("yume_source_dirty", BuildConfig.YUME_SOURCE_DIRTY)
+        .put("yume_source_verified", BuildConfig.YUME_SOURCE_VERIFIED)
         .put("basefwx", BuildConfig.BASEFWX_ENGINE_VERSION)
         .put("native", JSONObject(nativeBuildIdentity.toString()))
 
@@ -199,6 +202,9 @@ internal object AgentTelemetry {
 
     private fun stateJson(state: VpnConnectionState) = JSONObject()
         .put("phase", state.phase.name)
+        .put("run_id", state.runId ?: JSONObject.NULL)
+        .put("endpoint_id", state.endpointId ?: JSONObject.NULL)
+        .put("underlying_network_handle", state.underlyingNetworkHandle ?: JSONObject.NULL)
         .put("kit_id", state.kitId ?: JSONObject.NULL)
         .put("kit_name", state.kitName ?: JSONObject.NULL)
         .put("endpoint", state.endpointLabel ?: JSONObject.NULL)

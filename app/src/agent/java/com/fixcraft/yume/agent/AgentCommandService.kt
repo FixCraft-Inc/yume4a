@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.net.VpnService
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.IBinder
 import android.os.SystemClock
 import com.fixcraft.yume.BuildConfig
@@ -16,12 +18,14 @@ import com.fixcraft.yume.data.KitStore
 import com.fixcraft.yume.vpn.VpnPhase
 import com.fixcraft.yume.vpn.YumeVpnRuntime
 import com.fixcraft.yume.vpn.YumeVpnService
-import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileInputStream
-import java.net.HttpURLConnection
 import java.net.URI
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -100,6 +104,8 @@ class AgentCommandService : Service() {
                 AgentProtocol.ACTION_NETWORK_BENCH -> networkBench(intent, commandId)
                 else -> complete(commandId, action, false, "Unsupported action")
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (throwable: Throwable) {
             complete(
                 commandId,
@@ -233,67 +239,73 @@ class AgentCommandService : Service() {
         complete(commandId, "delete_kit", true, "Deleted the kit", JSONObject().put("kit_id", kitId))
     }
 
-    private suspend fun networkBench(intent: Intent, commandId: String) = withContext(Dispatchers.IO) {
-        val state = YumeVpnRuntime.state.value
-        require(state.phase == VpnPhase.Connected) { "The VPN is not connected" }
-        val rawUrl = intent.getStringExtra(AgentProtocol.EXTRA_URL)?.trim().orEmpty()
-        val uri = validateBenchmarkUri(rawUrl)
+    private suspend fun networkBench(intent: Intent, commandId: String) = coroutineScope {
+        val beforeState = YumeVpnRuntime.state.value
+        val identity = BenchmarkIdentity.from(beforeState)
+            ?: error("The VPN has no active identified session")
+        val manager = getSystemService(ConnectivityManager::class.java)
+        val network = manager.activeNetwork ?: error("No active VPN network")
+        fun sameVpnNetwork(): Boolean = manager.activeNetwork == network &&
+            manager.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        require(sameVpnNetwork()) { "The active Android network is not a VPN" }
+        val uri = validateBenchmarkUri(intent.getStringExtra(AgentProtocol.EXTRA_URL)?.trim().orEmpty())
         val maxBytes = intent.getLongExtra(AgentProtocol.EXTRA_MAX_BYTES, DEFAULT_BENCH_BYTES)
-            .coerceIn(MIN_BENCH_BYTES, MAX_BENCH_BYTES)
+        require(maxBytes in MIN_BENCH_BYTES..MAX_BENCH_BYTES) { "Invalid benchmark byte limit" }
         val timeoutMs = intent.getLongExtra(AgentProtocol.EXTRA_TIMEOUT_MS, DEFAULT_BENCH_TIMEOUT_MS)
-            .coerceIn(MIN_BENCH_TIMEOUT_MS, MAX_BENCH_TIMEOUT_MS)
+        require(timeoutMs in MIN_BENCH_TIMEOUT_MS..MAX_BENCH_TIMEOUT_MS) { "Invalid benchmark timeout" }
         val before = YumeVpnRuntime.traffic.value
         val started = SystemClock.elapsedRealtime()
-        var firstByteAt: Long? = null
-        var bytesRead = 0L
-        var httpStatus = 0
-        val connection = (uri.toURL().openConnection() as HttpURLConnection).apply {
-            instanceFollowRedirects = false
-            connectTimeout = timeoutMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-            readTimeout = timeoutMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-            setRequestProperty("Accept-Encoding", "identity")
-            setRequestProperty("User-Agent", "Yume-Android-Agent/${BuildConfig.VERSION_NAME}")
+        val download = async {
+            // Recheck immediately before socket/DNS work. All network work is
+            // explicitly bound to this VPN Network, even if Android removes it.
+            require(identity == BenchmarkIdentity.from(YumeVpnRuntime.state.value) && sameVpnNetwork()) {
+                "VPN run, session or network changed before the benchmark"
+            }
+            BenchmarkDownload.fetch(network, uri, maxBytes, timeoutMs)
+        }
+        val monitor = launch {
+            YumeVpnRuntime.state.first { BenchmarkIdentity.from(it) != identity }
+            download.cancel(CancellationException("VPN run, session or underlying network changed"))
         }
         try {
-            httpStatus = connection.responseCode
-            require(httpStatus in 200..299) { "Benchmark endpoint returned HTTP $httpStatus" }
-            BufferedInputStream(connection.inputStream, BENCH_BUFFER_BYTES).use { input ->
-                val buffer = ByteArray(BENCH_BUFFER_BYTES)
-                try {
-                    while (bytesRead < maxBytes && SystemClock.elapsedRealtime() - started < timeoutMs) {
-                        val wanted = minOf(buffer.size.toLong(), maxBytes - bytesRead).toInt()
-                        val count = input.read(buffer, 0, wanted)
-                        if (count < 0) break
-                        if (firstByteAt == null) firstByteAt = SystemClock.elapsedRealtime()
-                        bytesRead += count
-                    }
-                } finally {
-                    buffer.fill(0)
-                }
-            }
+            val result = download.await()
+            val elapsedMs = (SystemClock.elapsedRealtime() - started).coerceAtLeast(1L)
+            val valid = identity == BenchmarkIdentity.from(YumeVpnRuntime.state.value) && sameVpnNetwork()
+            val after = YumeVpnRuntime.traffic.value
+            complete(
+                commandId, "network_bench", valid && result.bytes > 0,
+                if (valid) "Downloaded ${result.bytes} bytes on the bound Android VPN network"
+                else "Invalid benchmark: VPN run, session or network changed",
+                JSONObject()
+                    .put("url", uri.toASCIIString())
+                    .put("valid", valid)
+                    .put("route_evidence", "socket_bound_to_android_vpn_network")
+                    .put("run_id", identity.runId)
+                    .put("endpoint_id", identity.endpointId)
+                    .put("session", identity.session)
+                    .put("underlying_network_handle", identity.underlyingNetworkHandle)
+                    .put("vpn_network_handle", network.networkHandle)
+                    .put("http_status", result.status)
+                    .put("bytes", result.bytes)
+                    .put("elapsed_ms", elapsedMs)
+                    .put("time_to_first_byte_ms", result.firstByteAtMs?.minus(started) ?: JSONObject.NULL)
+                    .put("megabits_per_second", result.bytes.toDouble() * 8.0 / elapsedMs / 1_000.0)
+                    // These are aggregate run counters, not attribution of this request.
+                    .put("tunnel_rx_delta_bytes", (after.totalRxBytes - before.totalRxBytes).coerceAtLeast(0))
+                    .put("tunnel_tx_delta_bytes", (after.totalTxBytes - before.totalTxBytes).coerceAtLeast(0)),
+            )
+        } catch (cancelled: CancellationException) {
+            complete(commandId, "network_bench", false,
+                cancelled.message ?: "Benchmark cancelled",
+                JSONObject().put("valid", false).put("run_id", identity.runId)
+                    .put("endpoint_id", identity.endpointId).put("session", identity.session)
+                    .put("underlying_network_handle", identity.underlyingNetworkHandle)
+                    .put("vpn_network_handle", network.networkHandle))
+            throw cancelled
         } finally {
-            connection.disconnect()
+            monitor.cancel()
+            download.cancel()
         }
-        val elapsedMs = (SystemClock.elapsedRealtime() - started).coerceAtLeast(1L)
-        val tunnelAfter = YumeVpnRuntime.traffic.value
-        val tunnelRxDelta = (tunnelAfter.totalRxBytes - before.totalRxBytes).coerceAtLeast(0L)
-        val tunnelTxDelta = (tunnelAfter.totalTxBytes - before.totalTxBytes).coerceAtLeast(0L)
-        val megabitsPerSecond = bytesRead.toDouble() * 8.0 / elapsedMs.toDouble() / 1_000.0
-        complete(
-            commandId,
-            "network_bench",
-            bytesRead > 0,
-            "Downloaded $bytesRead bytes through the Android VPN",
-            JSONObject()
-                .put("url", uri.toASCIIString())
-                .put("http_status", httpStatus)
-                .put("bytes", bytesRead)
-                .put("elapsed_ms", elapsedMs)
-                .put("time_to_first_byte_ms", firstByteAt?.minus(started) ?: JSONObject.NULL)
-                .put("megabits_per_second", megabitsPerSecond)
-                .put("tunnel_rx_delta_bytes", tunnelRxDelta)
-                .put("tunnel_tx_delta_bytes", tunnelTxDelta),
-        )
     }
 
     private fun validateBenchmarkUri(raw: String): URI {
@@ -301,7 +313,8 @@ class AgentCommandService : Service() {
         require(uri.scheme == "http" || uri.scheme == "https") { "Benchmark URL must use http or https" }
         require(!uri.host.isNullOrBlank()) { "Benchmark URL requires a host" }
         require(uri.userInfo == null && uri.fragment == null) { "Benchmark URL must not contain credentials or a fragment" }
-        return uri
+        require(uri.port == -1 || uri.port in 1..65535) { "Invalid benchmark port" }
+        return URI(uri.toASCIIString())
     }
 
     private fun consumeSecret(name: String, maxBytes: Int): ByteArray? {
@@ -370,7 +383,6 @@ class AgentCommandService : Service() {
         const val MAX_CODE_BYTES = 128
         // The largest sealed kit (docs/protocol/SEALED_KIT_1.md in YUME).
         const val MAX_KIT_BYTES = 16 + 12 + 4 + 1024 * 1024 + 1024 + 16
-        const val BENCH_BUFFER_BYTES = 256 * 1024
         const val MIN_BENCH_BYTES = 1_024L
         const val DEFAULT_BENCH_BYTES = 64L * 1024L * 1024L
         const val MAX_BENCH_BYTES = 1024L * 1024L * 1024L

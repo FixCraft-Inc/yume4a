@@ -118,12 +118,48 @@ class KitConfigTest {
     }
 
     @Test
+    fun literalsFollowLibyumesTextRules() {
+        // The cases of YUME src/config/v1/config_test.cpp and its IsIpLiteral.
+        for (literal in listOf(
+            "10.0.0.1", "2001:db8:0:0:0:0:0:1", "2001:DB8::A", "::", "1::", "::ffff:0:192.0.2.1",
+            "0:0:0:0:0:ffff:192.0.2.1", "64:ff9b::192.0.2.33",
+        )) {
+            assertTrue(literal, KitConfig.isAddressLiteral(literal))
+        }
+        for (text in listOf(
+            "010.0.0.1", "192.0.2.010", "::ffff:192.0.2.01", "00.1.2.3",
+            "1::2::3", ":::", "1:2:3:4:5:6:7:8:9", "1:2:3:4:5:6:7::8", "12345::1", "2001:db8::g",
+            "[::1]", "fe80::1%wlan0", "::1.2.3.4:5", "1.2.3.4::", "2001:db8:", ":2001:db8::1", " ::1",
+        )) {
+            assertFalse(text, KitConfig.isAddressLiteral(text))
+        }
+    }
+
+    @Test
+    fun withoutAnAdapterTheFirstServicesInDocumentOrderAreUsed() {
+        // Many names, so a hash map's order would differ from the document's.
+        val names = (0 until 32).map { "service-$it" }
+        val described = KitConfig.describe(edited { root ->
+            root.remove("adapters")
+            root.put("services", org.json.JSONArray().apply {
+                names.forEachIndexed { index, name ->
+                    put(JSONObject().put("name", name).put("kind", if (index % 2 == 0) "packet" else "stream"))
+                }
+            })
+        })
+        assertEquals("service-1", described.streamService)
+        assertEquals("service-0", described.packetService)
+    }
+
+    @Test
     fun resolverListsAreParsedStrictly() {
         assertEquals(listOf("1.1.1.1", "9.9.9.9"), AppSettings.parseDnsServers("1.1.1.1, 9.9.9.9"))
         assertEquals(listOf("2606:4700:4700::1111"), AppSettings.parseDnsServers(" 2606:4700:4700::1111 "))
         assertEquals(listOf("1.1.1.1"), AppSettings.parseDnsServers("1.1.1.1\n1.1.1.1"))
         assertNull(AppSettings.parseDnsServers(""))
         assertNull(AppSettings.parseDnsServers("dns.example.org"))
+        assertNull(AppSettings.parseDnsServers("010.0.0.1"))
+        assertNull(AppSettings.parseDnsServers("1::2::3"))
         assertNull(AppSettings.parseDnsServers("1.1.1.1, 2.2.2.2, 3.3.3.3, 4.4.4.4, 5.5.5.5"))
     }
 }

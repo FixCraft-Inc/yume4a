@@ -10,8 +10,6 @@ import com.fixcraft.yume.core.YumeStatusCode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.Closeable
 import java.io.File
 import java.io.FileOutputStream
@@ -45,6 +43,12 @@ enum class KitRefusal {
     Storage,
 }
 
+/** State of the encrypted kit index at startup. A corrupt index never deletes
+ * or rewrites the individual kit blobs; the user can choose recovery. */
+enum class KitIndexStatus { Healthy, Locked, Corrupt }
+
+data class KitRecoveryCandidate(val id: String, val kit: KitSummary)
+
 sealed interface KitImport {
     data class Imported(val kit: KitSummary) : KitImport
     data class Refused(val reason: KitRefusal, val detail: String = "") : KitImport
@@ -76,8 +80,11 @@ class KitStore private constructor(context: Context) {
     private val index = VaultJsonMapStore(appContext, INDEX_NAME)
     private val lock = Any()
 
+    private var loadedIndexStatus = KitIndexStatus.Healthy
     private val _kits = MutableStateFlow(loadKits())
     val kits: StateFlow<List<KitSummary>> = _kits.asStateFlow()
+    private val _indexStatus = MutableStateFlow(loadedIndexStatus)
+    val indexStatus: StateFlow<KitIndexStatus> = _indexStatus.asStateFlow()
 
     private val _selectedId = MutableStateFlow(
         runCatching { index.getString(KEY_SELECTED) }.getOrNull()
@@ -94,8 +101,9 @@ class KitStore private constructor(context: Context) {
      * kit's configuration is one it runs.
      */
     fun importSealed(sealed: ByteArray, code: CharArray, name: String): KitImport {
-        val codeBytes = ByteArray(code.size) { index -> code[index].code.toByte() }
+        val codeBytes = asciiCode(code)
         code.fill('\u0000')
+        if (codeBytes == null) return KitImport.Refused(KitRefusal.BadCode)
         val files = try {
             YumeLibrary.openKit(sealed, codeBytes)
         } catch (error: YumeException) {
@@ -138,9 +146,9 @@ class KitStore private constructor(context: Context) {
             val bundle = KitBundle.encode(files)
             try {
                 synchronized(lock) {
+                    requireHealthyIndex()
                     AppVaultManager.writeBlob(appContext, blobName(kit.id), bundle)
-                    persist(_kits.value + kit)
-                    if (_selectedId.value == null) selectLocked(kit.id)
+                    persist(_kits.value + kit, _selectedId.value ?: kit.id)
                 }
             } catch (error: Exception) {
                 runCatching { AppVaultManager.deleteBlob(appContext, blobName(kit.id)) }
@@ -162,12 +170,72 @@ class KitStore private constructor(context: Context) {
 
     fun delete(id: String) = synchronized(lock) {
         val remaining = _kits.value.filterNot { it.id == id }
-        persist(remaining)
+        requireHealthyIndex()
+        require(_kits.value.any { it.id == id }) { "Kit is unavailable" }
+        persist(remaining, if (_selectedId.value == id) remaining.firstOrNull()?.id else _selectedId.value)
         AppVaultManager.deleteBlob(appContext, blobName(id))
-        if (_selectedId.value == id) selectLocked(remaining.firstOrNull()?.id)
     }
 
     fun select(id: String?) = synchronized(lock) { selectLocked(id) }
+
+    /** Lists valid kit blobs without changing the damaged index. */
+    fun recoverableKits(): List<KitRecoveryCandidate> = synchronized(lock) {
+        check(AppVaultManager.ensureReady(appContext)) { "Unlock required" }
+        storedKitFiles().mapNotNull { file ->
+            val id = file.name.removePrefix("kit-").removeSuffix(".bin")
+            if (!KitIndexCodec.isValidId(id)) return@mapNotNull null
+            val bundle = runCatching { AppVaultManager.readBlob(appContext, blobName(id)) }.getOrNull()
+                ?: return@mapNotNull null
+            try {
+                val files = KitBundle.decode(bundle)
+                try {
+                    val config = files.first { it.path == KitBundle.CONFIG_PATH }.bytes
+                    if (YumeLibrary.checkConfig(config) != YumeLibrary.ROLE_CLIENT) return@mapNotNull null
+                    val description = KitConfig.describe(config)
+                    if (description.usesCircuits) return@mapNotNull null
+                    val deviceConfig = KitConfig.forDevice(config, null)
+                    try {
+                        if (YumeLibrary.checkConfig(deviceConfig) != YumeLibrary.ROLE_CLIENT) return@mapNotNull null
+                    } finally {
+                        deviceConfig.fill(0)
+                    }
+                    KitRecoveryCandidate(
+                        id,
+                        KitSummary(id, description.host, description.host, description.port, file.lastModified()),
+                    )
+                } finally {
+                    files.forEach { it.bytes.fill(0) }
+                }
+            } catch (_: Exception) {
+                null
+            } finally {
+                bundle.fill(0)
+            }
+        }
+    }
+
+    /** Rebuilds only the index entries the user selected; kit blobs are untouched. */
+    fun recoverKits(candidates: List<KitRecoveryCandidate>): Result<Unit> = synchronized(lock) {
+        runCatching {
+            check(_indexStatus.value == KitIndexStatus.Corrupt) { "Kit index does not need recovery" }
+            val current = recoverableKits().associateBy { it.id }
+            val chosen = candidates.distinctBy { it.id }.map { candidate ->
+                current[candidate.id]?.kit ?: error("Kit recovery candidate is unavailable")
+            }
+            // Readability and native validity were rechecked above. Replace the
+            // index directly: a read/modify/write cannot open a corrupt index.
+            val selected = chosen.firstOrNull()?.id
+            // The damaged index is kept, still encrypted, before it is replaced.
+            AppVaultManager.preserveBlob(appContext, INDEX_NAME, "damaged-${System.currentTimeMillis()}")
+            index.replace(KitIndexCodec.encode(chosen, selected))
+            _kits.value = chosen
+            _selectedId.value = selected
+            _indexStatus.value = KitIndexStatus.Healthy
+        }
+    }
+
+    private fun storedKitFiles(): List<File> = File(appContext.noBackupFilesDir, "app-vault")
+        .listFiles().orEmpty().filter { it.isFile && it.name.startsWith("kit-") && it.name.endsWith(".bin") }
 
     /**
      * Writes a kit's files under a new private directory for one run. Null
@@ -260,48 +328,49 @@ class KitStore private constructor(context: Context) {
         }
     }
 
-    private fun selectLocked(id: String?) {
-        val chosen = id?.takeIf { wanted -> _kits.value.any { it.id == wanted } }
-        _selectedId.value = chosen
-        runCatching { index.putString(KEY_SELECTED, chosen) }
+    private fun requireHealthyIndex() {
+        check(_indexStatus.value == KitIndexStatus.Healthy) { "Kit index recovery required" }
     }
 
-    private fun persist(kits: List<KitSummary>) {
-        val array = JSONArray()
-        for (kit in kits) {
-            array.put(
-                JSONObject()
-                    .put("id", kit.id)
-                    .put("name", kit.name)
-                    .put("host", kit.host)
-                    .put("port", kit.port)
-                    .put("added", kit.addedAtEpochMs),
-            )
-        }
-        index.putString(KEY_KITS, array.toString())
+    private fun selectLocked(id: String?) {
+        requireHealthyIndex()
+        require(id == null || _kits.value.any { it.id == id }) { "Kit is unavailable" }
+        index.putString(KEY_SELECTED, id)
+        _selectedId.value = id
+    }
+
+    private fun persist(kits: List<KitSummary>, selected: String? = _selectedId.value) {
+        requireHealthyIndex()
+        // Keep entries and selection in one atomic encrypted write.
+        index.replace(KitIndexCodec.encode(kits, selected))
         _kits.value = kits
+        _selectedId.value = selected
     }
 
     private fun loadKits(): List<KitSummary> {
-        val raw = runCatching { index.getString(KEY_KITS) }.getOrNull().orEmpty()
-        if (raw.isBlank()) return emptyList()
-        return runCatching {
-            val array = JSONArray(raw)
-            (0 until array.length()).mapNotNull { position ->
-                val item = array.optJSONObject(position) ?: return@mapNotNull null
-                val id = item.optString("id")
-                val host = item.optString("host")
-                val port = item.optInt("port", 0)
-                if (id.isBlank() || host.isBlank() || port !in 1..65535) return@mapNotNull null
-                KitSummary(
-                    id = id,
-                    name = item.optString("name").ifBlank { host },
-                    host = host,
-                    port = port,
-                    addedAtEpochMs = item.optLong("added", 0L),
-                )
+        return try {
+            if (!AppVaultManager.ensureReady(appContext)) {
+                loadedIndexStatus = KitIndexStatus.Locked
+                return emptyList()
             }
-        }.getOrDefault(emptyList())
+            val snapshot = index.snapshot()
+            if (snapshot.length() == 0 && storedKitFiles().isNotEmpty()) {
+                error("Kit index is missing")
+            }
+            KitIndexCodec.decode(snapshot).also { loadedIndexStatus = KitIndexStatus.Healthy }
+        } catch (_: Exception) {
+            loadedIndexStatus = KitIndexStatus.Corrupt
+            emptyList()
+        }
+    }
+
+    private fun reloadAfterUnlock() = synchronized(lock) {
+        if (_indexStatus.value == KitIndexStatus.Locked && AppVaultManager.isUnlocked()) {
+            _kits.value = loadKits()
+            _indexStatus.value = loadedIndexStatus
+            _selectedId.value = runCatching { index.getString(KEY_SELECTED) }.getOrNull()
+                ?.takeIf { id -> _kits.value.any { it.id == id } } ?: _kits.value.firstOrNull()?.id
+        }
     }
 
     private fun describe(error: YumeException): String =
@@ -309,7 +378,6 @@ class KitStore private constructor(context: Context) {
 
     companion object {
         private const val INDEX_NAME = "kits"
-        private const val KEY_KITS = "kits_json"
         private const val KEY_SELECTED = "selected_kit_id"
         private const val SESSION_DIR_NAME = "kit-sessions"
         private const val MAX_NAME_LENGTH = 48
@@ -319,12 +387,21 @@ class KitStore private constructor(context: Context) {
 
         fun get(context: Context): KitStore {
             val storeContext = context.applicationContext ?: context
-            return instance ?: synchronized(this) {
+            return (instance ?: synchronized(this) {
                 instance ?: KitStore(storeContext).also { instance = it }
-            }
+            }).also { it.reloadAfterUnlock() }
         }
 
         private fun blobName(id: String) = "kit-$id"
+
+        /**
+         * A kit code's bytes, or null when a character is not ASCII. Codes are
+         * ASCII, and narrowing another character would name different bytes.
+         */
+        internal fun asciiCode(code: CharArray): ByteArray? {
+            if (code.any { it.code > 0x7f }) return null
+            return ByteArray(code.size) { index -> code[index].code.toByte() }
+        }
 
         private fun sessionRoot(context: Context): File =
             File(context.noBackupFilesDir, SESSION_DIR_NAME)

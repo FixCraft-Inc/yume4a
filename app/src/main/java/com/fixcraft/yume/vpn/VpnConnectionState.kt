@@ -53,6 +53,12 @@ data class VpnLogEntry(
  */
 data class VpnConnectionState(
     val phase: VpnPhase = VpnPhase.Idle,
+    /** Identifies this service run for local benchmark attribution. */
+    val runId: String? = null,
+    /** Monotonic endpoint replacement number within [runId]. */
+    val endpointId: Long? = null,
+    /** Android's network handle used for the current transport attempt. */
+    val underlyingNetworkHandle: Long? = null,
     val kitId: String? = null,
     val kitName: String? = null,
     val endpointLabel: String? = null,

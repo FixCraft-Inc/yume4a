@@ -60,6 +60,7 @@ import com.fixcraft.yume.data.TuningPreset
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AppLanguageGroup
 import com.fixcraft.yume.i18n.AppLocaleManager
+import com.fixcraft.yume.i18n.MessageId
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.FactRow
 import com.fixcraft.yume.ui.appDialogProperties
@@ -80,6 +81,7 @@ fun SettingsScreen(
     onSetAdvancedMode: (Boolean) -> Unit,
     onSetDnsServers: (String) -> Boolean,
     onSetCarryIpv6: (Boolean) -> Unit,
+    onSelectTuningPreset: () -> Unit,
     onMoveTuningSlider: (String, Int) -> Unit,
     onApplyTuning: () -> Unit,
     onUnlockTuningExpert: () -> Unit,
@@ -268,6 +270,7 @@ fun SettingsScreen(
                 onMoveSlider = onMoveTuningSlider,
                 onApply = onApplyTuning,
                 onOpenExpert = { showExpertWarning = true },
+                onSelectPreset = onSelectTuningPreset,
             )
         }
 
@@ -400,6 +403,16 @@ fun SettingsScreen(
                 SettingFact(strings.companyLabel, "FixCraft, Inc.")
                 SettingFact(strings.appLabel, "${BuildConfig.VERSION_NAME} (${BuildConfig.BUILD_TYPE})")
                 SettingFact(strings.yumeLabel, BuildConfig.YUME_VERSION)
+                // The YUME commit libyume was built from, and whether the build
+                // verified it as a signed, clean tree (release builds must).
+                SettingFact(
+                    strings.message(MessageId.ABOUT_YUME_SOURCE),
+                    listOfNotNull(
+                        BuildConfig.YUME_COMMIT.take(12),
+                        strings.message(MessageId.ABOUT_YUME_SOURCE_MODIFIED).takeIf { BuildConfig.YUME_SOURCE_DIRTY },
+                        strings.message(MessageId.ABOUT_YUME_SOURCE_UNVERIFIED).takeUnless { BuildConfig.YUME_SOURCE_VERIFIED },
+                    ).joinToString(" · "),
+                )
                 SettingFact(strings.basefwxLabel, BuildConfig.BASEFWX_ENGINE_VERSION)
                 OutlinedButton(
                     onClick = onOpenCredits,
@@ -472,11 +485,12 @@ private fun TuningCard(
     onMoveSlider: (String, Int) -> Unit,
     onApply: () -> Unit,
     onOpenExpert: () -> Unit,
+    onSelectPreset: () -> Unit,
 ) {
     val strings = appStrings()
     val tuning = uiState.tuning
     SettingGroupCard(title = strings.tuningGroupTitle, subtitle = strings.tuningSubtitle) {
-        if (uiState.selectedKit == null || tuning.limits == null) {
+        if (uiState.selectedKit == null || tuning.kitId != uiState.selectedKitId || tuning.limits == null) {
             Text(strings.tuningNoKit, color = MaterialTheme.colorScheme.onSurfaceVariant)
             return@SettingGroupCard
         }
@@ -505,6 +519,12 @@ private fun TuningCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } ?: Text(strings.tuningCustom, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (preset == null) {
+            OutlinedButton(onClick = onSelectPreset, enabled = !tuning.saving, modifier = Modifier.fillMaxWidth()) {
+                Text(strings.tuningResetPreset)
+            }
+        }
+
         FilledTonalButton(
             onClick = onApply,
             enabled = !tuning.saving,

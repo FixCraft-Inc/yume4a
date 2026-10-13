@@ -3,15 +3,22 @@ package com.fixcraft.yume.core
 /** The `yume_status` codes this application tells apart (yume/yume.h). */
 object YumeStatusCode {
     const val OK = 0
+    const val EOF = 1
     const val INVALID_ARGUMENT = -1
+    const val BUFFER_TOO_SMALL = -2
+    const val INTERNAL_ERROR = -3
     const val INVALID_STATE = -4
     const val TIMEOUT = -5
     const val WOULD_BLOCK = -6
     const val NOT_FOUND = -7
     const val PERMISSION_DENIED = -8
+    const val PARSE_ERROR = -9
     const val RESOURCE_EXHAUSTED = -10
     const val CANCELLED = -11
+    const val CLOSED = -12
+    const val INCOMPATIBLE = -13
     const val UNSUPPORTED = -14
+    const val IO_ERROR = -15
 }
 
 /** A call libyume refused. [pointer] names the configuration member at fault, when one is. */

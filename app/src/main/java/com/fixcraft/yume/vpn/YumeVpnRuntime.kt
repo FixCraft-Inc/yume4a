@@ -1,6 +1,7 @@
 package com.fixcraft.yume.vpn
 
 import android.util.Log
+import com.fixcraft.yume.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -75,14 +76,17 @@ object YumeVpnRuntime {
     }
 
     /**
-     * Adds a line to the application's log and to logcat. Callers pass what
+     * Adds a line to the application's log, mirrored to logcat only in debug
+     * and agent builds. Callers pass what
      * happened, never a key, a code or a file's contents.
      */
     fun appendLog(level: VpnLogLevel, message: String, timestampEpochMs: Long = System.currentTimeMillis()) {
-        when (level) {
-            VpnLogLevel.Info -> Log.i(TAG, message)
-            VpnLogLevel.Warn -> Log.w(TAG, message)
-            VpnLogLevel.Error -> Log.e(TAG, message)
+        if (BuildConfig.DEBUG || BuildConfig.ENABLE_ADB_TEST_CONTROL) {
+            when (level) {
+                VpnLogLevel.Info -> Log.i(TAG, message)
+                VpnLogLevel.Warn -> Log.w(TAG, message)
+                VpnLogLevel.Error -> Log.e(TAG, message)
+            }
         }
         synchronized(lock) {
             val entry = VpnLogEntry(timestampEpochMs = timestampEpochMs, level = level, message = message)

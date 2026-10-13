@@ -4,6 +4,7 @@ import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import java.nio.charset.StandardCharsets
+import java.util.LinkedHashMap
 
 /** What a kit's `yume.json` says about where and how it connects. */
 data class KitDescription(
@@ -38,7 +39,9 @@ object KitConfig {
         if (host.isBlank() || port !in 1..65535) throw KitConfigException("the kit names no server")
 
         val services = root.optJSONArray("services") ?: JSONArray()
-        val kinds = HashMap<String, String>()
+        // JSON order is part of the deterministic fallback when an adapter
+        // does not name a service explicitly.
+        val kinds = LinkedHashMap<String, String>()
         for (index in 0 until services.length()) {
             val service = services.optJSONObject(index) ?: continue
             kinds[service.optString("name")] = service.optString("kind")
@@ -97,14 +100,50 @@ object KitConfig {
         return root.toString().toByteArray(StandardCharsets.UTF_8)
     }
 
-    /** True for an IPv4 or IPv6 literal, which needs no lookup. */
-    fun isAddressLiteral(host: String): Boolean {
-        if (host.isEmpty()) return false
-        if (host.contains(':')) return host.all { it in "0123456789abcdefABCDEF:." }
-        val parts = host.split('.')
+    /**
+     * True for an IPv4 or IPv6 literal, which needs no lookup. The same text
+     * rules as libyume's IsIpLiteral (src/config/v1/config.cpp): no leading
+     * zero in an IPv4 part, which a resolver reads as octal, no brackets and
+     * no zone. Parsed here without any platform resolver, which on Android
+     * would look a malformed literal up as a name.
+     */
+    fun isAddressLiteral(host: String): Boolean = isIpv4(host) || isIpv6(host)
+
+    private fun isIpv4(value: String): Boolean {
+        val parts = value.split('.')
         return parts.size == 4 && parts.all { part ->
-            part.isNotEmpty() && part.length <= 3 && part.all(Char::isDigit) && part.toInt() <= 255
+            part.isNotEmpty() && part.length <= 3 &&
+                (part.length == 1 || part[0] != '0') &&
+                part.all { it in '0'..'9' } && part.toInt() <= 255
         }
+    }
+
+    private fun isIpv6(value: String): Boolean {
+        if (!value.contains(':')) return false
+        val compression = value.indexOf("::")
+        if (compression < 0) return ipv6Units(value, allowEmbeddedIpv4 = true) == 8
+        if (value.indexOf("::", compression + 2) >= 0) return false
+        val left = ipv6Units(value.substring(0, compression), allowEmbeddedIpv4 = false) ?: return false
+        val right = ipv6Units(value.substring(compression + 2), allowEmbeddedIpv4 = true) ?: return false
+        return left + right < 8
+    }
+
+    /** The 16-bit units in a colon-separated part, or null when malformed. */
+    private fun ipv6Units(part: String, allowEmbeddedIpv4: Boolean): Int? {
+        if (part.isEmpty()) return 0
+        val groups = part.split(':')
+        var units = 0
+        groups.forEachIndexed { index, group ->
+            if (group.isEmpty()) return null
+            if (group.contains('.')) {
+                if (!allowEmbeddedIpv4 || index != groups.lastIndex || !isIpv4(group)) return null
+                units += 2
+            } else {
+                if (group.length > 4 || !group.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) return null
+                units += 1
+            }
+        }
+        return units
     }
 
     private fun parse(config: ByteArray): JSONObject = try {

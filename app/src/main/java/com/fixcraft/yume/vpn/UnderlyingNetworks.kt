@@ -86,21 +86,20 @@ internal class UnderlyingNetworks(
     fun order(network: Network, addresses: List<InetAddress>): List<InetAddress> {
         val hasIpv4 = manager.getLinkProperties(network)?.linkAddresses
             ?.any { it.address is Inet4Address } ?: true
-        val (ipv4, ipv6) = addresses.partition { it is Inet4Address }
-        return if (hasIpv4) ipv4 + ipv6 else ipv6 + ipv4
+        return VpnRunPolicy.order(addresses, hasIpv4) { it is Inet4Address }
     }
 
-    // Android prefers a validated network, and among those an unmetered one,
-    // which is how Wi-Fi wins over cellular. The same order is used here.
+    // Android's preference order, as VpnRunPolicy.choose states it.
     private fun reconsider() {
         val changed = synchronized(lock) {
-            val best = known.entries.maxWithOrNull(
-                compareBy<Map.Entry<Network, NetworkCapabilities>> {
-                    it.value.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                }.thenBy {
-                    it.value.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+            val best = VpnRunPolicy.choose(
+                known.mapValues { (_, capabilities) ->
+                    VpnRunPolicy.NetworkFacts(
+                        validated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+                        unmetered = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
+                    )
                 },
-            )?.key
+            )
             val differs = best != chosen
             chosen = best
             differs

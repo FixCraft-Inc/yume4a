@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
                     uiState = uiState,
                     onConnect = ::requestNotificationPermissionThenConnect,
                     onDisconnect = viewModel::disconnect,
+                    onRecoverKitIndex = viewModel::recoverKitIndex,
                     onSelectKit = viewModel::selectKit,
                     onRenameKit = viewModel::renameKit,
                     onDeleteKit = viewModel::deleteKit,
@@ -155,6 +156,7 @@ class MainActivity : ComponentActivity() {
                     onSetAdvancedMode = viewModel::updateAdvancedMode,
                     onSetDnsServers = viewModel::updateDnsServers,
                     onSetCarryIpv6 = viewModel::updateCarryIpv6,
+                    onSelectTuningPreset = viewModel::resetTuningPreset,
                     onMoveTuningSlider = viewModel::moveTuningSlider,
                     onApplyTuning = viewModel::applyTuning,
                     onUnlockTuningExpert = viewModel::unlockTuningExpert,
@@ -172,34 +174,29 @@ class MainActivity : ComponentActivity() {
         strings: AppStrings,
         onStateChanged: (LanguagePreparationUiState?) -> Unit,
     ): Boolean {
-        if (!AutoTranslationRuntime.needsPreparation(this, language)) {
-            onStateChanged(null)
-            return true
-        }
-        val languageName = languageDisplayName(language, strings)
-        onStateChanged(
-            LanguagePreparationUiState(
+        return try {
+            if (!AutoTranslationRuntime.needsPreparation(this, language)) return true
+            val languageName = languageDisplayName(language, strings)
+            onStateChanged(LanguagePreparationUiState(
                 title = strings.preparingLanguageTitle,
-                detail = strings.preparingLanguage(languageName),
-                progress = null,
-            )
-        )
-        val prepared = withContext(Dispatchers.IO) {
-            AutoTranslationRuntime.prepareLanguage(
-                context = this@MainActivity,
-                language = language,
-                onProgress = { progress ->
+                detail = strings.preparingLanguage(languageName), progress = null,
+            ))
+            val prepared = withContext(Dispatchers.IO) {
+                AutoTranslationRuntime.prepareLanguage(this@MainActivity, language) { progress ->
                     runOnUiThread {
                         onStateChanged(buildLanguagePreparationState(strings, languageName, progress))
                     }
-                },
-            )
+                }
+            }
+            if (prepared) viewModel.refreshDownloadedLanguages()
+            prepared
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        } finally {
+            onStateChanged(null)
         }
-        if (prepared) {
-            viewModel.refreshDownloadedLanguages()
-        }
-        onStateChanged(null)
-        return prepared
     }
 
     private fun buildLanguagePreparationState(

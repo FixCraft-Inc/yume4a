@@ -21,6 +21,8 @@ import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.FactRow
 import com.fixcraft.yume.ui.SectionCard
 import com.fixcraft.yume.vpn.VpnPhase
+import com.fixcraft.yume.vpn.VpnRunPolicy
+import com.fixcraft.yume.data.AppSettings
 
 /**
  * What protects the connection and what does not. Every value here is either
@@ -40,7 +42,7 @@ fun PostureScreen(uiState: MainUiState) {
     // While a run is up, its own values are shown, not settings changed since.
     val carriesIpv6 = if (vpnState.isActive) vpnState.carriesIpv6 else settings.carryIpv6
     val dnsServers = vpnState.dnsServers.takeIf { vpnState.isActive && it.isNotEmpty() }
-        ?: settings.dnsServers.filter { carriesIpv6 || !it.contains(':') }
+        ?: VpnRunPolicy.usableDnsServers(settings.dnsServers, carriesIpv6, AppSettings.DEFAULT_DNS_SERVERS)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
