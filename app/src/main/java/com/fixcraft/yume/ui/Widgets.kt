@@ -28,12 +28,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
-import com.fixcraft.yume.ui.theme.YumeErrorContainer
-import com.fixcraft.yume.ui.theme.YumeErrorContent
-import com.fixcraft.yume.ui.theme.YumeProtectedContainer
-import com.fixcraft.yume.ui.theme.YumeProtectedContent
-import com.fixcraft.yume.ui.theme.YumeVerifyContainer
-import com.fixcraft.yume.ui.theme.YumeVerifyContent
+import com.fixcraft.yume.ui.theme.statusPalette
 import com.fixcraft.yume.vpn.VpnPhase
 import java.util.Locale
 import kotlin.math.ceil
@@ -226,11 +221,16 @@ internal data class StatusTone(
 )
 
 @Composable
-internal fun phaseTone(phase: VpnPhase): StatusTone = when (phase) {
-    VpnPhase.Error -> StatusTone(YumeErrorContainer, YumeErrorContent)
-    VpnPhase.Connected -> StatusTone(YumeProtectedContainer, YumeProtectedContent)
-    VpnPhase.Connecting, VpnPhase.Reconnecting, VpnPhase.PermissionRequired ->
-        StatusTone(YumeVerifyContainer, YumeVerifyContent)
-
-    else -> StatusTone(MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer)
+internal fun phaseTone(phase: VpnPhase): StatusTone {
+    val status = statusPalette()
+    val colors = when (phase) {
+        VpnPhase.Error -> status.failed
+        VpnPhase.Connected -> status.protected
+        VpnPhase.Connecting, VpnPhase.Reconnecting, VpnPhase.PermissionRequired -> status.working
+        else -> return StatusTone(
+            MaterialTheme.colorScheme.surfaceContainerHighest,
+            MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    return StatusTone(colors.container, colors.content)
 }

@@ -2,6 +2,8 @@ package com.fixcraft.yume.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ButtonColors
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -9,74 +11,97 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import com.fixcraft.yume.data.ThemeColorMode
 
+// Every role is set, the surface containers included: Material fills cards,
+// dialogs and chips from them, and its stock values are lavender, off the
+// plum axis the rest of the palette shares with the desktop and website.
 private val DarkColorScheme = darkColorScheme(
-    primary = Color(0xFFD9BFD4),
-    onPrimary = Color(0xFF3F2940),
-    secondary = Color(0xFFE0BCCF),
-    onSecondary = Color(0xFF462836),
-    tertiary = Color(0xFFE8BECC),
-    onTertiary = Color(0xFF472734),
+    primary = YumeNightAccent,
+    onPrimary = YumeNightButtonInk,
+    primaryContainer = YumeNightAccentSoft,
+    onPrimaryContainer = YumeNightOnAccentSoft,
+    inversePrimary = YumeAccentStrong,
+    secondary = Color(0xFFE5BCD9),
+    onSecondary = Color(0xFF2B1826),
+    secondaryContainer = YumeNightTonal,
+    onSecondaryContainer = YumeNightOnAccentSoft,
+    tertiary = Color(0xFFE5BCD9),
+    onTertiary = Color(0xFF2B1826),
+    tertiaryContainer = YumeNightTonal,
+    onTertiaryContainer = YumeNightOnAccentSoft,
     background = YumeNight,
     onBackground = YumeMist,
     surface = YumeNightSurface,
     onSurface = YumeMist,
-    surfaceVariant = YumeNightRaised,
-    onSurfaceVariant = Color(0xFFCAC3CA),
-    primaryContainer = YumePlumDeep,
-    onPrimaryContainer = Color(0xFFF4DDEA),
-    secondaryContainer = Color(0xFF5A3A48),
-    onSecondaryContainer = Color(0xFFFFD9E6),
-    tertiaryContainer = Color(0xFF5A3D49),
-    onTertiaryContainer = Color(0xFFFDDCE5),
-    outline = Color(0xFF8C848E),
+    surfaceVariant = YumeNightCardHighest,
+    onSurfaceVariant = YumeNightMuted,
+    surfaceTint = YumeNightAccent,
+    inverseSurface = Color(0xFFECE1E8),
+    inverseOnSurface = YumeNightCardHigh,
+    outline = YumeNightOutline,
+    outlineVariant = YumeNightRule,
+    surfaceBright = YumeNightBright,
+    surfaceDim = YumeNight,
+    surfaceContainerLowest = YumeNightLowest,
+    surfaceContainerLow = YumeNightLow,
+    surfaceContainer = YumeNightCard,
+    surfaceContainerHigh = YumeNightCardHigh,
+    surfaceContainerHighest = YumeNightCardHighest,
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = YumePlum,
-    onPrimary = Color(0xFFFFFBFF),
-    secondary = YumeBerry,
-    onSecondary = Color(0xFFFFFBFF),
-    tertiary = YumeBerry,
-    onTertiary = Color(0xFFFFFBFF),
-    background = YumeFog,
+    primary = YumeAccentStrong,
+    onPrimary = YumePaper,
+    primaryContainer = YumeAccentSoft,
+    onPrimaryContainer = YumeInk,
+    inversePrimary = Color(0xFFFFB2EE),
+    secondary = YumeSecondary,
+    onSecondary = YumePaper,
+    secondaryContainer = YumeTonal,
+    onSecondaryContainer = YumeInk,
+    tertiary = YumeSecondary,
+    onTertiary = YumePaper,
+    tertiaryContainer = YumeTonal,
+    onTertiaryContainer = YumeInk,
+    background = YumePage,
     onBackground = YumeInk,
     surface = YumePaper,
     onSurface = YumeInk,
-    surfaceVariant = YumeCloud,
-    onSurfaceVariant = YumeSlate,
-    primaryContainer = YumeLilac,
-    onPrimaryContainer = YumeInk,
-    secondaryContainer = Color(0xFFF3E0E8),
-    onSecondaryContainer = Color(0xFF32161F),
-    tertiaryContainer = Color(0xFFF1E0E7),
-    onTertiaryContainer = Color(0xFF32161F),
-    outline = Color(0xFF958D98),
+    surfaceVariant = YumeCardHighest,
+    onSurfaceVariant = YumeMuted,
+    surfaceTint = YumeAccentStrong,
+    inverseSurface = Color(0xFF362932),
+    inverseOnSurface = Color(0xFFF6EBF2),
+    outline = YumeOutline,
+    outlineVariant = YumeRule,
+    surfaceBright = YumePaper,
+    surfaceDim = YumeDim,
+    surfaceContainerLowest = Color.White,
+    surfaceContainerLow = YumeCardLow,
+    surfaceContainer = YumeCard,
+    surfaceContainerHigh = YumeCardHigh,
+    surfaceContainerHighest = YumeCardHighest,
 )
 
-private val AmoledDarkColorScheme = darkColorScheme(
-    primary = Color(0xFFD3C0E8),
-    onPrimary = Color(0xFF382B4B),
-    secondary = Color(0xFFE6BED2),
-    onSecondary = Color(0xFF432634),
-    tertiary = Color(0xFFE9C0DA),
-    onTertiary = Color(0xFF4A2940),
-    background = Color(0xFF000000),
-    onBackground = Color(0xFFEAE3EA),
-    surface = Color(0xFF000000),
-    onSurface = Color(0xFFEAE3EA),
-    surfaceVariant = Color(0xFF15141A),
-    onSurfaceVariant = Color(0xFFC9C3CD),
-    primaryContainer = Color(0xFF2B2234),
-    onPrimaryContainer = Color(0xFFF1DDFB),
-    secondaryContainer = Color(0xFF35222C),
-    onSecondaryContainer = Color(0xFFFFD8E7),
-    tertiaryContainer = Color(0xFF362330),
-    onTertiaryContainer = Color(0xFFFFDDEC),
-    outline = Color(0xFF817B86),
+// AMOLED keeps the dark scheme's plum accents over pure black, with the
+// containers stepping up from black on the same axis.
+private val AmoledDarkColorScheme = DarkColorScheme.copy(
+    background = Color.Black,
+    surface = Color.Black,
+    surfaceDim = Color.Black,
+    surfaceBright = Color(0xFF1C1319),
+    surfaceContainerLowest = Color.Black,
+    surfaceContainerLow = Color(0xFF040203),
+    surfaceContainer = YumeNightLowest,
+    surfaceContainerHigh = YumeNight,
+    surfaceContainerHighest = Color(0xFF190F16),
+    surfaceVariant = Color(0xFF120A10),
 )
 
 private fun ColorScheme.withAmoledSurfaces(): ColorScheme {
@@ -101,8 +126,9 @@ fun YumeVPNTheme(
     amoledDarkTheme: Boolean = false,
     content: @Composable () -> Unit
 ) {
+    val dynamic = themeColorMode == ThemeColorMode.System && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val baseScheme = when {
-        themeColorMode == ThemeColorMode.System && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+        dynamic -> {
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
@@ -110,14 +136,37 @@ fun YumeVPNTheme(
         else -> LightColorScheme
     }
     val colorScheme = when {
-        darkTheme && amoledDarkTheme && themeColorMode == ThemeColorMode.Yume -> AmoledDarkColorScheme
+        darkTheme && amoledDarkTheme && !dynamic -> AmoledDarkColorScheme
         darkTheme && amoledDarkTheme -> baseScheme.withAmoledSurfaces()
         else -> baseScheme
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
-    )
+    // The main action is the soft pink pill of the desktop and website. With
+    // the phone's dynamic colors it follows them instead.
+    val action = when {
+        dynamic -> ActionColors(colorScheme.primary, colorScheme.onPrimary)
+        darkTheme -> ActionColors(YumeNightButton, YumeNightButtonInk)
+        else -> ActionColors(YumeButton, YumeInk)
+    }
+
+    CompositionLocalProvider(LocalActionColors provides action) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = Typography,
+            content = content
+        )
+    }
+}
+
+/** The colors of a screen's main action button. */
+@Immutable
+data class ActionColors(val container: Color, val content: Color)
+
+internal val LocalActionColors = staticCompositionLocalOf { ActionColors(YumeButton, YumeInk) }
+
+/** Button colors for a screen's main action, such as Connect or Add a kit. */
+@Composable
+fun mainActionColors(): ButtonColors {
+    val action = LocalActionColors.current
+    return ButtonDefaults.buttonColors(containerColor = action.container, contentColor = action.content)
 }

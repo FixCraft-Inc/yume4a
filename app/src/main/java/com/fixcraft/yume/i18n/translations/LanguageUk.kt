@@ -168,7 +168,7 @@ internal object LanguageUk : LanguageBundle {
         "amoled.black" to "AMOLED чорний",
         "use.true.black.in.dark.mode" to "Використовувати справжній чорний у темній темі.",
         "system.theme" to "Системна",
-        "muted.built.in.colors" to "Приглушені вбудовані кольори.",
+        "theme.yume.plum.colors" to "Сливові кольори YUME, як на компʼютері.",
         "material.you.on.android.12" to "Material You на Android 12+.",
         "use.android.protection.by.default.or.add.a.password.bef" to "Типово використовуйте захист Android або додайте пароль перед відкриттям застосунку.",
         "protection" to "Захист",

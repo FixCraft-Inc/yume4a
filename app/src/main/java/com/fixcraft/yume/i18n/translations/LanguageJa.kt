@@ -168,7 +168,7 @@ internal object LanguageJa : LanguageBundle {
         "amoled.black" to "AMOLEDブラック",
         "use.true.black.in.dark.mode" to "ダークモードで純粋な黒を使います。",
         "system.theme" to "システム",
-        "muted.built.in.colors" to "落ち着いた組み込みカラーを使います。",
+        "theme.yume.plum.colors" to "YUME のプラム系の配色です。デスクトップ版と同じです。",
         "material.you.on.android.12" to "Android 12+ の Material You を使います。",
         "use.android.protection.by.default.or.add.a.password.bef" to "標準では Android の保護を使い、必要ならアプリ起動前にパスワードを追加できます。",
         "protection" to "保護",

@@ -661,7 +661,7 @@ class YumeVpnService : VpnService() {
             ?.let { AppLocaleManager.getString(localizedContext, R.string.notification_title, it) }
             ?: AppLocaleManager.getString(localizedContext, R.string.app_name)
         return NotificationCompat.Builder(localizedContext, NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(text)
             .setOngoing(true)
@@ -692,7 +692,7 @@ class YumeVpnService : VpnService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val notification = NotificationCompat.Builder(localizedContext, NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(AppLocaleManager.getString(localizedContext, R.string.app_name))
             .setContentText(appStrings(this, AppLanguage.SystemDefault).message(MessageId.VPN_UNLOCK_RECONNECT))
             .setOngoing(false)

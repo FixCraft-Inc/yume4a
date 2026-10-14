@@ -371,7 +371,7 @@ class AgentCommandService : Service() {
     }
 
     private fun notification(detail: String): Notification = Notification.Builder(this, CHANNEL_ID)
-        .setSmallIcon(R.mipmap.ic_launcher)
+        .setSmallIcon(R.drawable.ic_notification)
         .setContentTitle("Yume agent test")
         .setContentText(detail.take(100))
         .setOngoing(true)

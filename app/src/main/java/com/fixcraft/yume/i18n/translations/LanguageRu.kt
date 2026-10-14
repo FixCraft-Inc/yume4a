@@ -168,7 +168,7 @@ internal object LanguageRu : LanguageBundle {
         "amoled.black" to "AMOLED черный",
         "use.true.black.in.dark.mode" to "Использовать чисто черный цвет в темной теме.",
         "system.theme" to "Системная",
-        "muted.built.in.colors" to "Приглушенные встроенные цвета.",
+        "theme.yume.plum.colors" to "Сливовые цвета YUME, как на компьютере.",
         "material.you.on.android.12" to "Material You на Android 12+.",
         "use.android.protection.by.default.or.add.a.password.bef" to "По умолчанию используется защита Android, либо можно добавить пароль перед открытием приложения.",
         "protection" to "Защита",

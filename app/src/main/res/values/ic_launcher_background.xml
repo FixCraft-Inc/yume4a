@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- Deep plum, OKLCH 30% 0.07 337, under the pale mark: the dark-ground
+         variant of the YUME mark, as on the desktop and website in dark mode. -->
+    <color name="ic_launcher_background">#431E3A</color>
 </resources>

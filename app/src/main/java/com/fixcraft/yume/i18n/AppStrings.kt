@@ -290,7 +290,7 @@ class AppStrings private constructor(
     val amoledTitle = t(MessageId.AMOLED_BLACK)
     val amoledDescription = t(MessageId.USE_TRUE_BLACK_IN_DARK_MODE)
     val themeSystem = t(MessageId.SYSTEM_THEME)
-    val themeYumeDescription = t(MessageId.MUTED_BUILT_IN_COLORS)
+    val themeYumeDescription = t(MessageId.THEME_YUME_PLUM_COLORS)
     val themeSystemDescription = t(MessageId.MATERIAL_YOU_ON_ANDROID_12)
     val appDataSubtitle = t(MessageId.USE_ANDROID_PROTECTION_BY_DEFAULT_OR_ADD_A_PASSWORD_BEF)
     val appDataProtectionLabel = t(MessageId.PROTECTION)

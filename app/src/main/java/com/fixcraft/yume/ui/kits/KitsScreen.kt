@@ -53,6 +53,7 @@ import com.fixcraft.yume.ui.SectionCard
 import com.fixcraft.yume.ui.StatusPill
 import com.fixcraft.yume.ui.appDialogProperties
 import com.fixcraft.yume.ui.appDialogWidth
+import com.fixcraft.yume.ui.theme.mainActionColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -106,7 +107,12 @@ fun KitsScreen(
         }
         item {
             SectionCard(title = strings.kitsTitle, detail = strings.kitsSubtitle) {
-                Button(onClick = { adding = true }, enabled = !uiState.kitIndexCorrupt, modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = { adding = true },
+                    enabled = !uiState.kitIndexCorrupt,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = mainActionColors(),
+                ) {
                     Text(strings.addKit)
                 }
             }
