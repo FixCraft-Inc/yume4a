@@ -31,7 +31,6 @@ import com.fixcraft.yume.ui.StatusMessage
 import com.fixcraft.yume.ui.StatusPill
 import com.fixcraft.yume.ui.home.TrafficChartCard
 import com.fixcraft.yume.ui.phaseTone
-import com.fixcraft.yume.ui.theme.mainActionColors
 import com.fixcraft.yume.vpn.VpnConnectionState
 import com.fixcraft.yume.vpn.VpnPhase
 
@@ -63,7 +62,7 @@ fun OverviewScreen(
                 ) {
                     if (kit == null && !vpnState.isActive) {
                         StatusMessage(headline = strings.noKitTitle, detail = strings.noKitDetail)
-                        Button(onClick = onOpenKits, modifier = Modifier.fillMaxWidth(), colors = mainActionColors()) {
+                        Button(onClick = onOpenKits, modifier = Modifier.fillMaxWidth()) {
                             Text(strings.addKit)
                         }
                     } else {
@@ -117,7 +116,7 @@ fun OverviewScreen(
                                 Text(strings.disconnect)
                             }
                         } else {
-                            Button(onClick = onConnect, modifier = Modifier.fillMaxWidth(), colors = mainActionColors()) {
+                            Button(onClick = onConnect, modifier = Modifier.fillMaxWidth()) {
                                 Icon(painter = painterResource(R.drawable.ic_login_action), contentDescription = null)
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(strings.connect)

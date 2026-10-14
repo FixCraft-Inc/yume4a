@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -104,7 +105,9 @@ internal fun CardTitle(title: String, info: String?, text: @Composable () -> Uni
 internal fun InfoButton(title: String, text: String) {
     val strings = appStrings()
     var open by rememberSaveable { mutableStateOf(false) }
-    IconButton(onClick = { open = true }) {
+    // Drawn in a 32 dp box so the title row keeps the height of its text.
+    // Compose still extends the touch target to the minimum 48 dp.
+    IconButton(onClick = { open = true }, modifier = Modifier.size(32.dp)) {
         Icon(
             painter = painterResource(R.drawable.ic_info_action),
             contentDescription = strings.moreAbout(title),
