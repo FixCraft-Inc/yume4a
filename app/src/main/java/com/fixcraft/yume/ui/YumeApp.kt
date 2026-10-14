@@ -441,7 +441,7 @@ private fun AppTopBar(
 
                 Spacer(modifier = Modifier.width(72.dp))
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
         }
     }
 }
@@ -453,14 +453,14 @@ private fun BottomNavBar(
     onNavigate: (String) -> Unit,
 ) {
     Surface(
-        color = MaterialTheme.colorScheme.background,
+        color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = Modifier.navigationBarsPadding(),
     ) {
         Column {
-            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
             NavigationBar(
                 modifier = Modifier.fillMaxWidth(),
-                containerColor = MaterialTheme.colorScheme.background,
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
                 tonalElevation = 0.dp,
             ) {
                 destinations.forEach { destination ->
@@ -481,7 +481,7 @@ private fun BottomNavBar(
                         label = { NavigationLabel(destination.label) },
                         alwaysShowLabel = false,
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
                             selectedTextColor = MaterialTheme.colorScheme.onSurface,
                             indicatorColor = MaterialTheme.colorScheme.primaryContainer,
                             unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -521,7 +521,7 @@ private fun SideNavRail(
                     label = { NavigationLabel(destination.label) },
                     alwaysShowLabel = false,
                     colors = NavigationRailItemDefaults.colors(
-                        selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        selectedIconColor = MaterialTheme.colorScheme.primary,
                         selectedTextColor = MaterialTheme.colorScheme.onSurface,
                         indicatorColor = MaterialTheme.colorScheme.primaryContainer,
                         unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -530,7 +530,7 @@ private fun SideNavRail(
                 )
             }
         }
-        VerticalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+        VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
     }
 }
 

@@ -34,6 +34,7 @@ import com.fixcraft.yume.data.AppVaultManager
 import com.fixcraft.yume.i18n.ProvideAppStrings
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.theme.YumeVPNTheme
+import com.fixcraft.yume.ui.theme.mainActionColors
 import com.fixcraft.yume.vpn.YumeVpnService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -153,6 +154,7 @@ private fun UnlockScreen(
                     },
                     enabled = !busy,
                     modifier = Modifier.fillMaxWidth(),
+                    colors = mainActionColors(),
                 ) {
                     Text(strings.unlockButton)
                 }

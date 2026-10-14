@@ -83,7 +83,7 @@ fun TrafficChartCard(vpnPhase: VpnPhase, modifier: Modifier = Modifier) {
             WindowSelector(window, { window = it }, strings)
             Column(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerLowest).padding(12.dp),
+                    .background(MaterialTheme.colorScheme.background).padding(12.dp),
             ) {
                 Text(formatTrafficRate(maxRate), style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)

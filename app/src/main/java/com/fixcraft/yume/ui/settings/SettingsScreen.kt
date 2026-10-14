@@ -70,6 +70,7 @@ import com.fixcraft.yume.ui.FactRow
 import com.fixcraft.yume.ui.appDialogProperties
 import com.fixcraft.yume.ui.appDialogWidth
 import com.fixcraft.yume.ui.tabMovesFocusOn
+import com.fixcraft.yume.ui.theme.yumeSliderColors
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
@@ -598,6 +599,7 @@ private fun TuningSliderRow(
             valueRange = 1f..maximum.toFloat(),
             steps = maximum - 2,
             enabled = preset != null && !tuning.saving,
+            colors = yumeSliderColors(),
         )
     }
 }
@@ -828,7 +830,7 @@ private fun SettingGroupCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
     ) {
         Column(
             modifier = Modifier.padding(20.dp),
@@ -878,8 +880,8 @@ private fun SettingChoiceCard(
             .then(choice),
         color = when {
             selected -> MaterialTheme.colorScheme.primaryContainer
-            !enabled -> MaterialTheme.colorScheme.surfaceContainer
-            else -> MaterialTheme.colorScheme.surfaceContainerHigh
+            !enabled -> MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)
+            else -> MaterialTheme.colorScheme.surfaceContainerHighest
         },
         shape = MaterialTheme.shapes.large,
     ) {
@@ -934,7 +936,7 @@ private fun SettingToggleRow(
         modifier = Modifier
             .fillMaxWidth()
             .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
         shape = MaterialTheme.shapes.large,
     ) {
         Row(
@@ -979,7 +981,7 @@ private fun SettingActionRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
         shape = MaterialTheme.shapes.large,
     ) {
         Row(

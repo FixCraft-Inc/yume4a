@@ -1,43 +1,66 @@
 package com.fixcraft.yume.ui.theme
 
+import androidx.compose.material3.ButtonColors
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SliderColors
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
 
-// The YUME colours are Material's TonalSpot scheme, the one Android builds
-// from a wallpaper, seeded with the mark's colour as it shows over white
-// (#e59fd1). Every role, button, card and text colour comes from that one seed,
-// so they keep the same relationships as the phone's own dynamic colours.
-// The desktop GUI (src/gui/qml/Theme.qml) uses the same values. The status
-// colours are Material custom colours harmonized toward the seed.
+// Colours Material has no role for, all from the shared palette. Status and
+// traffic colours stay YUME's under dynamic colours too, so a state reads the
+// same whichever theme the phone uses.
 
 internal data class StatusColors(val container: Color, val content: Color)
 
 internal data class StatusPalette(val protected: StatusColors, val working: StatusColors, val failed: StatusColors)
 
-private val LightStatus = StatusPalette(
-    protected = StatusColors(Color(0xFFA5F1E1), Color(0xFF00201B)),
-    working = StatusColors(Color(0xFFFFDBCF), Color(0xFF380D00)),
-    failed = StatusColors(Color(0xFFFFD9DE), Color(0xFF3A0717)),
-)
-
-private val DarkStatus = StatusPalette(
-    protected = StatusColors(Color(0xFF005046), Color(0xFFA5F1E1)),
-    working = StatusColors(Color(0xFF72351F), Color(0xFFFFDBCF)),
-    failed = StatusColors(Color(0xFF713341), Color(0xFFFFD9DE)),
-)
-
 @Composable
-internal fun statusPalette(): StatusPalette =
-    if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) DarkStatus else LightStatus
+internal fun statusPalette(): StatusPalette {
+    val palette = LocalYumeColors.current.palette
+    return StatusPalette(
+        protected = StatusColors(palette.outside.soft, palette.outside.onSoft),
+        working = StatusColors(palette.disguise.soft, palette.disguise.onSoft),
+        failed = StatusColors(palette.refused.soft, palette.refused.onSoft),
+    )
+}
 
-// Traffic direction colors stay stable even when the application uses dynamic colors.
 internal data class TrafficColors(val upload: Color, val download: Color)
 
 @Composable
-internal fun trafficColors(): TrafficColors = if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) {
-    TrafficColors(Color(0xFFF5B2E1), Color(0xFFABC7FF))
-} else {
-    TrafficColors(Color(0xFF834C75), Color(0xFF425E91))
+internal fun trafficColors(): TrafficColors {
+    val palette = LocalYumeColors.current.palette
+    return TrafficColors(palette.scheme.primary, palette.data.strong)
+}
+
+/**
+ * A screen's main action in the palette's button colours: blossom with plum
+ * text in light and the soft pink in dark. Dynamic colours keep Material's
+ * own filled button.
+ */
+@Composable
+internal fun mainActionColors(): ButtonColors {
+    val colors = LocalYumeColors.current
+    if (colors.dynamic) return ButtonDefaults.buttonColors()
+    return ButtonDefaults.buttonColors(
+        containerColor = colors.palette.button,
+        contentColor = colors.palette.buttonInk,
+        disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+    )
+}
+
+/**
+ * A slider whose filled track is the palette's soft track colour, so a full
+ * light slider is not a heavy bar. The thumb keeps the accent.
+ */
+@Composable
+internal fun yumeSliderColors(): SliderColors {
+    val colors = LocalYumeColors.current
+    if (colors.dynamic) return SliderDefaults.colors()
+    return SliderDefaults.colors(
+        activeTrackColor = colors.palette.track,
+        activeTickColor = MaterialTheme.colorScheme.onPrimary,
+    )
 }

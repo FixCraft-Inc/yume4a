@@ -90,7 +90,7 @@ private fun ComponentCard(entry: ComponentEntry) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         ),
     ) {
         Column(
@@ -112,7 +112,7 @@ private fun ComponentCard(entry: ComponentEntry) {
                 enabled = false,
                 label = { Text(entry.license, style = MaterialTheme.typography.labelSmall) },
                 colors = AssistChipDefaults.assistChipColors(
-                    disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                     disabledLabelColor = MaterialTheme.colorScheme.onSurface,
                 ),
             )
