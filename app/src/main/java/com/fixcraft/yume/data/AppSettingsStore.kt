@@ -47,24 +47,42 @@ sealed class AppLanguage(
         override val localeTag: String = normalizeLanguageTag(targetLocaleTag)
     }
 
+    /** A human community translation from YUME's shared catalog. */
+    data class Community(
+        private val targetLocaleTag: String,
+    ) : AppLanguage("community:${normalizeLanguageTag(targetLocaleTag)}") {
+        override val localeTag: String = normalizeLanguageTag(targetLocaleTag)
+    }
+
     val isMaintained: Boolean
         get() = this is Maintained
 
     val isAutoTranslated: Boolean
         get() = this is AutoTranslated
 
-    fun resolve(systemLocale: Locale = Locale.getDefault()): ResolvedAppLanguage {
+    /**
+     * The language strings come from. [communityTags] are the community
+     * languages the app ships. A human community translation of a language
+     * wins over on-device translation, and a chosen community language that
+     * the app no longer ships resolves like any other tag.
+     */
+    fun resolve(
+        systemLocale: Locale = Locale.getDefault(),
+        communityTags: Set<String> = emptySet(),
+    ): ResolvedAppLanguage {
         val requestedTag = when (this) {
             SystemDefault -> systemLocale.toLanguageTag()
             is Maintained -> localeTag
             is AutoTranslated -> localeTag
+            is Community -> localeTag
         }
         val normalizedTag = normalizeLanguageTag(requestedTag)
-        return when (Locale.forLanguageTag(normalizedTag).language.lowercase(Locale.ROOT)) {
+        return when (val languageCode = Locale.forLanguageTag(normalizedTag).language.lowercase(Locale.ROOT)) {
             Maintained.English.localeTag -> ResolvedAppLanguage.English
             Maintained.Russian.localeTag -> ResolvedAppLanguage.Russian
             Maintained.Japanese.localeTag -> ResolvedAppLanguage.Japanese
             Maintained.Ukrainian.localeTag -> ResolvedAppLanguage.Ukrainian
+            in communityTags -> ResolvedAppLanguage.Community(languageCode)
             else -> ResolvedAppLanguage.AutoTranslated(normalizedTag)
         }
     }
@@ -83,6 +101,12 @@ sealed class AppLanguage(
                 return SystemDefault
             }
             maintainedEntries.firstOrNull { it.wireValue == normalizedValue }?.let { return it }
+            if (normalizedValue.startsWith("community:", ignoreCase = true)) {
+                val localeTag = normalizedValue.substringAfter(':').trim()
+                if (localeTag.isNotEmpty()) {
+                    return Community(localeTag)
+                }
+            }
             if (normalizedValue.startsWith("auto:", ignoreCase = true)) {
                 val localeTag = normalizedValue.substringAfter(':').trim()
                 if (localeTag.isNotEmpty()) {
@@ -92,10 +116,11 @@ sealed class AppLanguage(
             return AutoTranslated(normalizedValue)
         }
 
-        fun fromLocaleTag(localeTag: String): AppLanguage {
+        fun fromLocaleTag(localeTag: String, communityTags: Set<String> = emptySet()): AppLanguage {
             val normalizedTag = normalizeLanguageTag(localeTag)
             val languageCode = Locale.forLanguageTag(normalizedTag).language.lowercase(Locale.ROOT)
-            return maintainedEntries.firstOrNull { it.localeTag == languageCode } ?: AutoTranslated(normalizedTag)
+            return maintainedEntries.firstOrNull { it.localeTag == languageCode }
+                ?: if (languageCode in communityTags) Community(languageCode) else AutoTranslated(normalizedTag)
         }
 
         private fun normalizeLanguageTag(localeTag: String): String {
@@ -116,6 +141,10 @@ sealed class ResolvedAppLanguage(
     data object Ukrainian : ResolvedAppLanguage("uk")
 
     data class AutoTranslated(
+        override val localeTag: String,
+    ) : ResolvedAppLanguage(localeTag)
+
+    data class Community(
         override val localeTag: String,
     ) : ResolvedAppLanguage(localeTag)
 }

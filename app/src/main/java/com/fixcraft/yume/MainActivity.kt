@@ -34,6 +34,7 @@ import com.fixcraft.yume.i18n.AutoTranslationRuntime
 import com.fixcraft.yume.i18n.LanguagePreparationProgress
 import com.fixcraft.yume.i18n.LanguagePreparationStage
 import com.fixcraft.yume.i18n.appStrings
+import com.fixcraft.yume.i18n.communityLanguageTags
 import com.fixcraft.yume.ui.LanguagePreparationUiState
 import com.fixcraft.yume.ui.YumeApp
 import com.fixcraft.yume.ui.theme.YumeVPNTheme
@@ -226,7 +227,10 @@ class MainActivity : ComponentActivity() {
     private fun languageDisplayName(language: AppLanguage, strings: AppStrings): String {
         return when (language) {
             AppLanguage.SystemDefault -> {
-                val effective = AppLanguage.fromLocaleTag(AppLocaleManager.resolveSystemLocale(this).toLanguageTag())
+                val effective = AppLanguage.fromLocaleTag(
+                    AppLocaleManager.resolveSystemLocale(this).toLanguageTag(),
+                    communityLanguageTags,
+                )
                 when (effective) {
                     is AppLanguage.AutoTranslated -> AppLanguageCatalog.displayName(effective)
                     else -> strings.languageName(effective)

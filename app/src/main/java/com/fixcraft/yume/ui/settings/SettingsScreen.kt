@@ -62,6 +62,7 @@ import com.fixcraft.yume.i18n.AppLanguageGroup
 import com.fixcraft.yume.i18n.AppLocaleManager
 import com.fixcraft.yume.i18n.MessageId
 import com.fixcraft.yume.i18n.appStrings
+import com.fixcraft.yume.i18n.communityLanguageTags
 import com.fixcraft.yume.ui.FactRow
 import com.fixcraft.yume.ui.appDialogProperties
 import com.fixcraft.yume.ui.appDialogWidth
@@ -103,7 +104,8 @@ fun SettingsScreen(
     }
     val languageSummary = if (uiState.appSettings.language == AppLanguage.SystemDefault) {
         val effectiveSystemLanguage = AppLanguage.fromLocaleTag(
-            AppLocaleManager.resolveSystemLocale(context).toLanguageTag()
+            AppLocaleManager.resolveSystemLocale(context).toLanguageTag(),
+            communityLanguageTags,
         )
         val effectiveLanguageName = when (effectiveSystemLanguage) {
             is AppLanguage.AutoTranslated -> AppLanguageCatalog.displayName(effectiveSystemLanguage)
@@ -134,10 +136,13 @@ fun SettingsScreen(
                 ) {
                     AppLanguageGroup.entries.forEach { group ->
                         val groupItems = languageOptions.filter { it.group == group }
+                        // Community translations appear once the catalog ships one.
+                        if (group == AppLanguageGroup.Community && groupItems.isEmpty()) return@forEach
                         item(key = "header_${group.name}") {
                             Text(
                                 text = when (group) {
                                     AppLanguageGroup.Maintained -> strings.maintainedLanguagesTitle
+                                    AppLanguageGroup.Community -> strings.communityLanguagesTitle
                                     AppLanguageGroup.AutoTranslated -> strings.autoTranslatedLanguagesTitle
                                 },
                                 style = MaterialTheme.typography.labelLarge,
@@ -150,7 +155,7 @@ fun SettingsScreen(
                         ) { option ->
                             SettingChoiceCard(
                                 title = when (option.language) {
-                                    is AppLanguage.AutoTranslated -> option.displayName
+                                    is AppLanguage.AutoTranslated, is AppLanguage.Community -> option.displayName
                                     else -> strings.languageName(option.language)
                                 },
                                 description = when (option.language) {

@@ -5,6 +5,7 @@ import java.util.Locale
 
 enum class AppLanguageGroup {
     Maintained,
+    Community,
     AutoTranslated,
 }
 
@@ -21,11 +22,23 @@ object AppLanguageCatalog {
 
     fun maintainedLanguages(): List<AppLanguage> = listOf(AppLanguage.SystemDefault) + AppLanguage.maintainedEntries
 
+    /** Shipped community translations, by name. */
+    fun communityLanguages(
+        listed: List<CommunityLanguage> = CommunityLanguages.all,
+    ): List<AppLanguage.Community> = listed
+        .filter { it.localeTag !in maintainedLanguageCodes }
+        .sortedBy { it.name }
+        .map { AppLanguage.Community(it.localeTag) }
+
+    /** On-device translation, for languages no person translated. */
     fun autoTranslatedLanguages(): List<AppLanguage.AutoTranslated> {
+        val community = communityLanguageTags
         return AutoTranslationRuntime.supportedLocaleTags()
             .mapNotNull { localeTag ->
                 val languageCode = Locale.forLanguageTag(localeTag).language.lowercase(Locale.ROOT)
-                localeTag.takeIf { languageCode.isNotBlank() && languageCode !in maintainedLanguageCodes }
+                localeTag.takeIf {
+                    languageCode.isNotBlank() && languageCode !in maintainedLanguageCodes && languageCode !in community
+                }
             }
             .map(AppLanguage::fromLocaleTag)
             .filterIsInstance<AppLanguage.AutoTranslated>()
@@ -41,6 +54,13 @@ object AppLanguageCatalog {
                 displayName = displayName(it),
             )
         }
+        val community = communityLanguages().map {
+            AppLanguageOption(
+                language = it,
+                group = AppLanguageGroup.Community,
+                displayName = displayName(it),
+            )
+        }
         val autoTranslated = autoTranslatedLanguages().map {
             AppLanguageOption(
                 language = it,
@@ -48,7 +68,7 @@ object AppLanguageCatalog {
                 displayName = displayName(it),
             )
         }
-        return maintained + autoTranslated
+        return maintained + community + autoTranslated
     }
 
     fun displayName(language: AppLanguage): String {
@@ -59,6 +79,8 @@ object AppLanguageCatalog {
             AppLanguage.Maintained.Japanese -> "日本語"
             AppLanguage.Maintained.Ukrainian -> "Українська"
             is AppLanguage.AutoTranslated -> nativeLanguageName(language.localeTag)
+            is AppLanguage.Community -> communityLanguage(language.localeTag)?.name
+                ?: nativeLanguageName(language.localeTag)
         }
     }
 

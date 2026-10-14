@@ -22,7 +22,7 @@ import java.util.Locale
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
- * One generated bundle per maintained non-English language. Add or edit messages
+ * One generated bundle per maintained or community non-English language. Add or edit messages
  * in YUME's canonical `translations/catalog.json`, then regenerate this checkout;
  * do not hand-edit the Kotlin maps.
  */
@@ -43,14 +43,19 @@ private fun languageLocale(language: ResolvedAppLanguage): Locale = when (langua
     ResolvedAppLanguage.Japanese -> Locale.JAPANESE
     ResolvedAppLanguage.Ukrainian -> Locale.forLanguageTag("uk")
     is ResolvedAppLanguage.AutoTranslated -> Locale.forLanguageTag(language.localeTag)
+    is ResolvedAppLanguage.Community -> Locale.forLanguageTag(language.localeTag)
 }
 
 class AppStrings private constructor(
     private val language: ResolvedAppLanguage,
     private val autoTranslate: ((String) -> String)? = null,
     private val seedCollector: MutableSet<String>? = null,
+    communityBundles: Map<String, LanguageBundle> = CommunityLanguages.bundles,
 ) {
+    // A community bundle holds only what it translates. The rest stays
+    // English rather than going to on-device translation.
     private val translationMap: Map<String, String>? = maintainedBundles[language]?.translations
+        ?: (language as? ResolvedAppLanguage.Community)?.let { communityBundles[it.localeTag]?.translations }
 
     fun message(message: MessageId): String = t(message)
 
@@ -78,12 +83,13 @@ class AppStrings private constructor(
     val languageGroupTitle = t(MessageId.LANGUAGE)
     val maintainedLanguagesTitle = t(MessageId.MAINTAINED)
     val autoTranslatedLanguagesTitle = t(MessageId.AUTO_TRANSLATED)
+    val communityLanguagesTitle = t(MessageId.COMMUNITY_TRANSLATIONS)
+    val partlyEnglishLabel = t(MessageId.SOME_TEXT_APPEARS_IN_ENGLISH)
     val appLanguageLabel = t(MessageId.APP_LANGUAGE)
     val originalLabel = t(MessageId.ORIGINAL)
     val followsSystemLabel = t(MessageId.FOLLOWS_YOUR_PHONE)
     val onDeviceTranslationLabel = t(MessageId.ON_DEVICE_TRANSLATION)
     val autoShortLabel = t(MessageId.AUTO)
-    val nativeLabel = t(MessageId.NATIVE)
     val downloadedLabel = t(MessageId.DOWNLOADED)
     val removeDownloadedLanguageLabel = t(MessageId.REMOVE_DOWNLOAD)
     val preparingLanguageTitle = t(MessageId.PREPARING_LANGUAGE)
@@ -401,20 +407,35 @@ class AppStrings private constructor(
         AppLanguage.Maintained.Japanese -> "日本語"
         AppLanguage.Maintained.Ukrainian -> "Українська"
         is AppLanguage.AutoTranslated -> AppLanguageCatalog.displayName(appLanguage)
+        is AppLanguage.Community -> AppLanguageCatalog.displayName(appLanguage)
     }
+
+    /** Who translated a language, shown as their names under its group heading. */
+    fun creditNames(credits: List<TranslationCredit>): String = credits.joinToString(", ") { it.name }
+
+    private fun maintainedCredit(language: AppLanguage.Maintained): String? =
+        MaintainedLanguageCredits.credits[language.localeTag]?.let(::creditNames)
 
     fun languageDescription(appLanguage: AppLanguage): String? = when (appLanguage) {
         AppLanguage.SystemDefault -> followsSystemLabel
         AppLanguage.Maintained.English -> originalLabel
-        AppLanguage.Maintained.Russian -> nativeLabel
-        AppLanguage.Maintained.Japanese -> nativeLabel
-        AppLanguage.Maintained.Ukrainian -> nativeLabel
+        AppLanguage.Maintained.Russian -> maintainedCredit(AppLanguage.Maintained.Russian)
+        AppLanguage.Maintained.Japanese -> maintainedCredit(AppLanguage.Maintained.Japanese)
+        AppLanguage.Maintained.Ukrainian -> maintainedCredit(AppLanguage.Maintained.Ukrainian)
         is AppLanguage.AutoTranslated -> onDeviceTranslationLabel
+        is AppLanguage.Community -> communityLanguage(appLanguage.localeTag)?.let { community ->
+            val credit = creditNames(community.credits)
+            if (community.complete) credit else "$credit\n$partlyEnglishLabel"
+        }
     }
 
     fun languageSummary(appLanguage: AppLanguage): String {
+        // The credit lines belong in the picker; the summary stays short.
         val description = when (appLanguage) {
             is AppLanguage.AutoTranslated -> autoShortLabel
+            is AppLanguage.Community -> null
+            AppLanguage.Maintained.English -> originalLabel
+            is AppLanguage.Maintained -> null
             else -> languageDescription(appLanguage)
         }
         return if (description.isNullOrBlank()) {
@@ -512,6 +533,12 @@ class AppStrings private constructor(
             autoTranslate: ((String) -> String)? = null,
         ): AppStrings = AppStrings(language, autoTranslate)
 
+        /** For tests: strings drawn from the given community bundles. */
+        internal fun forCommunity(
+            language: ResolvedAppLanguage.Community,
+            communityBundles: Map<String, LanguageBundle>,
+        ): AppStrings = AppStrings(language, communityBundles = communityBundles)
+
         fun translationSeeds(): List<String> = translationSeeds
     }
 }
@@ -520,7 +547,7 @@ fun appStrings(
     language: AppLanguage,
     systemLocale: Locale = Locale.getDefault(),
     autoTranslate: ((String) -> String)? = null,
-): AppStrings = AppStrings.forLanguage(language.resolve(systemLocale), autoTranslate)
+): AppStrings = AppStrings.forLanguage(language.resolve(systemLocale, communityLanguageTags), autoTranslate)
 
 fun appStrings(
     context: Context,

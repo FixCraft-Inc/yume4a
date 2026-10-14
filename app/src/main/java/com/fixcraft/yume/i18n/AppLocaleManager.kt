@@ -23,7 +23,7 @@ object AppLocaleManager {
     fun current(base: Context): Context = wrap(base)
 
     fun resolveLanguage(base: Context, language: AppLanguage = AppSettingsStore.readLanguage(base)): ResolvedAppLanguage {
-        return language.resolve(resolveSystemLocale(base))
+        return language.resolve(resolveSystemLocale(base), communityLanguageTags)
     }
 
     fun resolveLocale(base: Context, language: AppLanguage = AppSettingsStore.readLanguage(base)): Locale? {
@@ -33,6 +33,7 @@ object AppLocaleManager {
             ResolvedAppLanguage.Japanese -> Locale.forLanguageTag(ResolvedAppLanguage.Japanese.localeTag)
             ResolvedAppLanguage.Ukrainian -> Locale.forLanguageTag(ResolvedAppLanguage.Ukrainian.localeTag)
             is ResolvedAppLanguage.AutoTranslated -> Locale.forLanguageTag(resolved.localeTag)
+            is ResolvedAppLanguage.Community -> Locale.forLanguageTag(resolved.localeTag)
         }
     }
 
