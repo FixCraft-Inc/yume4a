@@ -551,5 +551,9 @@ internal object LanguageJa : LanguageBundle {
         "tuning.level.speed" to "スループットを測定した 5 つの位置です：stealth、stealth-16、balanced、fast、max。条件は同じではありません。fast と max が balanced を上回るのは、ホスト TCP 上限を引き上げた場合だけです。これは選択肢であり、汎用的な速度評価ではありません。",
         "tuning.level.security" to "方向ごとの鍵エポックあたりのデータ量：4 は 1 MiB、3 は 4 MiB、2 は 16 MiB、1 は 64 MiB。アルゴリズムと必須ローテーションは変わりません。",
         "tuning.level.stealth" to "ウィンドウ、クレジット返却、アイドル時のローテーションの設定だけを表します。4 は既定の 4 MiB の上限、2 回のクレジット返却、アイドル時のローテーション無効を維持します。低いレベルではウィンドウが大きくなるかクレジットのレコードが増え、fast と max ではアイドル時の鍵更新のやり取りが加わります。分類器の結果を示すものではありません。エポックを変えると鍵更新の頻度も変わります。",
+        "info.more.about" to "%sの詳細",
+        "posture.connection.summary" to "すべての接続に同じ保護がかかります。どれも無効にはできません。",
+        "posture.server.summary" to "サーバーはあなたの接続先アドレスを見ることができます。信頼できるサーバーを使ってください。",
+        "posture.stop.summary" to "Yume が停止すると、Android は通信をトンネルの外へ送ります。",
     )
 }

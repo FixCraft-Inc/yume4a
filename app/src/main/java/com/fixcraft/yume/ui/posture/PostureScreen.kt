@@ -50,7 +50,11 @@ fun PostureScreen(uiState: MainUiState) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
-            SectionCard(title = strings.postureConnectionTitle, detail = strings.postureConnectionDetail) {
+            SectionCard(
+                title = strings.postureConnectionTitle,
+                detail = strings.postureConnectionSummary,
+                info = strings.postureConnectionDetail,
+            ) {
                 if (build != null) {
                     FactRow(strings.protocolLabel, build.protocolName)
                     FactRow(strings.suiteLabel, build.suite, monospace = true)
@@ -70,7 +74,11 @@ fun PostureScreen(uiState: MainUiState) {
             }
         }
         item {
-            SectionCard(title = strings.postureServerTitle, detail = strings.postureServerDetail)
+            SectionCard(
+                title = strings.postureServerTitle,
+                detail = strings.postureServerSummary,
+                info = strings.postureServerDetail,
+            )
         }
         item {
             SectionCard(title = strings.postureDeviceTitle) {
@@ -86,7 +94,11 @@ fun PostureScreen(uiState: MainUiState) {
             }
         }
         item {
-            SectionCard(title = strings.postureStopTitle, detail = strings.postureStopDetail) {
+            SectionCard(
+                title = strings.postureStopTitle,
+                detail = strings.postureStopSummary,
+                info = strings.postureStopDetail,
+            ) {
                 OutlinedButton(
                     onClick = {
                         runCatching { context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) }

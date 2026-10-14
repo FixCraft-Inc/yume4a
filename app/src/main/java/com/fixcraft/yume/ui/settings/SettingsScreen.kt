@@ -65,6 +65,7 @@ import com.fixcraft.yume.i18n.AppLocaleManager
 import com.fixcraft.yume.i18n.MessageId
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.i18n.communityLanguageTags
+import com.fixcraft.yume.ui.CardTitle
 import com.fixcraft.yume.ui.FactRow
 import com.fixcraft.yume.ui.appDialogProperties
 import com.fixcraft.yume.ui.appDialogWidth
@@ -511,32 +512,43 @@ private fun TuningCard(
 ) {
     val strings = appStrings()
     val tuning = uiState.tuning
-    SettingGroupCard(title = strings.tuningGroupTitle, subtitle = strings.tuningSubtitle) {
+    // What each axis means and how the speeds were measured are one tap away.
+    // The card itself shows the levels, the limits and the measured values.
+    val conditions = if (tuning.preset?.measurementReference == "window-comparison") {
+        strings.tuningWindowConditions
+    } else strings.tuningEpochConditions
+    val explanation = listOf(
+        strings.tuningSubtitle,
+        "${strings.tuningStealth}\n${strings.tuningStealthNote}",
+        "${strings.tuningSpeed}\n${strings.tuningSpeedNote}",
+        "${strings.tuningSecurity}\n${strings.tuningSecurityNote}",
+        "${strings.tuningMeasuredTitle}\n$conditions",
+    ).joinToString("\n\n")
+    SettingGroupCard(
+        title = strings.tuningGroupTitle,
+        subtitle = strings.appliesOnNextConnect,
+        info = explanation,
+    ) {
         if (uiState.selectedKit == null || tuning.kitId != uiState.selectedKitId || tuning.limits == null) {
             Text(strings.tuningNoKit, color = MaterialTheme.colorScheme.onSurfaceVariant)
             return@SettingGroupCard
         }
         val preset = tuning.preset
-        TuningSliderRow(strings.tuningStealth, strings.tuningStealthNote, "stealth", preset, tuning, onMoveSlider)
-        TuningSliderRow(strings.tuningSpeed, strings.tuningSpeedNote, "speed", preset, tuning, onMoveSlider)
-        TuningSliderRow(strings.tuningSecurity, strings.tuningSecurityNote, "security", preset, tuning, onMoveSlider)
+        TuningSliderRow(strings.tuningStealth, "stealth", preset, tuning, onMoveSlider)
+        TuningSliderRow(strings.tuningSpeed, "speed", preset, tuning, onMoveSlider)
+        TuningSliderRow(strings.tuningSecurity, "security", preset, tuning, onMoveSlider)
         TuningLimitsFacts(tuning.limits, strings)
         preset?.let { selected ->
-            val measured = if (selected.measurementReference == "epoch-comparison") {
-                strings.tuningEpochConditions
-            } else strings.tuningWindowConditions
-            Text(strings.tuningMeasuredTitle, style = MaterialTheme.typography.titleSmall)
-            Text(measured, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(
-                if (selected.measurementReference == "epoch-comparison") strings.tuningMeasurementLimit else strings.tuningWindowLimit,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             Text(
                 selected.measurementValues.mapIndexed { index, value ->
                     val rtt = selected.measurementRttMs.getOrElse(index) { 0 }
                     "$rtt ms: $value ${if (selected.measurementReference == "epoch-comparison") "%" else "Mbit/s"}"
                 }.joinToString(" · "),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            // The limit of the measurement stays beside its numbers.
+            Text(
+                if (selected.measurementReference == "epoch-comparison") strings.tuningMeasurementLimit else strings.tuningWindowLimit,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -561,7 +573,6 @@ private fun TuningCard(
 @Composable
 private fun TuningSliderRow(
     label: String,
-    note: String,
     axis: String,
     preset: TuningPreset?,
     tuning: TuningUiState,
@@ -581,7 +592,6 @@ private fun TuningSliderRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Slider(
             value = level.toFloat(),
             onValueChange = { onMoveSlider(axis, it.roundToInt().coerceIn(1, maximum)) },
@@ -813,6 +823,7 @@ private fun AppDataPasswordDialog(
 private fun SettingGroupCard(
     title: String,
     subtitle: String?,
+    info: String? = null,
     content: @Composable () -> Unit,
 ) {
     Card(
@@ -823,10 +834,12 @@ private fun SettingGroupCard(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-            )
+            CardTitle(title = title, info = info) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
             if (!subtitle.isNullOrBlank()) {
                 Text(
                     text = subtitle,

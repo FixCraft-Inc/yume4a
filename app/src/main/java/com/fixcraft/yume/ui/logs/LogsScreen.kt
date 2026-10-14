@@ -64,7 +64,7 @@ fun LogsScreen(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         item {
-            SectionCard(title = strings.sessionLogTitle, detail = strings.sessionLogSubtitle) {
+            SectionCard(title = strings.sessionLogTitle, info = strings.sessionLogSubtitle) {
                 // Side by side at ordinary text sizes. Large text stacks the
                 // buttons, since half a row would break their words.
                 val stacked = LocalDensity.current.fontScale >= 1.5f

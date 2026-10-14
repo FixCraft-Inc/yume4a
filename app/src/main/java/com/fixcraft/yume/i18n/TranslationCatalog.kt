@@ -549,6 +549,10 @@ internal object TranslationCatalog {
         "Five measured throughput positions: stealth, stealth-16, balanced, fast, max. Conditions differ: fast and max improve on balanced only with raised host TCP ceilings. These are choices, not a universal speed score." to "tuning.level.speed",
         "Data per directional key epoch: 4 for 1 MiB, 3 for 4 MiB, 2 for 16 MiB, 1 for 64 MiB. Algorithms and mandatory rotation do not change." to "tuning.level.security",
         "Window, credit-return and idle-rotation settings only: 4 keeps the default 4 MiB budget, two credit returns and idle rotation off. Lower levels enlarge windows or add credit records, and fast and max add idle rekey exchanges. No classifier result is implied; changing the epoch also changes rekey frequency." to "tuning.level.stealth",
+        "More about %s" to "info.more.about",
+        "Every connection uses the same protection. None of it can be switched off." to "posture.connection.summary",
+        "The server sees which addresses you reach. Use one you trust." to "posture.server.summary",
+        "When Yume stops, Android sends traffic outside the tunnel." to "posture.stop.summary",
     )
     val idToSource: Map<String, String> = linkedMapOf(
         "nav.back" to "Back",
@@ -1096,6 +1100,10 @@ internal object TranslationCatalog {
         "tuning.level.speed" to "Five measured throughput positions: stealth, stealth-16, balanced, fast, max. Conditions differ: fast and max improve on balanced only with raised host TCP ceilings. These are choices, not a universal speed score.",
         "tuning.level.security" to "Data per directional key epoch: 4 for 1 MiB, 3 for 4 MiB, 2 for 16 MiB, 1 for 64 MiB. Algorithms and mandatory rotation do not change.",
         "tuning.level.stealth" to "Window, credit-return and idle-rotation settings only: 4 keeps the default 4 MiB budget, two credit returns and idle rotation off. Lower levels enlarge windows or add credit records, and fast and max add idle rekey exchanges. No classifier result is implied; changing the epoch also changes rekey frequency.",
+        "info.more.about" to "More about %s",
+        "posture.connection.summary" to "Every connection uses the same protection. None of it can be switched off.",
+        "posture.server.summary" to "The server sees which addresses you reach. Use one you trust.",
+        "posture.stop.summary" to "When Yume stops, Android sends traffic outside the tunnel.",
     )
 }
 
@@ -1646,4 +1654,8 @@ enum class MessageId(val id: String, val source: String) {
     TUNING_LEVEL_SPEED("tuning.level.speed", "Five measured throughput positions: stealth, stealth-16, balanced, fast, max. Conditions differ: fast and max improve on balanced only with raised host TCP ceilings. These are choices, not a universal speed score."),
     TUNING_LEVEL_SECURITY("tuning.level.security", "Data per directional key epoch: 4 for 1 MiB, 3 for 4 MiB, 2 for 16 MiB, 1 for 64 MiB. Algorithms and mandatory rotation do not change."),
     TUNING_LEVEL_STEALTH("tuning.level.stealth", "Window, credit-return and idle-rotation settings only: 4 keeps the default 4 MiB budget, two credit returns and idle rotation off. Lower levels enlarge windows or add credit records, and fast and max add idle rekey exchanges. No classifier result is implied; changing the epoch also changes rekey frequency."),
+    INFO_MORE_ABOUT("info.more.about", "More about %s"),
+    POSTURE_CONNECTION_SUMMARY("posture.connection.summary", "Every connection uses the same protection. None of it can be switched off."),
+    POSTURE_SERVER_SUMMARY("posture.server.summary", "The server sees which addresses you reach. Use one you trust."),
+    POSTURE_STOP_SUMMARY("posture.stop.summary", "When Yume stops, Android sends traffic outside the tunnel."),
 }

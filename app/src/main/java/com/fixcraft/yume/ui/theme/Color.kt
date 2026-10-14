@@ -5,28 +5,29 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 
-// The YUME palette, shared with the desktop GUI (src/gui/qml/Theme.qml) and
-// the website (website/assets/tokens.css): every neutral and the accent sit on
-// one plum axis, OKLCH hue 337, and each value below is that axis at the
-// lightness and chroma in its comment. Change a value there and here together.
+// The YUME palette. Light mode is white with a trace of rose in the cards,
+// soft pink for buttons and selection, and a dusty rose accent that is only
+// as deep as readable text needs. Dark mode keeps the plum axis (OKLCH hue
+// 337) of the desktop GUI (src/gui/qml/Theme.qml) and the website
+// (website/assets/tokens.css). Each comment gives the OKLCH source.
 
-// Light: page and card steps, from the website's paper and cloud.
-val YumePaper = Color(0xFFFFFBFE) // L99.2 C0.006
-val YumePage = Color(0xFFFCF4FA) // L97.6 C0.011
-val YumeCardLow = Color(0xFFFBF2F8) // L97 C0.013
-val YumeCard = Color(0xFFF9EDF5) // L95.8 C0.017
-val YumeCardHigh = Color(0xFFF7E8F2) // L94.5 C0.021
-val YumeCardHighest = Color(0xFFF4E2EE) // L93 C0.025
-val YumeDim = Color(0xFFE7D9E3) // L90 C0.02
-val YumeInk = Color(0xFF392C35) // L31 C0.025, the website's ink
-val YumeMuted = Color(0xFF6C5A67) // L49 C0.03
-val YumeOutline = Color(0xFF93808D) // L62 C0.03, 3:1 on the page
-val YumeRule = Color(0xFFE3D2DD) // L88 C0.024
-val YumeAccentStrong = Color(0xFF9C4088) // L52 C0.15, links, focus and controls
-val YumeAccentSoft = Color(0xFFFAD4EF) // L91 C0.055, selection
-val YumeButton = Color(0xFFF8BBE7) // L86 C0.09, the main action, as on the website
-val YumeTonal = Color(0xFFFCE0F3) // L93.5 C0.04
-val YumeSecondary = Color(0xFF714966) // L46 C0.07
+// Light: white page, cards one step at a time.
+val YumePaper = Color(0xFFFFFFFF)
+val YumePage = Color(0xFFFFFFFF)
+val YumeCardLow = Color(0xFFFAF5F8) // L97.5 C0.006 H345
+val YumeCard = Color(0xFFF7F1F4) // L96.4 C0.008 H345
+val YumeCardHigh = Color(0xFFF5EDF1) // L95.3 C0.010 H345
+val YumeCardHighest = Color(0xFFF2E8ED) // L94 C0.012 H345
+val YumeDim = Color(0xFFE8E0E4) // L91.5 C0.010 H345
+val YumeInk = Color(0xFF352A30) // L30 C0.02 H345
+val YumeMuted = Color(0xFF6B5B64) // L49 C0.025 H345
+val YumeOutline = Color(0xFF908289) // L62 C0.02 H345, 3.6:1 on white
+val YumeRule = Color(0xFFE3D9DE) // L89.5 C0.012 H345
+val YumeAccentStrong = Color(0xFFA06486) // L58 C0.09 H345, 4.5:1 for text on white
+val YumeAccentSoft = Color(0xFFFDDEEE) // L93 C0.04 H345, selection
+val YumeButton = Color(0xFFF8BBE7) // L86 C0.09 H337, the main action, as on the desktop and website
+val YumeTonal = Color(0xFFFCE8F2) // L95 C0.025 H345
+val YumeSecondary = Color(0xFF6D4D5E) // L46 C0.05 H345
 
 // Dark: the same axis at low lightness, so paper stays plum rather than black.
 val YumeNight = Color(0xFF10080E) // L14.9 C0.019

@@ -221,6 +221,10 @@ class AppStrings private constructor(
     val notConnectedValue = t(MessageId.NOT_CONNECTED)
     val postureServerTitle = t(MessageId.WHAT_THE_SERVER_SEES)
     val postureServerDetail = t(MessageId.POSTURE_SERVER_DETAIL)
+    val postureConnectionSummary = t(MessageId.POSTURE_CONNECTION_SUMMARY)
+    val postureServerSummary = t(MessageId.POSTURE_SERVER_SUMMARY)
+    val postureStopSummary = t(MessageId.POSTURE_STOP_SUMMARY)
+    private val moreAboutTemplate = t(MessageId.INFO_MORE_ABOUT)
     val postureDeviceTitle = t(MessageId.ON_THIS_DEVICE)
     val routesLabel = t(MessageId.THROUGH_THE_TUNNEL)
     val routesAllIpv4 = t(MessageId.ALL_IPV4_TRAFFIC)
@@ -465,6 +469,7 @@ class AppStrings private constructor(
     fun kitAdded(name: String): String = fill(kitAddedTemplate, name)
 
     fun nameLookups(servers: String): String = fill(nameLookupsTemplate, servers)
+    fun moreAbout(title: String): String = fill(moreAboutTemplate, title)
 
     fun phaseName(phase: VpnPhase): String = when (phase) {
         VpnPhase.Idle -> phaseIdle

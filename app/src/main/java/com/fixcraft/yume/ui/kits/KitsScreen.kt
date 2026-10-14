@@ -106,7 +106,7 @@ fun KitsScreen(
             }
         }
         item {
-            SectionCard(title = strings.kitsTitle, detail = strings.kitsSubtitle) {
+            SectionCard(title = strings.kitsTitle, info = strings.kitsSubtitle) {
                 Button(
                     onClick = { adding = true },
                     enabled = !uiState.kitIndexCorrupt,
