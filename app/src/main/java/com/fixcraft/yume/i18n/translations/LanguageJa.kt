@@ -206,7 +206,7 @@ internal object LanguageJa : LanguageBundle {
         "changes.windows.credit.returns.and.idle.rotation.it.doe" to "ウィンドウ、クレジット返却、アイドル時のローテーションを変更します。分類器の結果を保証するものではありません。",
         "measured.positions.under.the.stated.host.and.network.co" to "記載したホストとネットワーク条件での測定値です。fast と max にはより高いホスト TCP 上限が必要です。",
         "data.per.key.epoch.algorithms.and.mandatory.rotation.st" to "鍵エポックあたりのデータ量です。アルゴリズムと必須ローテーションは変わりません。",
-        "level.d.of.5" to "5 段階中 %1\$d",
+        "level.d.of.d" to "%2\$d 段階中 %1\$d",
         "apply.tuning" to "チューニングを適用",
         "tuning.saved.it.will.be.used.on.the.next.connection" to "チューニングを保存しました。次回接続で使用されます。",
         "yume.refused.these.limits.nothing.was.changed" to "Yume がこの上限を拒否しました。変更はありません。",
@@ -545,5 +545,11 @@ internal object LanguageJa : LanguageBundle {
         "community.translations" to "コミュニティ翻訳",
         "some.text.appears.in.english" to "一部のテキストは英語で表示されます。",
         "credits.translations" to "翻訳",
+        "desktop.more.about" to "%1の詳細",
+        "tuning.metric.tunnel.direct.throughput" to "トンネル / 直接接続のスループット比",
+        "tuning.metric.tunnel.throughput" to "トンネルのスループット",
+        "tuning.level.speed" to "スループットを測定した 5 つの位置です：stealth、stealth-16、balanced、fast、max。条件は同じではありません。fast と max が balanced を上回るのは、ホスト TCP 上限を引き上げた場合だけです。これは選択肢であり、汎用的な速度評価ではありません。",
+        "tuning.level.security" to "方向ごとの鍵エポックあたりのデータ量：4 は 1 MiB、3 は 4 MiB、2 は 16 MiB、1 は 64 MiB。アルゴリズムと必須ローテーションは変わりません。",
+        "tuning.level.stealth" to "ウィンドウ、クレジット返却、アイドル時のローテーションの設定だけを表します。4 は既定の 4 MiB の上限、2 回のクレジット返却、アイドル時のローテーション無効を維持します。低いレベルではウィンドウが大きくなるかクレジットのレコードが増え、fast と max ではアイドル時の鍵更新のやり取りが加わります。分類器の結果を示すものではありません。エポックを変えると鍵更新の頻度も変わります。",
     )
 }

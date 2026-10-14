@@ -204,7 +204,7 @@ internal object TranslationCatalog {
         "Changes windows, credit returns, and idle rotation; it does not promise classifier results." to "changes.windows.credit.returns.and.idle.rotation.it.doe",
         "Measured positions under the stated host and network conditions; fast and max need higher host TCP ceilings." to "measured.positions.under.the.stated.host.and.network.co",
         "Data per key epoch; algorithms and mandatory rotation stay the same." to "data.per.key.epoch.algorithms.and.mandatory.rotation.st",
-        "Level %1\$d of 5" to "level.d.of.5",
+        "Level %1\$d of %2\$d" to "level.d.of.d",
         "Apply tuning" to "apply.tuning",
         "Tuning saved. It will be used on the next connection." to "tuning.saved.it.will.be.used.on.the.next.connection",
         "Yume refused these limits. Nothing was changed." to "yume.refused.these.limits.nothing.was.changed",
@@ -543,6 +543,12 @@ internal object TranslationCatalog {
         "Community translations" to "community.translations",
         "Some text appears in English." to "some.text.appears.in.english",
         "Translations" to "credits.translations",
+        "More about %1" to "desktop.more.about",
+        "tunnel / direct throughput" to "tuning.metric.tunnel.direct.throughput",
+        "tunnel throughput" to "tuning.metric.tunnel.throughput",
+        "Five measured throughput positions: stealth, stealth-16, balanced, fast, max. Conditions differ: fast and max improve on balanced only with raised host TCP ceilings. These are choices, not a universal speed score." to "tuning.level.speed",
+        "Data per directional key epoch: 4 for 1 MiB, 3 for 4 MiB, 2 for 16 MiB, 1 for 64 MiB. Algorithms and mandatory rotation do not change." to "tuning.level.security",
+        "Window, credit-return and idle-rotation settings only: 4 keeps the default 4 MiB budget, two credit returns and idle rotation off. Lower levels enlarge windows or add credit records, and fast and max add idle rekey exchanges. No classifier result is implied; changing the epoch also changes rekey frequency." to "tuning.level.stealth",
     )
     val idToSource: Map<String, String> = linkedMapOf(
         "nav.back" to "Back",
@@ -745,7 +751,7 @@ internal object TranslationCatalog {
         "changes.windows.credit.returns.and.idle.rotation.it.doe" to "Changes windows, credit returns, and idle rotation; it does not promise classifier results.",
         "measured.positions.under.the.stated.host.and.network.co" to "Measured positions under the stated host and network conditions; fast and max need higher host TCP ceilings.",
         "data.per.key.epoch.algorithms.and.mandatory.rotation.st" to "Data per key epoch; algorithms and mandatory rotation stay the same.",
-        "level.d.of.5" to "Level %1\$d of 5",
+        "level.d.of.d" to "Level %1\$d of %2\$d",
         "apply.tuning" to "Apply tuning",
         "tuning.saved.it.will.be.used.on.the.next.connection" to "Tuning saved. It will be used on the next connection.",
         "yume.refused.these.limits.nothing.was.changed" to "Yume refused these limits. Nothing was changed.",
@@ -1084,6 +1090,12 @@ internal object TranslationCatalog {
         "community.translations" to "Community translations",
         "some.text.appears.in.english" to "Some text appears in English.",
         "credits.translations" to "Translations",
+        "desktop.more.about" to "More about %1",
+        "tuning.metric.tunnel.direct.throughput" to "tunnel / direct throughput",
+        "tuning.metric.tunnel.throughput" to "tunnel throughput",
+        "tuning.level.speed" to "Five measured throughput positions: stealth, stealth-16, balanced, fast, max. Conditions differ: fast and max improve on balanced only with raised host TCP ceilings. These are choices, not a universal speed score.",
+        "tuning.level.security" to "Data per directional key epoch: 4 for 1 MiB, 3 for 4 MiB, 2 for 16 MiB, 1 for 64 MiB. Algorithms and mandatory rotation do not change.",
+        "tuning.level.stealth" to "Window, credit-return and idle-rotation settings only: 4 keeps the default 4 MiB budget, two credit returns and idle rotation off. Lower levels enlarge windows or add credit records, and fast and max add idle rekey exchanges. No classifier result is implied; changing the epoch also changes rekey frequency.",
     )
 }
 
@@ -1289,7 +1301,7 @@ enum class MessageId(val id: String, val source: String) {
     CHANGES_WINDOWS_CREDIT_RETURNS_AND_IDLE_ROTATION_IT_DOE("changes.windows.credit.returns.and.idle.rotation.it.doe", "Changes windows, credit returns, and idle rotation; it does not promise classifier results."),
     MEASURED_POSITIONS_UNDER_THE_STATED_HOST_AND_NETWORK_CO("measured.positions.under.the.stated.host.and.network.co", "Measured positions under the stated host and network conditions; fast and max need higher host TCP ceilings."),
     DATA_PER_KEY_EPOCH_ALGORITHMS_AND_MANDATORY_ROTATION_ST("data.per.key.epoch.algorithms.and.mandatory.rotation.st", "Data per key epoch; algorithms and mandatory rotation stay the same."),
-    LEVEL_D_OF_5("level.d.of.5", "Level %1\$d of 5"),
+    LEVEL_D_OF_D("level.d.of.d", "Level %1\$d of %2\$d"),
     APPLY_TUNING("apply.tuning", "Apply tuning"),
     TUNING_SAVED_IT_WILL_BE_USED_ON_THE_NEXT_CONNECTION("tuning.saved.it.will.be.used.on.the.next.connection", "Tuning saved. It will be used on the next connection."),
     YUME_REFUSED_THESE_LIMITS_NOTHING_WAS_CHANGED("yume.refused.these.limits.nothing.was.changed", "Yume refused these limits. Nothing was changed."),
@@ -1628,4 +1640,10 @@ enum class MessageId(val id: String, val source: String) {
     COMMUNITY_TRANSLATIONS("community.translations", "Community translations"),
     SOME_TEXT_APPEARS_IN_ENGLISH("some.text.appears.in.english", "Some text appears in English."),
     CREDITS_TRANSLATIONS("credits.translations", "Translations"),
+    DESKTOP_MORE_ABOUT("desktop.more.about", "More about %1"),
+    TUNING_METRIC_TUNNEL_DIRECT_THROUGHPUT("tuning.metric.tunnel.direct.throughput", "tunnel / direct throughput"),
+    TUNING_METRIC_TUNNEL_THROUGHPUT("tuning.metric.tunnel.throughput", "tunnel throughput"),
+    TUNING_LEVEL_SPEED("tuning.level.speed", "Five measured throughput positions: stealth, stealth-16, balanced, fast, max. Conditions differ: fast and max improve on balanced only with raised host TCP ceilings. These are choices, not a universal speed score."),
+    TUNING_LEVEL_SECURITY("tuning.level.security", "Data per directional key epoch: 4 for 1 MiB, 3 for 4 MiB, 2 for 16 MiB, 1 for 64 MiB. Algorithms and mandatory rotation do not change."),
+    TUNING_LEVEL_STEALTH("tuning.level.stealth", "Window, credit-return and idle-rotation settings only: 4 keeps the default 4 MiB budget, two credit returns and idle rotation off. Lower levels enlarge windows or add credit records, and fast and max add idle rekey exchanges. No classifier result is implied; changing the epoch also changes rekey frequency."),
 }

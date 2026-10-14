@@ -65,6 +65,7 @@ data class TuningUiState(
     val preset: TuningPreset? = null,
     val saving: Boolean = false,
     val expertUnlocked: Boolean = false,
+    val levelMaximum: Map<String, Int> = emptyMap(),
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -103,7 +104,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             selectedKitId = selectedId,
             appSettings = settings,
             vpnState = vpnState,
-            tuning = tuning,
+            tuning = tuning.copy(levelMaximum = tuningTable.levelMaximum),
         )
     }
 

@@ -265,7 +265,7 @@ class AppStrings private constructor(
     val tuningStealthNote = t(MessageId.CHANGES_WINDOWS_CREDIT_RETURNS_AND_IDLE_ROTATION_IT_DOE)
     val tuningSpeedNote = t(MessageId.MEASURED_POSITIONS_UNDER_THE_STATED_HOST_AND_NETWORK_CO)
     val tuningSecurityNote = t(MessageId.DATA_PER_KEY_EPOCH_ALGORITHMS_AND_MANDATORY_ROTATION_ST)
-    val tuningLevelTemplate = t(MessageId.LEVEL_D_OF_5)
+    val tuningLevelTemplate = t(MessageId.LEVEL_D_OF_D)
     val tuningApply = t(MessageId.APPLY_TUNING)
     val tuningSaved = t(MessageId.TUNING_SAVED_IT_WILL_BE_USED_ON_THE_NEXT_CONNECTION)
     val tuningSaveFailed = t(MessageId.YUME_REFUSED_THESE_LIMITS_NOTHING_WAS_CHANGED)

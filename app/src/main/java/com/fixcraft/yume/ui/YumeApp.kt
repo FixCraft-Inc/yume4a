@@ -13,16 +13,21 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.TextAutoSize
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -33,18 +38,23 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -173,6 +183,12 @@ fun YumeApp(
             }
         }
 
+        // A short, wide screen (a phone on its side) keeps its height for the
+        // page: the destinations move from the bottom to a rail at the side.
+        val configuration = LocalConfiguration.current
+        val sideRail = configuration.screenWidthDp > configuration.screenHeightDp &&
+            configuration.screenHeightDp < 480
+
         Scaffold(
             topBar = {
                 AppTopBar(
@@ -182,7 +198,7 @@ fun YumeApp(
                 )
             },
             bottomBar = {
-                if (!nested) {
+                if (!nested && !sideRail) {
                     BottomNavBar(
                         currentRoute = currentRoute,
                         destinations = topLevelDestinations,
@@ -194,76 +210,91 @@ fun YumeApp(
             containerColor = MaterialTheme.colorScheme.background,
             contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
         ) { innerPadding ->
-            NavHost(
-                navController = navController,
-                startDestination = AppRoute.Overview,
-                modifier = Modifier.padding(innerPadding),
-                enterTransition = { fadeIn(animationSpec = tween(120)) },
-                exitTransition = { fadeOut(animationSpec = tween(90)) },
-                popEnterTransition = { fadeIn(animationSpec = tween(120)) },
-                popExitTransition = { fadeOut(animationSpec = tween(90)) },
-            ) {
-                composable(AppRoute.Overview) {
-                    OverviewScreen(
-                        uiState = uiState,
-                        onConnect = onConnect,
-                        onDisconnect = onDisconnect,
-                        onOpenKits = { navigateToTopLevel(AppRoute.Connect) },
+            // Without the bottom bar, the page itself clears the gesture area.
+            val railInsets = if (!nested && sideRail) {
+                Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
+            } else {
+                Modifier
+            }
+            Row(modifier = Modifier.padding(innerPadding).then(railInsets)) {
+                if (!nested && sideRail) {
+                    SideNavRail(
+                        currentRoute = currentRoute,
+                        destinations = topLevelDestinations,
+                        onNavigate = navigateToTopLevel,
                     )
                 }
-                composable(AppRoute.Connect) {
-                    KitsScreen(
-                        uiState = uiState,
-                        onRecoverKitIndex = onRecoverKitIndex,
-                        onSelectKit = onSelectKit,
-                        onRenameKit = onRenameKit,
-                        onDeleteKit = onDeleteKit,
-                        onImportKit = onImportKit,
-                        onReportNotice = onReportNotice,
-                    )
-                }
-                composable(AppRoute.Logs) {
-                    LogsScreen(
-                        uiState = uiState,
-                        onBuildReport = onBuildReport,
-                        onClearLog = onClearLog,
-                        onReportNotice = onReportNotice,
-                    )
-                }
-                composable(AppRoute.Posture) {
-                    PostureScreen(uiState = uiState)
-                }
-                composable(AppRoute.Settings) {
-                    SettingsScreen(
-                        uiState = uiState,
-                        onSelectThemeColorMode = onSelectThemeColorMode,
-                        onSetAmoledDarkTheme = onSetAmoledDarkTheme,
-                        isDarkTheme = isDarkTheme,
-                        onEnableAppDataPassword = onEnableAppDataPassword,
-                        onChangeAppDataPassword = onChangeAppDataPassword,
-                        onDisableAppDataPassword = onDisableAppDataPassword,
-                        onSelectLanguage = onSelectLanguage,
-                        onSetAdvancedMode = onSetAdvancedMode,
-                        onSetDnsServers = onSetDnsServers,
-                        onSetCarryIpv6 = onSetCarryIpv6,
-                        onSelectTuningPreset = onSelectTuningPreset,
-                        onMoveTuningSlider = onMoveTuningSlider,
-                        onApplyTuning = onApplyTuning,
-                        onUnlockTuningExpert = onUnlockTuningExpert,
-                        onApplyTuningExpert = onApplyTuningExpert,
-                        onDeleteDownloadedLanguage = onDeleteDownloadedLanguage,
-                        onOpenCredits = {
-                            navController.navigate(AppRoute.Credits)
-                        },
-                    )
-                }
-                composable(AppRoute.Credits) {
-                    CreditsScreen(
-                        onOpenComponents = { navController.navigate(AppRoute.Components) },
-                    )
-                }
-                composable(AppRoute.Components) {
-                    OpenSourceComponentsScreen()
+                NavHost(
+                    navController = navController,
+                    startDestination = AppRoute.Overview,
+                    modifier = Modifier.weight(1f),
+                    enterTransition = { fadeIn(animationSpec = tween(120)) },
+                    exitTransition = { fadeOut(animationSpec = tween(90)) },
+                    popEnterTransition = { fadeIn(animationSpec = tween(120)) },
+                    popExitTransition = { fadeOut(animationSpec = tween(90)) },
+                ) {
+                    composable(AppRoute.Overview) {
+                        OverviewScreen(
+                            uiState = uiState,
+                            onConnect = onConnect,
+                            onDisconnect = onDisconnect,
+                            onOpenKits = { navigateToTopLevel(AppRoute.Connect) },
+                        )
+                    }
+                    composable(AppRoute.Connect) {
+                        KitsScreen(
+                            uiState = uiState,
+                            onRecoverKitIndex = onRecoverKitIndex,
+                            onSelectKit = onSelectKit,
+                            onRenameKit = onRenameKit,
+                            onDeleteKit = onDeleteKit,
+                            onImportKit = onImportKit,
+                            onReportNotice = onReportNotice,
+                        )
+                    }
+                    composable(AppRoute.Logs) {
+                        LogsScreen(
+                            uiState = uiState,
+                            onBuildReport = onBuildReport,
+                            onClearLog = onClearLog,
+                            onReportNotice = onReportNotice,
+                        )
+                    }
+                    composable(AppRoute.Posture) {
+                        PostureScreen(uiState = uiState)
+                    }
+                    composable(AppRoute.Settings) {
+                        SettingsScreen(
+                            uiState = uiState,
+                            onSelectThemeColorMode = onSelectThemeColorMode,
+                            onSetAmoledDarkTheme = onSetAmoledDarkTheme,
+                            isDarkTheme = isDarkTheme,
+                            onEnableAppDataPassword = onEnableAppDataPassword,
+                            onChangeAppDataPassword = onChangeAppDataPassword,
+                            onDisableAppDataPassword = onDisableAppDataPassword,
+                            onSelectLanguage = onSelectLanguage,
+                            onSetAdvancedMode = onSetAdvancedMode,
+                            onSetDnsServers = onSetDnsServers,
+                            onSetCarryIpv6 = onSetCarryIpv6,
+                            onSelectTuningPreset = onSelectTuningPreset,
+                            onMoveTuningSlider = onMoveTuningSlider,
+                            onApplyTuning = onApplyTuning,
+                            onUnlockTuningExpert = onUnlockTuningExpert,
+                            onApplyTuningExpert = onApplyTuningExpert,
+                            onDeleteDownloadedLanguage = onDeleteDownloadedLanguage,
+                            onOpenCredits = {
+                                navController.navigate(AppRoute.Credits)
+                            },
+                        )
+                    }
+                    composable(AppRoute.Credits) {
+                        CreditsScreen(
+                            onOpenComponents = { navController.navigate(AppRoute.Components) },
+                        )
+                    }
+                    composable(AppRoute.Components) {
+                        OpenSourceComponentsScreen()
+                    }
                 }
             }
         }
@@ -460,6 +491,46 @@ private fun BottomNavBar(
                 }
             }
         }
+    }
+}
+
+/** The bottom bar's destinations on a rail at the side, for a short, wide screen. */
+@Composable
+private fun SideNavRail(
+    currentRoute: String,
+    destinations: List<TopLevelDestination>,
+    onNavigate: (String) -> Unit,
+) {
+    Row {
+        NavigationRail(
+            modifier = Modifier.fillMaxHeight().verticalScroll(rememberScrollState()),
+            containerColor = MaterialTheme.colorScheme.background,
+            // The scaffold's padding already clears the bars.
+            windowInsets = WindowInsets(0, 0, 0, 0),
+        ) {
+            destinations.forEach { destination ->
+                NavigationRailItem(
+                    selected = currentRoute == destination.route,
+                    onClick = { onNavigate(destination.route) },
+                    icon = {
+                        Icon(
+                            painter = painterResource(destination.iconRes),
+                            contentDescription = destination.label,
+                        )
+                    },
+                    label = { NavigationLabel(destination.label) },
+                    alwaysShowLabel = false,
+                    colors = NavigationRailItemDefaults.colors(
+                        selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                        indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                )
+            }
+        }
+        VerticalDivider(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
     }
 }
 

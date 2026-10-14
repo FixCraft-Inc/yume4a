@@ -206,7 +206,7 @@ internal object LanguageUk : LanguageBundle {
         "changes.windows.credit.returns.and.idle.rotation.it.doe" to "Змінює вікна, повернення кредитів і зміну ключів під час простою; не гарантує результат класифікатора.",
         "measured.positions.under.the.stated.host.and.network.co" to "Виміряні значення за вказаних умов хоста й мережі; для fast і max потрібні вищі межі TCP хоста.",
         "data.per.key.epoch.algorithms.and.mandatory.rotation.st" to "Дані на епоху ключа; алгоритми й обовʼязкова зміна ключів не змінюються.",
-        "level.d.of.5" to "Рівень %1\$d із 5",
+        "level.d.of.d" to "Рівень %1\$d із %2\$d",
         "apply.tuning" to "Застосувати налаштування",
         "tuning.saved.it.will.be.used.on.the.next.connection" to "Налаштування збережено. Їх буде використано під час наступного підключення.",
         "yume.refused.these.limits.nothing.was.changed" to "Yume відхилив ці межі. Змін не внесено.",
@@ -545,5 +545,11 @@ internal object LanguageUk : LanguageBundle {
         "community.translations" to "Переклади спільноти",
         "some.text.appears.in.english" to "Частину тексту показано англійською.",
         "credits.translations" to "Переклади",
+        "desktop.more.about" to "Докладніше: %1",
+        "tuning.metric.tunnel.direct.throughput" to "пропускна здатність тунелю / прямого зʼєднання",
+        "tuning.metric.tunnel.throughput" to "пропускна здатність тунелю",
+        "tuning.level.speed" to "Пʼять виміряних позицій за пропускною здатністю: stealth, stealth-16, balanced, fast, max. Умови різняться: fast і max перевершують balanced лише з підвищеними межами TCP хоста. Це варіанти вибору, а не універсальна оцінка швидкості.",
+        "tuning.level.security" to "Дані на епоху ключа в кожному напрямку: 4 — 1 МіБ, 3 — 4 МіБ, 2 — 16 МіБ, 1 — 64 МіБ. Алгоритми й обовʼязкова зміна ключів не змінюються.",
+        "tuning.level.stealth" to "Лише налаштування вікон, повернень кредитів і зміни ключів під час простою: 4 зберігає типову межу 4 МіБ, два повернення кредитів і вимкнену зміну ключів під час простою. Нижчі рівні збільшують вікна або додають записи кредитів, а fast і max додають обміни для зміни ключів під час простою. Результат класифікатора не мається на увазі; зміна епохи також змінює частоту зміни ключів.",
     )
 }

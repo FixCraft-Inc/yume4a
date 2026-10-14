@@ -42,6 +42,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -59,6 +60,7 @@ import com.fixcraft.yume.data.TuningLimits
 import com.fixcraft.yume.data.TuningPreset
 import com.fixcraft.yume.i18n.AppLanguageCatalog
 import com.fixcraft.yume.i18n.AppLanguageGroup
+import com.fixcraft.yume.i18n.AppLanguageOption
 import com.fixcraft.yume.i18n.AppLocaleManager
 import com.fixcraft.yume.i18n.MessageId
 import com.fixcraft.yume.i18n.appStrings
@@ -67,6 +69,7 @@ import com.fixcraft.yume.ui.FactRow
 import com.fixcraft.yume.ui.appDialogProperties
 import com.fixcraft.yume.ui.appDialogWidth
 import com.fixcraft.yume.ui.tabMovesFocusOn
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
 @Composable
@@ -125,17 +128,79 @@ fun SettingsScreen(
     }
     if (showLanguageDialog) {
         val languageOptions = remember { AppLanguageCatalog.groupedOptions() }
+        // The list takes most of the screen, so a tall font or a community
+        // group does not leave a few rows in a scrolling box.
+        val listHeight = (LocalConfiguration.current.screenHeightDp * 0.6f).dp
+        // One row of the list, the same in every group.
+        val languageChoice: @Composable (AppLanguageOption) -> Unit = { option ->
+            SettingChoiceCard(
+                title = when (option.language) {
+                    is AppLanguage.AutoTranslated, is AppLanguage.Community -> option.displayName
+                    else -> strings.languageName(option.language)
+                },
+                description = when (option.language) {
+                    is AppLanguage.AutoTranslated -> {
+                        buildString {
+                            append(strings.languageDescription(option.language))
+                            if (option.language.localeTag in uiState.downloadedLanguageTags) {
+                                append(" (")
+                                append(strings.downloadedLabel)
+                                append(')')
+                            }
+                        }
+                    }
+
+                    else -> strings.languageDescription(option.language)
+                },
+                selected = uiState.appSettings.language == option.language,
+                enabled = true,
+                trailingContent = when (option.language) {
+                    is AppLanguage.AutoTranslated -> {
+                        if (option.language.localeTag in uiState.downloadedLanguageTags) {
+                            {
+                                IconButton(
+                                    onClick = { onDeleteDownloadedLanguage(option.language) },
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_delete_action),
+                                        contentDescription = strings.removeDownloadedLanguageLabel,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        } else {
+                            null
+                        }
+                    }
+
+                    else -> null
+                },
+                onClick = {
+                    onSelectLanguage(option.language)
+                    showLanguageDialog = false
+                },
+            )
+        }
         AlertDialog(
             onDismissRequest = { showLanguageDialog = false },
             modifier = Modifier.appDialogWidth(),
             title = { Text(strings.languageGroupTitle) },
             text = {
                 LazyColumn(
-                    modifier = Modifier.heightIn(max = 420.dp),
+                    modifier = Modifier.heightIn(max = maxOf(listHeight, 240.dp)),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    // Following the phone is a choice of no group, so it
+                    // comes first and no group heading claims it.
+                    val (systemOption, groupedOptions) = languageOptions.partition {
+                        it.language == AppLanguage.SystemDefault
+                    }
+                    items(
+                        items = systemOption,
+                        key = { option -> option.language.wireValue },
+                    ) { option -> languageChoice(option) }
                     AppLanguageGroup.entries.forEach { group ->
-                        val groupItems = languageOptions.filter { it.group == group }
+                        val groupItems = groupedOptions.filter { it.group == group }
                         // Community translations appear once the catalog ships one.
                         if (group == AppLanguageGroup.Community && groupItems.isEmpty()) return@forEach
                         item(key = "header_${group.name}") {
@@ -152,55 +217,7 @@ fun SettingsScreen(
                         items(
                             items = groupItems,
                             key = { option -> option.language.wireValue },
-                        ) { option ->
-                            SettingChoiceCard(
-                                title = when (option.language) {
-                                    is AppLanguage.AutoTranslated, is AppLanguage.Community -> option.displayName
-                                    else -> strings.languageName(option.language)
-                                },
-                                description = when (option.language) {
-                                    is AppLanguage.AutoTranslated -> {
-                                        buildString {
-                                            append(strings.languageDescription(option.language))
-                                            if (option.language.localeTag in uiState.downloadedLanguageTags) {
-                                                append(" (")
-                                                append(strings.downloadedLabel)
-                                                append(')')
-                                            }
-                                        }
-                                    }
-
-                                    else -> strings.languageDescription(option.language)
-                                },
-                                selected = uiState.appSettings.language == option.language,
-                                enabled = true,
-                                trailingContent = when (option.language) {
-                                    is AppLanguage.AutoTranslated -> {
-                                        if (option.language.localeTag in uiState.downloadedLanguageTags) {
-                                            {
-                                                IconButton(
-                                                    onClick = { onDeleteDownloadedLanguage(option.language) },
-                                                ) {
-                                                    Icon(
-                                                        painter = painterResource(R.drawable.ic_delete_action),
-                                                        contentDescription = strings.removeDownloadedLanguageLabel,
-                                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    )
-                                                }
-                                            }
-                                        } else {
-                                            null
-                                        }
-                                    }
-
-                                    else -> null
-                                },
-                                onClick = {
-                                    onSelectLanguage(option.language)
-                                    showLanguageDialog = false
-                                },
-                            )
-                        }
+                        ) { option -> languageChoice(option) }
                     }
                 }
             },
@@ -500,9 +517,9 @@ private fun TuningCard(
             return@SettingGroupCard
         }
         val preset = tuning.preset
-        TuningSliderRow(strings.tuningStealth, strings.tuningStealthNote, "stealth", preset, tuning.saving, onMoveSlider)
-        TuningSliderRow(strings.tuningSpeed, strings.tuningSpeedNote, "speed", preset, tuning.saving, onMoveSlider)
-        TuningSliderRow(strings.tuningSecurity, strings.tuningSecurityNote, "security", preset, tuning.saving, onMoveSlider)
+        TuningSliderRow(strings.tuningStealth, strings.tuningStealthNote, "stealth", preset, tuning, onMoveSlider)
+        TuningSliderRow(strings.tuningSpeed, strings.tuningSpeedNote, "speed", preset, tuning, onMoveSlider)
+        TuningSliderRow(strings.tuningSecurity, strings.tuningSecurityNote, "security", preset, tuning, onMoveSlider)
         TuningLimitsFacts(tuning.limits, strings)
         preset?.let { selected ->
             val measured = if (selected.measurementReference == "epoch-comparison") {
@@ -547,16 +564,19 @@ private fun TuningSliderRow(
     note: String,
     axis: String,
     preset: TuningPreset?,
-    saving: Boolean,
+    tuning: TuningUiState,
     onMoveSlider: (String, Int) -> Unit,
 ) {
     val strings = appStrings()
     val level = preset?.levels?.get(axis) ?: 3
+    // Each axis ends at the highest level the shared table gives it, so a
+    // slider never offers a position no combination has.
+    val maximum = maxOf(tuning.levelMaximum[axis] ?: 5, level, 2)
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
             Text(label, style = MaterialTheme.typography.bodyLarge)
             Text(
-                String.format(strings.tuningLevelTemplate, level),
+                String.format(strings.tuningLevelTemplate, level, maximum),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -564,10 +584,10 @@ private fun TuningSliderRow(
         Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Slider(
             value = level.toFloat(),
-            onValueChange = { onMoveSlider(axis, it.toInt().coerceIn(1, 5)) },
-            valueRange = 1f..5f,
-            steps = 3,
-            enabled = preset != null && !saving,
+            onValueChange = { onMoveSlider(axis, it.roundToInt().coerceIn(1, maximum)) },
+            valueRange = 1f..maximum.toFloat(),
+            steps = maximum - 2,
+            enabled = preset != null && !tuning.saving,
         )
     }
 }
@@ -599,6 +619,7 @@ private fun ExpertWarningDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
                         role = Role.Checkbox,
                         onValueChange = { acknowledged = it },
                     ),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Checkbox(checked = acknowledged, onCheckedChange = null)

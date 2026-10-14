@@ -68,6 +68,11 @@ class TuningTable internal constructor(
 ) {
     val defaultPreset: TuningPreset = presets.first { it.id == defaultId }
 
+    /** The highest level each axis reaches in the table, which its slider ends at. */
+    val levelMaximum: Map<String, Int> = AXES.associateWith { axis ->
+        presets.maxOfOrNull { it.levels[axis] ?: 1 } ?: 1
+    }
+
     fun match(limits: TuningLimits): TuningPreset? = presets.firstOrNull { it.limits == limits }
 
     /** Move one axis while choosing the nearest table row, with table tie rules. */

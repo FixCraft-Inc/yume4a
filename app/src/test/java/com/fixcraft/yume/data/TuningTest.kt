@@ -36,6 +36,19 @@ class TuningTest {
     }
 
     @Test
+    fun eachSliderEndsAtItsAxisHighestLevel() {
+        val table = TuningTable(
+            defaultId = "a",
+            levelNotes = emptyMap(),
+            presets = listOf(preset("a", 4, 4, 1), preset("b", 2, 1, 5), preset("c", 3, 2, 3)),
+            fields = emptyList(),
+            measurements = emptyMap(),
+            couplingRule = "nearest-levels-v1",
+        )
+        assertEquals(mapOf("stealth" to 4, "security" to 4, "speed" to 5), table.levelMaximum)
+    }
+
+    @Test
     fun editingLimitsRetainsUnrelatedKitMembers() {
         val original = JSONObject(
             """

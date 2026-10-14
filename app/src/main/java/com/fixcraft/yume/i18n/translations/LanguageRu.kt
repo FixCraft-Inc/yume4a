@@ -206,7 +206,7 @@ internal object LanguageRu : LanguageBundle {
         "changes.windows.credit.returns.and.idle.rotation.it.doe" to "Меняет окна, возвраты кредитов и смену ключей в простое; не обещает результат классификатора.",
         "measured.positions.under.the.stated.host.and.network.co" to "Измеренные позиции при указанных условиях хоста и сети; для fast и max нужны более высокие пределы TCP хоста.",
         "data.per.key.epoch.algorithms.and.mandatory.rotation.st" to "Данные на эпоху ключа; алгоритмы и обязательная смена ключей не меняются.",
-        "level.d.of.5" to "Уровень %1\$d из 5",
+        "level.d.of.d" to "Уровень %1\$d из %2\$d",
         "apply.tuning" to "Применить настройку",
         "tuning.saved.it.will.be.used.on.the.next.connection" to "Настройка сохранена и будет использована при следующем подключении.",
         "yume.refused.these.limits.nothing.was.changed" to "Yume отклонил эти пределы. Изменения не внесены.",
@@ -545,5 +545,11 @@ internal object LanguageRu : LanguageBundle {
         "community.translations" to "Переводы сообщества",
         "some.text.appears.in.english" to "Часть текста показана на английском.",
         "credits.translations" to "Переводы",
+        "desktop.more.about" to "Подробнее: %1",
+        "tuning.metric.tunnel.direct.throughput" to "пропускная способность туннеля / прямого соединения",
+        "tuning.metric.tunnel.throughput" to "пропускная способность туннеля",
+        "tuning.level.speed" to "Пять измеренных позиций по пропускной способности: stealth, stealth-16, balanced, fast, max. Условия различаются: fast и max превосходят balanced только при повышенных пределах TCP хоста. Это варианты выбора, а не универсальная оценка скорости.",
+        "tuning.level.security" to "Данные на эпоху ключа в каждом направлении: 4 — 1 МиБ, 3 — 4 МиБ, 2 — 16 МиБ, 1 — 64 МиБ. Алгоритмы и обязательная смена ключей не меняются.",
+        "tuning.level.stealth" to "Только настройки окон, возвратов кредитов и смены ключей в простое: 4 сохраняет стандартный предел 4 МиБ, два возврата кредитов и выключенную смену ключей в простое. Более низкие уровни увеличивают окна или добавляют записи кредитов, а fast и max добавляют обмены для смены ключей в простое. Результат классификатора не подразумевается; изменение эпохи также меняет частоту смены ключей.",
     )
 }

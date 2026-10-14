@@ -21,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.fixcraft.yume.MainUiState
@@ -31,6 +32,18 @@ import com.fixcraft.yume.vpn.VpnLogLevel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+/** A row of equal buttons, or a column of full-width ones when [stacked]. */
+@Composable
+private fun ReportButtons(stacked: Boolean, content: @Composable ((Modifier) -> Modifier) -> Unit) {
+    if (stacked) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { content { it } }
+    } else {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            content { it.weight(1f) }
+        }
+    }
+}
 
 /** What the connection did, and a report of it to copy or share. */
 @Composable
@@ -52,17 +65,18 @@ fun LogsScreen(
     ) {
         item {
             SectionCard(title = strings.sessionLogTitle, detail = strings.sessionLogSubtitle) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
+                // Side by side at ordinary text sizes. Large text stacks the
+                // buttons, since half a row would break their words.
+                val stacked = LocalDensity.current.fontScale >= 1.5f
+                val buttonWidth = if (stacked) Modifier.fillMaxWidth() else Modifier
+                ReportButtons(stacked) { slot ->
                     FilledTonalButton(
                         onClick = {
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             clipboard.setPrimaryClip(ClipData.newPlainText("Yume report", onBuildReport()))
                             onReportNotice(strings.reportCopied)
                         },
-                        modifier = Modifier.weight(1f),
+                        modifier = slot(buttonWidth),
                     ) {
                         Text(strings.copyReport)
                     }
@@ -79,7 +93,7 @@ fun LogsScreen(
                                 ),
                             )
                         },
-                        modifier = Modifier.weight(1f),
+                        modifier = slot(buttonWidth),
                     ) {
                         Text(strings.shareReport)
                     }
