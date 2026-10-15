@@ -16,9 +16,7 @@ data class AppLanguageOption(
 )
 
 object AppLanguageCatalog {
-    private val maintainedLanguageCodes = AppLanguage.maintainedEntries
-        .map { Locale.forLanguageTag(it.localeTag).language.lowercase(Locale.ROOT) }
-        .toSet()
+    private val maintainedLanguageCodes = AppLanguage.maintainedLanguageCodes
 
     fun maintainedLanguages(): List<AppLanguage> = listOf(AppLanguage.SystemDefault) + AppLanguage.maintainedEntries
 
@@ -78,6 +76,7 @@ object AppLanguageCatalog {
             AppLanguage.Maintained.Russian -> "Русский"
             AppLanguage.Maintained.Japanese -> "日本語"
             AppLanguage.Maintained.Ukrainian -> "Українська"
+            AppLanguage.Maintained.ChineseSimplified -> "简体中文"
             is AppLanguage.AutoTranslated -> nativeLanguageName(language.localeTag)
             is AppLanguage.Community -> communityLanguage(language.localeTag)?.name
                 ?: nativeLanguageName(language.localeTag)

@@ -39,6 +39,8 @@ sealed class AppLanguage(
         data object Japanese : Maintained("ja", "ja")
 
         data object Ukrainian : Maintained("uk", "uk")
+
+        data object ChineseSimplified : Maintained("zh-Hans", "zh-Hans")
     }
 
     data class AutoTranslated(
@@ -64,7 +66,10 @@ sealed class AppLanguage(
      * The language strings come from. [communityTags] are the community
      * languages the app ships. A human community translation of a language
      * wins over on-device translation, and a chosen community language that
-     * the app no longer ships resolves like any other tag.
+     * the app no longer ships resolves like any other tag. A language the app
+     * maintains in another script stays English: on-device translation
+     * translates a language, not a script, so it would show Traditional
+     * Chinese readers machine-translated Simplified Chinese.
      */
     fun resolve(
         systemLocale: Locale = Locale.getDefault(),
@@ -77,23 +82,58 @@ sealed class AppLanguage(
             is Community -> localeTag
         }
         val normalizedTag = normalizeLanguageTag(requestedTag)
-        return when (val languageCode = Locale.forLanguageTag(normalizedTag).language.lowercase(Locale.ROOT)) {
+        val locale = Locale.forLanguageTag(normalizedTag)
+        return when (val tag = catalogTag(locale)) {
             Maintained.English.localeTag -> ResolvedAppLanguage.English
             Maintained.Russian.localeTag -> ResolvedAppLanguage.Russian
             Maintained.Japanese.localeTag -> ResolvedAppLanguage.Japanese
             Maintained.Ukrainian.localeTag -> ResolvedAppLanguage.Ukrainian
-            in communityTags -> ResolvedAppLanguage.Community(languageCode)
-            else -> ResolvedAppLanguage.AutoTranslated(normalizedTag)
+            Maintained.ChineseSimplified.localeTag -> ResolvedAppLanguage.ChineseSimplified
+            in communityTags -> ResolvedAppLanguage.Community(tag)
+            else -> if (locale.language.lowercase(Locale.ROOT) in maintainedLanguageCodes) {
+                ResolvedAppLanguage.English
+            } else {
+                ResolvedAppLanguage.AutoTranslated(normalizedTag)
+            }
         }
     }
 
     companion object {
-        val maintainedEntries: List<Maintained> = listOf(
-            Maintained.English,
-            Maintained.Russian,
-            Maintained.Japanese,
-            Maintained.Ukrainian,
-        )
+        // Lazy, because these objects subclass AppLanguage: built while the
+        // first one touched is still initializing, the list would hold null.
+        val maintainedEntries: List<Maintained> by lazy {
+            listOf(
+                Maintained.English,
+                Maintained.Russian,
+                Maintained.Japanese,
+                Maintained.Ukrainian,
+                Maintained.ChineseSimplified,
+            )
+        }
+
+        /** The language codes the maintained languages are written in, such as zh. */
+        val maintainedLanguageCodes: Set<String> by lazy {
+            maintainedEntries.map { Locale.forLanguageTag(it.localeTag).language }.toSet()
+        }
+
+        // Regions that write Chinese in Traditional characters.
+        private val traditionalChineseRegions = setOf("TW", "HK", "MO")
+
+        /**
+         * The catalog language a locale reads, as YUME's shared catalog names
+         * it: the language code, and for Chinese also the script, since
+         * Simplified and Traditional are separate languages there. Java leaves
+         * the script empty for zh-CN or zh-TW, so the region decides then:
+         * Taiwan, Hong Kong and Macau write Traditional, the rest Simplified.
+         */
+        fun catalogTag(locale: Locale): String {
+            val language = locale.language.lowercase(Locale.ROOT)
+            if (language != "zh") return language
+            val script = locale.script.ifEmpty {
+                if (locale.country.uppercase(Locale.ROOT) in traditionalChineseRegions) "Hant" else "Hans"
+            }
+            return "zh-$script"
+        }
 
         fun fromWireValue(value: String?): AppLanguage {
             val normalizedValue = value.orEmpty().trim()
@@ -118,9 +158,9 @@ sealed class AppLanguage(
 
         fun fromLocaleTag(localeTag: String, communityTags: Set<String> = emptySet()): AppLanguage {
             val normalizedTag = normalizeLanguageTag(localeTag)
-            val languageCode = Locale.forLanguageTag(normalizedTag).language.lowercase(Locale.ROOT)
-            return maintainedEntries.firstOrNull { it.localeTag == languageCode }
-                ?: if (languageCode in communityTags) Community(languageCode) else AutoTranslated(normalizedTag)
+            val tag = catalogTag(Locale.forLanguageTag(normalizedTag))
+            return maintainedEntries.firstOrNull { it.localeTag == tag }
+                ?: if (tag in communityTags) Community(tag) else AutoTranslated(normalizedTag)
         }
 
         private fun normalizeLanguageTag(localeTag: String): String {
@@ -139,6 +179,8 @@ sealed class ResolvedAppLanguage(
     data object Japanese : ResolvedAppLanguage("ja")
 
     data object Ukrainian : ResolvedAppLanguage("uk")
+
+    data object ChineseSimplified : ResolvedAppLanguage("zh-Hans")
 
     data class AutoTranslated(
         override val localeTag: String,

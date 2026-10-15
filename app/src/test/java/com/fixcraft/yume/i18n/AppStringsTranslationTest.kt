@@ -5,6 +5,7 @@ import com.fixcraft.yume.i18n.translations.LanguageJa
 import com.fixcraft.yume.i18n.translations.LanguageRu
 import com.fixcraft.yume.i18n.TranslationCatalog
 import com.fixcraft.yume.i18n.translations.LanguageUk
+import com.fixcraft.yume.i18n.translations.LanguageZhHans
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -25,6 +26,7 @@ class AppStringsTranslationTest {
         "ru" to LanguageRu.translations,
         "ja" to LanguageJa.translations,
         "uk" to LanguageUk.translations,
+        "zh-Hans" to LanguageZhHans.translations,
     )
 
     @Test

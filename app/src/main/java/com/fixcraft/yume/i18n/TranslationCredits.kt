@@ -7,6 +7,7 @@ internal object MaintainedLanguageCredits {
         "ru" to listOf(TranslationCredit("FixCraft Inc.", TranslationCredit.Kind.Studio, null)),
         "ja" to listOf(TranslationCredit("FixCraft Inc.", TranslationCredit.Kind.Studio, null)),
         "uk" to listOf(TranslationCredit("FixCraft Inc.", TranslationCredit.Kind.Studio, null)),
+        "zh-Hans" to listOf(TranslationCredit("FixCraft Inc.", TranslationCredit.Kind.Studio, null)),
     )
 }
 

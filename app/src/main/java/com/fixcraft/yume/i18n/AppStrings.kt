@@ -15,6 +15,7 @@ import com.fixcraft.yume.data.ThemeColorMode
 import com.fixcraft.yume.i18n.translations.LanguageJa
 import com.fixcraft.yume.i18n.translations.LanguageRu
 import com.fixcraft.yume.i18n.translations.LanguageUk
+import com.fixcraft.yume.i18n.translations.LanguageZhHans
 import com.fixcraft.yume.vpn.UpstreamKind
 import com.fixcraft.yume.vpn.VpnFailure
 import com.fixcraft.yume.vpn.VpnPhase
@@ -35,6 +36,7 @@ private val maintainedBundles: Map<ResolvedAppLanguage, LanguageBundle> = mapOf(
     ResolvedAppLanguage.Russian to LanguageRu,
     ResolvedAppLanguage.Japanese to LanguageJa,
     ResolvedAppLanguage.Ukrainian to LanguageUk,
+    ResolvedAppLanguage.ChineseSimplified to LanguageZhHans,
 )
 
 private fun languageLocale(language: ResolvedAppLanguage): Locale = when (language) {
@@ -42,6 +44,7 @@ private fun languageLocale(language: ResolvedAppLanguage): Locale = when (langua
     ResolvedAppLanguage.Russian -> Locale.forLanguageTag("ru")
     ResolvedAppLanguage.Japanese -> Locale.JAPANESE
     ResolvedAppLanguage.Ukrainian -> Locale.forLanguageTag("uk")
+    ResolvedAppLanguage.ChineseSimplified -> Locale.forLanguageTag("zh-Hans")
     is ResolvedAppLanguage.AutoTranslated -> Locale.forLanguageTag(language.localeTag)
     is ResolvedAppLanguage.Community -> Locale.forLanguageTag(language.localeTag)
 }
@@ -410,6 +413,7 @@ class AppStrings private constructor(
         AppLanguage.Maintained.Russian -> "Русский"
         AppLanguage.Maintained.Japanese -> "日本語"
         AppLanguage.Maintained.Ukrainian -> "Українська"
+        AppLanguage.Maintained.ChineseSimplified -> "简体中文"
         is AppLanguage.AutoTranslated -> AppLanguageCatalog.displayName(appLanguage)
         is AppLanguage.Community -> AppLanguageCatalog.displayName(appLanguage)
     }
@@ -426,6 +430,7 @@ class AppStrings private constructor(
         AppLanguage.Maintained.Russian -> maintainedCredit(AppLanguage.Maintained.Russian)
         AppLanguage.Maintained.Japanese -> maintainedCredit(AppLanguage.Maintained.Japanese)
         AppLanguage.Maintained.Ukrainian -> maintainedCredit(AppLanguage.Maintained.Ukrainian)
+        AppLanguage.Maintained.ChineseSimplified -> maintainedCredit(AppLanguage.Maintained.ChineseSimplified)
         is AppLanguage.AutoTranslated -> onDeviceTranslationLabel
         is AppLanguage.Community -> communityLanguage(appLanguage.localeTag)?.let { community ->
             val credit = creditNames(community.credits)
