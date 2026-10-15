@@ -338,7 +338,7 @@ internal object LanguageJa : LanguageBundle {
         "desktop.follow" to "自動スクロール",
         "desktop.for.changes.take.effect.on.the.next.connection.applying" to "%1 · 変更は次回接続時に有効になります。接続中に適用するとクライアントを再起動し、ストリームを閉じます。",
         "desktop.forward" to "転送",
-        "desktop.free.software.under.the.gnu.agpl.3.0.or.later.jost.font" to "GNU AGPL 3.0 以降の自由ソフトウェアです。Jost フォントは SIL Open Font License 1.1 で提供されています。",
+        "desktop.free.software.under.the.gnu.agpl.3.0.or.later.jost.font" to "GNU AGPL 3.0 以降の自由ソフトウェアです。Jost と Quicksand のフォントは SIL Open Font License 1.1 で提供されています。",
         "desktop.hide.window" to "ウィンドウを非表示",
         "desktop.idle" to "アイドル",
         "desktop.import" to "インポート",

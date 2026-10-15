@@ -338,7 +338,7 @@ internal object LanguageRu : LanguageBundle {
         "desktop.follow" to "Следить",
         "desktop.for.changes.take.effect.on.the.next.connection.applying" to "Для %1 · изменения вступят в силу при следующем подключении. Применение во время подключения перезапускает клиент и закрывает его потоки.",
         "desktop.forward" to "Переслать",
-        "desktop.free.software.under.the.gnu.agpl.3.0.or.later.jost.font" to "Свободное ПО по GNU AGPL 3.0 или более поздней версии. Шрифт Jost по SIL Open Font License 1.1.",
+        "desktop.free.software.under.the.gnu.agpl.3.0.or.later.jost.font" to "Свободное ПО по GNU AGPL 3.0 или более поздней версии. Шрифты Jost и Quicksand по SIL Open Font License 1.1.",
         "desktop.hide.window" to "Скрыть окно",
         "desktop.idle" to "Простой",
         "desktop.import" to "Импортировать",

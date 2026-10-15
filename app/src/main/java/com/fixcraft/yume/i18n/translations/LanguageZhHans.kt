@@ -338,7 +338,7 @@ internal object LanguageZhHans : LanguageBundle {
         "desktop.follow" to "自动滚动",
         "desktop.for.changes.take.effect.on.the.next.connection.applying" to "适用于 %1 · 更改将在下次连接时生效。在连接期间应用会重启客户端并关闭其流。",
         "desktop.forward" to "端口转发",
-        "desktop.free.software.under.the.gnu.agpl.3.0.or.later.jost.font" to "以 GNU AGPL 3.0 或更高版本授权的自由软件。Jost 字体以 SIL Open Font License 1.1 授权。",
+        "desktop.free.software.under.the.gnu.agpl.3.0.or.later.jost.font" to "以 GNU AGPL 3.0 或更高版本授权的自由软件。Jost 和 Quicksand 字体以 SIL Open Font License 1.1 授权。",
         "desktop.hide.window" to "隐藏窗口",
         "desktop.idle" to "空闲",
         "desktop.import" to "导入",

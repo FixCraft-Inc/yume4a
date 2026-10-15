@@ -338,7 +338,7 @@ internal object LanguageUk : LanguageBundle {
         "desktop.follow" to "Стежити",
         "desktop.for.changes.take.effect.on.the.next.connection.applying" to "Для %1 · зміни набудуть чинності під час наступного підключення. Застосування під час підключення перезапускає клієнт і закриває його потоки.",
         "desktop.forward" to "Переслати",
-        "desktop.free.software.under.the.gnu.agpl.3.0.or.later.jost.font" to "Вільне ПЗ за GNU AGPL 3.0 або новішою версією. Шрифт Jost за SIL Open Font License 1.1.",
+        "desktop.free.software.under.the.gnu.agpl.3.0.or.later.jost.font" to "Вільне ПЗ за GNU AGPL 3.0 або новішою версією. Шрифти Jost і Quicksand за SIL Open Font License 1.1.",
         "desktop.hide.window" to "Сховати вікно",
         "desktop.idle" to "Простій",
         "desktop.import" to "Імпортувати",
