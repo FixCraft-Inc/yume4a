@@ -149,10 +149,11 @@ private fun SessionFacts(strings: AppStrings, state: VpnConnectionState) {
     }
 }
 
-private fun statusHeadline(strings: AppStrings, state: VpnConnectionState): String = when {
+/** A heading of its own, or null where it would only repeat the phase in the pill above it. */
+internal fun statusHeadline(strings: AppStrings, state: VpnConnectionState): String? = when {
     state.phase == VpnPhase.Error -> strings.failureTitle(state.failure)
     state.waitingForNetwork && state.isActive -> strings.waitingForNetworkTitle
-    else -> strings.phaseName(state.phase)
+    else -> null
 }
 
 private fun statusDetail(strings: AppStrings, state: VpnConnectionState): String = when {

@@ -244,15 +244,17 @@ private fun breaksAtOpportunities(text: String, layout: TextLayoutResult, locale
 
 @Composable
 internal fun StatusMessage(
-    headline: String,
+    headline: String?,
     detail: String,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(
-            text = headline,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
+        if (headline != null) {
+            Text(
+                text = headline,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
         if (detail.isNotBlank()) {
             Text(
                 text = detail,
