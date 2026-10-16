@@ -399,6 +399,8 @@ internal object LanguageZhHans : LanguageBundle {
         "desktop.review" to "查看",
         "desktop.route" to "路径",
         "desktop.route.through.the.cluster" to "经由集群的路径",
+        "desktop.route.cost.entry.sees.all" to "您的入口服务器既能看到您是谁，也能看到您访问的每个网站，与直接连接时一样。",
+        "desktop.route.cost.entry.exit.adjacent" to "出口服务器的相邻节点就是您的入口服务器。同时运营或同时监视这两台服务器的人，可以将您与您访问的网站关联起来。",
         "desktop.running" to "正在运行",
         "desktop.socks5" to "SOCKS5",
         "desktop.save.settings" to "保存设置",

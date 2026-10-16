@@ -399,6 +399,8 @@ internal object LanguageUk : LanguageBundle {
         "desktop.review" to "Перегляд",
         "desktop.route" to "Маршрут",
         "desktop.route.through.the.cluster" to "Маршрут через кластер",
+        "desktop.route.cost.entry.sees.all" to "Ваш вхідний сервер бачить і те, хто ви, і кожен сайт, який ви відвідуєте, як і за прямого підключення.",
+        "desktop.route.cost.entry.exit.adjacent" to "Сусідом вихідного сервера буде ваш вхідний сервер. Той, хто керує обома або стежить за обома, може пов’язати вас із сайтами, які ви відвідуєте.",
         "desktop.running" to "Працює",
         "desktop.socks5" to "SOCKS5",
         "desktop.save.settings" to "Зберегти налаштування",

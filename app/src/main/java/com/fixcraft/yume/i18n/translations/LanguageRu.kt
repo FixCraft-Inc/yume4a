@@ -399,6 +399,8 @@ internal object LanguageRu : LanguageBundle {
         "desktop.review" to "Проверить",
         "desktop.route" to "Маршрут",
         "desktop.route.through.the.cluster" to "Маршрут через кластер",
+        "desktop.route.cost.entry.sees.all" to "Ваш входной сервер видит и то, кто вы, и каждый сайт, который вы посещаете, как и при прямом подключении.",
+        "desktop.route.cost.entry.exit.adjacent" to "Соседом выходного сервера будет ваш входной сервер. Тот, кто управляет обоими или наблюдает за обоими, может связать вас с сайтами, которые вы посещаете.",
         "desktop.running" to "Работает",
         "desktop.socks5" to "SOCKS5",
         "desktop.save.settings" to "Сохранить настройки",

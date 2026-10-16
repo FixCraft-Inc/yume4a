@@ -399,6 +399,8 @@ internal object LanguageJa : LanguageBundle {
         "desktop.review" to "確認",
         "desktop.route" to "経路",
         "desktop.route.through.the.cluster" to "クラスター経由の経路",
+        "desktop.route.cost.entry.sees.all" to "入口サーバーには、身元とアクセスするすべてのサイトの両方が見えます。直接接続の場合と同じです。",
+        "desktop.route.cost.entry.exit.adjacent" to "出口サーバーに隣接するのは入口サーバーです。両方を運営または監視している者は、身元とアクセスするサイトを結び付けることができます。",
         "desktop.running" to "実行中",
         "desktop.socks5" to "SOCKS5",
         "desktop.save.settings" to "設定を保存",
