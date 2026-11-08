@@ -52,6 +52,7 @@ Options:
                           intel        shorthand for x86 + x86_64
                         comma-separated list also accepted, e.g. --abi arm64-v8a,x86_64
   --distribution VALUE  direct (default) or play
+  --apk-dir PATH        sign unsigned APKs built elsewhere and skip Gradle
   --skip-clean          skip Gradle clean
   --skip-sign           build release APK only
   --help                show this help
@@ -201,15 +202,15 @@ resolve_build_tools_dir() {
 resolve_tool() {
   local name="$1"
   local sdk_dir="$2"
-  if command -v "$name" >/dev/null 2>&1; then
-    command -v "$name"
+  # The SDK's newest tools come first. A distribution's older zipalign has no -P.
+  local build_tools_dir candidate
+  build_tools_dir="$(resolve_build_tools_dir "$sdk_dir" || true)"
+  candidate="$build_tools_dir/$name"
+  if [[ -n "$build_tools_dir" && -x "$candidate" ]]; then
+    printf '%s\n' "$candidate"
     return 0
   fi
-  local build_tools_dir
-  build_tools_dir="$(resolve_build_tools_dir "$sdk_dir")"
-  local candidate="$build_tools_dir/$name"
-  [[ -x "$candidate" ]] || return 1
-  printf '%s\n' "$candidate"
+  command -v "$name"
 }
 
 SECRET_FILE="$SECRET_FILE_DEFAULT"
@@ -220,6 +221,7 @@ KEY_PASSWORD=""
 OUTPUT_DIR="$OUTPUT_DIR_DEFAULT"
 ABI_SELECTION="all"
 DISTRIBUTION="direct"
+APK_DIR=""
 SKIP_CLEAN=0
 SKIP_SIGN=0
 
@@ -287,6 +289,10 @@ while [[ $# -gt 0 ]]; do
       DISTRIBUTION="${2:-}"
       shift 2
       ;;
+    --apk-dir)
+      APK_DIR="${2:-}"
+      shift 2
+      ;;
     --skip-clean)
       SKIP_CLEAN=1
       shift
@@ -319,6 +325,9 @@ case "$DISTRIBUTION" in
   *) printf 'Unknown distribution: %s (expected direct or play)\n' "$DISTRIBUTION" >&2; exit 1 ;;
 esac
 APK_OUTPUT_DIR="$ROOT_DIR/app/build/outputs/apk/$DISTRIBUTION/release"
+if [[ -n "$APK_DIR" ]]; then
+  APK_OUTPUT_DIR="$(cd "$APK_DIR" && pwd)"
+fi
 if [[ -z "$OUTPUT_DIR" || "$OUTPUT_DIR" == "$ROOT_DIR/app/build/outputs/apk/release/signed" ]]; then
   OUTPUT_DIR="$APK_OUTPUT_DIR/signed"
 fi
@@ -384,17 +393,19 @@ if [[ "${#SELECTED_ABIS[@]}" -ne ${#ALL_ABIS[@]} ]]; then
   GRADLE_ARGS+=("-PyumeAbi=$(IFS=,; printf '%s' "${SELECTED_ABIS[*]}")")
 fi
 
-log_section "Gradle build"
-if [[ "$SKIP_CLEAN" -eq 0 ]]; then
-  log_item "step" "clean"
-  ./gradlew :app:clean "${GRADLE_ARGS[@]}"
-fi
+if [[ -z "$APK_DIR" ]]; then
+  log_section "Gradle build"
+  if [[ "$SKIP_CLEAN" -eq 0 ]]; then
+    log_item "step" "clean"
+    ./gradlew :app:clean "${GRADLE_ARGS[@]}"
+  fi
 
-# Gradle can deadlock when clean and assemble are in the same task graph because
-# clean destroys outputs that assemble tasks also declare. Keep them separate.
-ASSEMBLE_TASK="assemble${DISTRIBUTION^}Release"
-log_item "step" "$ASSEMBLE_TASK"
-./gradlew ":app:${ASSEMBLE_TASK}" "${GRADLE_ARGS[@]}"
+  # Gradle can deadlock when clean and assemble are in the same task graph because
+  # clean destroys outputs that assemble tasks also declare. Keep them separate.
+  ASSEMBLE_TASK="assemble${DISTRIBUTION^}Release"
+  log_item "step" "$ASSEMBLE_TASK"
+  ./gradlew ":app:${ASSEMBLE_TASK}" "${GRADLE_ARGS[@]}"
+fi
 
 # ABI splits produce one unsigned APK per ABI under $APK_OUTPUT_DIR. Filter the
 # discovered set down to the requested ABIs so --abi selects which APKs get
@@ -443,14 +454,18 @@ for unsigned in "${UNSIGNED_APKS[@]}"; do
   aligned="${unsigned%.apk}-aligned.apk"
 
   log_section "Zipalign  ${base}"
-  "$ZIPALIGN" -p -f 4 "$unsigned" "$aligned"
+  # Newer devices use 16 KiB pages. -P requires that alignment for native libraries,
+  # where -p asks only for 4 KiB, and the verify step below checks the signed result.
+  "$ZIPALIGN" -P 16 -f 4 "$unsigned" "$aligned"
 
   log_section "Sign       ${signed_name}"
+  # Through the environment, because any local user can read a process's arguments.
+  YUME_SIGN_STORE_PASSWORD="$STORE_PASSWORD" YUME_SIGN_KEY_PASSWORD="$KEY_PASSWORD" \
   "$APKSIGNER" sign \
     --ks "$KEYSTORE_PATH" \
     --ks-key-alias "$KEY_ALIAS" \
-    --ks-pass "pass:$STORE_PASSWORD" \
-    --key-pass "pass:$KEY_PASSWORD" \
+    --ks-pass env:YUME_SIGN_STORE_PASSWORD \
+    --key-pass env:YUME_SIGN_KEY_PASSWORD \
     --out "$signed" \
     "$aligned"
   rm -f "$aligned"
@@ -460,6 +475,7 @@ done
 log_section "Verify"
 for signed in "${SIGNED_OUTPUTS[@]}"; do
   "$APKSIGNER" verify --print-certs "$signed" >/dev/null
+  "$ZIPALIGN" -c -P 16 4 "$signed"
   printf '    ok  %s\n' "$signed"
 done
 
