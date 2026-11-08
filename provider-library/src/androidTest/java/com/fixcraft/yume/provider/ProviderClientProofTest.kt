@@ -90,6 +90,7 @@ class ProviderClientProofTest {
         var codeRequests = 0
         var openingCodeBinding: Map<String, Any?> = emptyMap()
         var grantRequests = mutableListOf<Map<String, Any?>>()
+        var generation = 0L
         // The real HTTP owner reports a 401 and an issuer's invalid_grant as `unauthorized`.
         var accountRefused = false
         var refreshRefused = false
@@ -141,10 +142,15 @@ class ProviderClientProofTest {
                     "role" to "vpn", "required" to emptyList<String>(), "servers" to listOf(mapOf("id" to "server",
                         "label" to "Tokyo", "host" to "edge.alpha.example", "port" to 443L,
                         "server_key_sha256" to "f".repeat(64), "country" to "JP"))))), ProviderCodec.METADATA_LIMIT)
-            endpoint.endsWith("/grants") -> ProviderCodec.encode(fields(body!!).also { grantRequests += it } + mapOf("grant_id" to "grant-1",
-                "generation" to 1L, "issued_at" to clock.seconds, "refresh_after" to clock.seconds + 60,
-                "expires_at" to clock.seconds + 600, "client_identity" to "a".repeat(64),
-                "kit_sha256" to digest(KIT), "kit_size" to KIT.size.toLong()))
+            endpoint.endsWith("/grants") -> {
+                // Each grant has its own ID and identity. A renewal is the next generation.
+                val request = fields(body!!).also { grantRequests += it }
+                generation = if (request["previous_grant"] == null) 1L else generation + 1
+                ProviderCodec.encode(request + mapOf("grant_id" to "grant-${grantRequests.size}",
+                    "generation" to generation, "issued_at" to clock.seconds, "refresh_after" to clock.seconds + 60,
+                    "expires_at" to clock.seconds + 600, "client_identity" to "%064x".format(grantRequests.size),
+                    "kit_sha256" to digest(KIT), "kit_size" to KIT.size.toLong()))
+            }
             endpoint.endsWith("/kit") -> KIT.copyOf()
             endpoint.endsWith("/opening-code") -> {
                 codeRequests++
@@ -290,6 +296,23 @@ class ProviderClientProofTest {
         issuer.refreshRefused = true
         assertEquals("unauthorized", outcome { client.catalog(PROVIDER) })
         assertSignInAndGrantForgotten()
+    }
+
+    @Test fun aDueLeaseRenewsItsGrantAndAnExpiredOneStartsFresh() = runBlocking {
+        installed()
+        // Each refresh returns new tokens, as a real issuer does.
+        clock.advance(61)
+        issuer.access = "SYNTHETIC-ACCESS-TWO"
+        client.install(PROVIDER, client.catalog(PROVIDER), "service", "server") { throw AssertionError("not anonymous") }
+        assertEquals("grant-1", issuer.grantRequests.last()["previous_grant"])
+        assertEquals("grant-2", client.enrollments().single().grant?.grantId)
+        // The provider refuses to renew an expired grant, so the client asks for a fresh one.
+        clock.advance(601)
+        issuer.access = "SYNTHETIC-ACCESS-THREE"
+        client.install(PROVIDER, client.catalog(PROVIDER), "service", "server") { throw AssertionError("not anonymous") }
+        assertNull(issuer.grantRequests.last()["previous_grant"])
+        assertEquals("grant-3", client.enrollments().single().grant?.grantId)
+        client.lease(PROVIDER).close()
     }
 
     @Test fun anOutageKeepsTheLeaseButAChangedProviderSuspendsIt() = runBlocking {

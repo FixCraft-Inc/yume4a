@@ -19,6 +19,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.fixcraft.yume.YumeApplication
 import com.fixcraft.yume.consumer.ServiceSelection
+import com.fixcraft.yume.provider.ProviderCodec
 import com.fixcraft.yume.consumer.ServiceController
 import com.fixcraft.yume.MainActivity
 import com.fixcraft.yume.R
@@ -47,6 +48,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -268,18 +270,53 @@ class YumeVpnService : VpnService() {
      * stopped. Returns when cancelled and throws [RunFailure] when it cannot
      * go on.
      */
+    private fun renewAfter(selection: ServiceSelection): Long? = try {
+        (application as YumeApplication).services.renewAfter(selection)
+    } catch (_: Exception) {
+        throw RunFailure(VpnFailure.KitUnavailable, "the selected service could not be read")
+    }
+
+    /**
+     * Renews [selection] when its lease is due. With [exact] authority the
+     * restart record moves to the renewed grant, so Android restarts it.
+     */
+    private suspend fun renewedIfDue(selection: ServiceSelection, exact: Boolean): ServiceSelection {
+        val due = renewAfter(selection)
+        if (due == null || System.currentTimeMillis() / 1000 < due) return selection
+        val renewed = try {
+            (application as YumeApplication).services.renew(selection)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: ProviderCodec.Refusal) {
+            throw RunFailure(VpnFailure.KitUnavailable, "access could not be renewed (${error.code})")
+        }
+        if (exact) restartPreferences.edit().putString(KEY_KIT_ID, renewed.id).putString(KEY_PROVIDER, renewed.encode()).apply()
+        return renewed
+    }
+
+    /** Ends [previous] and starts a run that renews its lease, unless a newer run replaced it. */
+    private fun restartRenewed(previous: Job) {
+        if (runJob !== previous) return
+        previous.cancel()
+        begin(restartPreferences.getString(KEY_KIT_ID, null), patient = true,
+            providerJson = restartPreferences.getString(KEY_PROVIDER, null))
+    }
+
     private suspend fun run(kitId: String?, patient: Boolean, providerJson: String?) {
         if (!AppVaultManager.ensureReady(this@YumeVpnService)) {
             throw RunFailure(VpnFailure.KitUnavailable, "the application's data is locked")
         }
-        val selection = try {
+        val chosen = try {
             if (kitId == null) (application as YumeApplication).services.selectedForRestart()
             else providerJson?.let { ServiceSelection.decode(it) }
         } catch (_: Exception) {
             throw RunFailure(VpnFailure.KitUnavailable, "the selected service could not be read")
         }
-        if (selection != null && kitId != null && selection.id != kitId)
+        if (chosen != null && kitId != null && chosen.id != kitId)
             throw RunFailure(VpnFailure.KitUnavailable, "service binding mismatch")
+        // A lease past its renewal time renews first, so a restart after an hour connects.
+        val selection = chosen?.let { renewedIfDue(it, exact = kitId != null) }
+        val renewAt = selection?.let { renewAfter(it) }
         val selectedId = kitId ?: selection?.id ?: KitStore.get(this).selectedId.value.orEmpty()
         val kit = selection?.summary ?: KitStore.get(this).get(selectedId)
             ?: throw RunFailure(VpnFailure.KitUnavailable, "the selected kit is no longer stored")
@@ -308,7 +345,17 @@ class YumeVpnService : VpnService() {
             // This sibling can cancel a blocking native start through the established
             // stop path. Its captured job cannot stop a later manual/provider run.
             authorityWatch = opened?.permit?.let { permit -> scope.launch {
-                while (owningJob.isActive && permit.valid()) delay(minOf(250L, maxOf(1L, permit.remainingMillis())))
+                fun renewalDue() = renewAt != null && System.currentTimeMillis() / 1000 >= renewAt
+                while (owningJob.isActive && permit.valid() && !renewalDue()) {
+                    delay(minOf(250L, maxOf(1L, permit.remainingMillis())))
+                }
+                if (owningJob.isActive && permit.valid() && renewalDue()) {
+                    // The provider ends this grant before issuing the next, so a
+                    // fresh run renews it and the VPN reconnects in a few seconds.
+                    YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Renewing access to ${kit.name}.")
+                    withContext(Dispatchers.Main) { restartRenewed(owningJob) }
+                    return@launch
+                }
                 if (owningJob.isActive) scope.launch {
                     awaitEnd(owningJob)
                     if (runJob === owningJob) {

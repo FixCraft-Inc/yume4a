@@ -120,7 +120,10 @@ mismatched grant.
 
 Account-token and anonymous-device API expiry remain independent of transport
 expiry. Account access-token expiry, or a refresh that gets no answer, does not
-itself end an existing valid transport lease. When the issuer or provider
+itself end an existing valid transport lease. Leases are short, so the VPN
+renews its lease once renewal is allowed: it restarts on the renewed grant and
+reconnects within seconds. An always-on restart renews a due or expired lease
+before connecting. When the issuer or provider
 refuses the sign-in itself, its grant ends with it: the app shows the service
 as signed out, and after signing in again the user chooses a server. Provisioning suspends the prior grant
 before a potentially ambiguous remote rotation. A failed installation publishes

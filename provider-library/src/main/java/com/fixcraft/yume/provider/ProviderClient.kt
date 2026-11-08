@@ -189,7 +189,9 @@ class ProviderClient(
         operation(provider) { lane, generation ->
             snapshot(provider) { record, epoch, bundles ->
                 revalidate(record, epoch, bundles, lane, generation)
-                val previous = record.grant
+                // An expired grant cannot be renewed: the provider has closed it.
+                // Ask for a fresh grant instead, on any entitled server.
+                val previous = record.grant?.takeIf { now().seconds < it.expiresAt }
                 if (previous != null && (previous.request.serviceId != service || previous.request.serverId != server)) {
                     throw ProviderCodec.Refusal("binding")
                 }

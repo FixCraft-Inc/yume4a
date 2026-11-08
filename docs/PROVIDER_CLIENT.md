@@ -58,6 +58,14 @@ provider closes a grant together with the sign-in that obtained it, so after
 signing in again the user chooses a server for a fresh grant. A refresh that
 gets no answer forgets only the spent tokens and leaves the lease running.
 
+`ServiceController.renewAfter` reports when a selected lease may be renewed
+without a person: only device-bound providers qualify, since an anonymous
+provider's opening code is typed by hand. `renew` loads a fresh catalog and
+installs the same server. The provider closes the old grant before issuing the
+next, so the caller's connection ends and it reconnects with the returned
+selection. A lease that has already expired cannot be renewed, so installing
+then asks for a fresh grant instead.
+
 A consumer may supply a suspend `authorizationAccess` hook. Callback validation
 and single-use consumption happen first; then the provider operation lane owns
 the admission wait before any secret-store snapshot. Cancel, removal and close

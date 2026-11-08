@@ -456,6 +456,12 @@ class ServiceControllerTest {
     }
 
     @Test
+    fun anAnonymousProviderNeverRenewsWithoutAPerson() = runBlocking {
+        // Its opening code is typed by hand, so renewal is the person's step.
+        assertNull(controller.renewAfter(install()))
+    }
+
+    @Test
     fun aFailedStepShowsTheSuspensionItSaved() = runBlocking {
         install()
         val catalog = controller.state.value.catalogs.getValue(ALPHA)

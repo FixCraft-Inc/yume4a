@@ -247,6 +247,45 @@ class ServiceController<S : AutoCloseable>(
         }
     }
 
+    /**
+     * When [selection]'s lease may be renewed without a person, in UTC seconds.
+     * Null when it cannot be: the provider is anonymous and its opening code
+     * is typed by hand, or the selection is no longer the installed grant.
+     */
+    fun renewAfter(selection: ServiceSelection): Long? {
+        // Reads the local store, not the screen state, so a boot-time restart works too.
+        if (!adapter.ensureReady()) throw ProviderCodec.Refusal("storage")
+        val entry = client().enrollments().firstOrNull {
+            it.provider == selection.provider && it.epoch == selection.epoch && it.grant?.grantId == selection.grant
+        }
+        return entry?.grant?.refreshAfter?.takeIf { entry.issuer != null }
+    }
+
+    /**
+     * Renews [selection]'s lease on the same server and selects the new grant.
+     * The provider closes the old grant first, so its connections end and the
+     * caller reconnects with the returned selection. An expired lease gets a
+     * fresh grant. Refusals are thrown and the saved state is republished.
+     */
+    suspend fun renew(selection: ServiceSelection): ServiceSelection {
+        val revision = selectionGeneration.incrementAndGet()
+        try {
+            val catalog = client().catalog(selection.provider)
+            stateFlow.update { it.copy(catalogs = it.catalogs + (selection.provider to catalog)) }
+            client().install(selection.provider, catalog, selection.service, selection.server) {
+                throw ProviderCodec.Refusal("unsupported")
+            }
+            reloadNow()
+            val renewed = state.value.entries.single { it.provider == selection.provider }.selection
+                ?: throw ProviderCodec.Refusal("state")
+            selectNow(renewed, revision)
+            return renewed
+        } catch (error: Exception) {
+            if (error !is CancellationException) reloadAfterFailure()
+            throw error
+        }
+    }
+
     fun submitCode(id: String, code: CharArray) {
         val slot = codes[id]
         if (slot == null) code.fill('\u0000') else slot.submit(code)
