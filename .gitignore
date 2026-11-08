@@ -23,3 +23,6 @@ local.properties
 .aider*
 .cursor/
 .copilot/
+
+# Python fixture/tool caches are never source inputs.
+/tools/__pycache__/

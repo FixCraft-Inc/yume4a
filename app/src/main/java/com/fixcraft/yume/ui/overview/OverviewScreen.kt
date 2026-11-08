@@ -64,7 +64,7 @@ fun OverviewScreen(
                     if (kit == null && !vpnState.isActive) {
                         StatusMessage(headline = strings.noKitTitle, detail = strings.noKitDetail)
                         Button(onClick = onOpenKits, modifier = Modifier.fillMaxWidth(), colors = mainActionColors()) {
-                            Text(strings.addKit)
+                            Text(strings.message(com.fixcraft.yume.i18n.MessageId.PROVIDER_ADD_SERVICE))
                         }
                     } else {
                         // The phase moves under the kit rather than splitting its name or address.
@@ -104,6 +104,9 @@ fun OverviewScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                        }
+                        uiState.services.selection?.takeIf { !uiState.services.manual }?.let { service ->
+                            FactRow(strings.message(com.fixcraft.yume.i18n.MessageId.PROVIDER_SELECTED), service.provider)
                         }
                         SessionFacts(strings, vpnState)
                         if (vpnState.isActive) {

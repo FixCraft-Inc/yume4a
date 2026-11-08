@@ -1,5 +1,7 @@
 package com.fixcraft.yume.core
 
+import java.io.File
+
 /** The `yume_status` codes this application tells apart (yume/yume.h). */
 object YumeStatusCode {
     const val OK = 0
@@ -83,6 +85,21 @@ object YumeLibrary {
         val status = YumeNative.nativeCheckConfig(json, role, result)
         if (status != YumeStatusCode.OK) throw failure(status, result)
         return role[0]
+    }
+
+    /**
+     * Loads real client credential files and checks their private/public key
+     * pairs without starting an endpoint. Returns the local composite SHA-256
+     * fingerprint, not an authenticated peer identity or admission result.
+     * The caller confines untrusted references and keeps files and ancestors
+     * private and stable for the whole call. No native handle is retained.
+     */
+    fun validateClientCredentials(baseDir: File, json: ByteArray): String {
+        val fingerprint = ByteArray(32)
+        val result = arrayOfNulls<String>(YumeNative.RESULT_SIZE)
+        val status = YumeNative.nativeValidateClientCredentials(baseDir.absolutePath, json, fingerprint, result)
+        if (status != YumeStatusCode.OK) throw failure(status, result)
+        return fingerprint.joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
     /**

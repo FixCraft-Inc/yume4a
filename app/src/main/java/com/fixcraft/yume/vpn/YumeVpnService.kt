@@ -1,5 +1,6 @@
 package com.fixcraft.yume.vpn
 
+import com.fixcraft.yume.consumer.summary
 import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
@@ -16,6 +17,9 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.fixcraft.yume.YumeApplication
+import com.fixcraft.yume.consumer.ServiceSelection
+import com.fixcraft.yume.consumer.ServiceController
 import com.fixcraft.yume.MainActivity
 import com.fixcraft.yume.R
 import com.fixcraft.yume.core.SocketProtector
@@ -82,7 +86,8 @@ class YumeVpnService : VpnService() {
             networkChanged.set(true)
         }
     }
-    private val client = AtomicReference<YumeClient?>(null)
+    private data class OwnedEndpoint(val owner: Job, val endpoint: YumeClient)
+    private val client = AtomicReference<OwnedEndpoint?>(null)
 
     // The network the latest transport socket was bound to. The library opens
     // a new socket for every replacement session, so each one binds to the
@@ -119,22 +124,23 @@ class YumeVpnService : VpnService() {
         when (intent?.action) {
             ACTION_CONNECT -> {
                 val kitId = intent.getStringExtra(EXTRA_KIT_ID).orEmpty()
-                restartPreferences.edit().putString(KEY_KIT_ID, kitId).apply()
-                begin(kitId, patient = false)
+                val provider = intent.getStringExtra(EXTRA_PROVIDER)
+                restartPreferences.edit().putString(KEY_KIT_ID, kitId).putString(KEY_PROVIDER, provider).apply()
+                begin(kitId, patient = false, providerJson = provider)
             }
 
             ACTION_DISCONNECT -> {
-                restartPreferences.edit().remove(KEY_KIT_ID).apply()
+                restartPreferences.edit().remove(KEY_KIT_ID).remove(KEY_PROVIDER).apply()
                 stop()
             }
 
             else -> {
                 // Android restarted the service, or started it as the
-                // always-on VPN. Only the kit's identifier was kept. A run
-                // started this way keeps trying, since nobody is watching.
-                val kitId = restartPreferences.getString(KEY_KIT_ID, null)
-                    ?: selectedKitIfUnlocked()
-                begin(kitId.orEmpty(), patient = true)
+                // always-on VPN. Retain a run's exact authority; with no saved
+                // run, resolve the encrypted UI choice after checking the vault.
+                // A run started this way keeps trying, since nobody is watching.
+                begin(restartPreferences.getString(KEY_KIT_ID, null), patient = true,
+                    providerJson = restartPreferences.getString(KEY_PROVIDER, null))
             }
         }
         return START_STICKY
@@ -146,7 +152,7 @@ class YumeVpnService : VpnService() {
         // onDestroy would then cancel this stop before it publishes the end,
         // leaving the app at Disconnecting with its connect button disabled.
         // stop() ends the service itself once the run has cleaned up.
-        restartPreferences.edit().remove(KEY_KIT_ID).apply()
+        restartPreferences.edit().remove(KEY_KIT_ID).remove(KEY_PROVIDER).apply()
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Android revoked the VPN.")
         stop()
     }
@@ -155,7 +161,7 @@ class YumeVpnService : VpnService() {
         // The run's cleanup is ordinary code in a finally block, so it still
         // happens after the scope is cancelled.
         runJob?.cancel()
-        client.get()?.stop()
+        client.get()?.endpoint?.stop()
         networks.unregister()
         scope.cancel()
         // Nothing of this service runs any more. A stop the cancelled scope
@@ -163,9 +169,6 @@ class YumeVpnService : VpnService() {
         YumeVpnRuntime.update { if (it.isActive) VpnConnectionState() else it }
         super.onDestroy()
     }
-
-    private fun selectedKitIfUnlocked(): String? =
-        if (AppVaultManager.ensureReady(this)) KitStore.get(this).selectedId.value else null
 
     private fun strings(): AppStrings {
         val language = if (AppVaultManager.ensureReady(this)) {
@@ -176,14 +179,14 @@ class YumeVpnService : VpnService() {
         return appStrings(this, language)
     }
 
-    private fun begin(kitId: String, patient: Boolean) {
+    private fun begin(kitId: String?, patient: Boolean, providerJson: String? = null) {
         // Android requires the notification within seconds of the start.
         startInForeground(strings().notificationConnecting)
         val previous = runJob
         val job = scope.launch(start = CoroutineStart.LAZY) {
             if (previous != null) awaitEnd(previous)
             val failure = try {
-                run(kitId, patient)
+                run(kitId, patient, providerJson)
                 null
             } catch (error: RunFailure) {
                 error
@@ -197,7 +200,7 @@ class YumeVpnService : VpnService() {
                 val lockedRestart = VpnRunPolicy.lockedRestart(
                     patient, failure.kind, AppVaultManager.ensureReady(this@YumeVpnService),
                 )
-                if (!lockedRestart) restartPreferences.edit().remove(KEY_KIT_ID).apply()
+                if (!lockedRestart) restartPreferences.edit().remove(KEY_KIT_ID).remove(KEY_PROVIDER).apply()
                 YumeVpnRuntime.update {
                     VpnConnectionState(
                         phase = VpnPhase.Error,
@@ -248,7 +251,9 @@ class YumeVpnService : VpnService() {
     private suspend fun awaitEnd(job: Job) {
         while (!job.isCompleted) {
             job.cancel()
-            client.get()?.stop()
+            // Capture the endpoint and its owner together. An older waiter must
+            // never stop an endpoint published by a later run.
+            client.get()?.takeIf { it.owner === job }?.endpoint?.stop()
             delay(STOP_POLL_MS)
         }
     }
@@ -263,12 +268,20 @@ class YumeVpnService : VpnService() {
      * stopped. Returns when cancelled and throws [RunFailure] when it cannot
      * go on.
      */
-    private suspend fun run(kitId: String, patient: Boolean) {
+    private suspend fun run(kitId: String?, patient: Boolean, providerJson: String?) {
         if (!AppVaultManager.ensureReady(this@YumeVpnService)) {
             throw RunFailure(VpnFailure.KitUnavailable, "the application's data is locked")
         }
-        val kitStore = KitStore.get(this)
-        val kit = kitStore.get(kitId)
+        val selection = try {
+            if (kitId == null) (application as YumeApplication).services.selectedForRestart()
+            else providerJson?.let { ServiceSelection.decode(it) }
+        } catch (_: Exception) {
+            throw RunFailure(VpnFailure.KitUnavailable, "the selected service could not be read")
+        }
+        if (selection != null && kitId != null && selection.id != kitId)
+            throw RunFailure(VpnFailure.KitUnavailable, "service binding mismatch")
+        val selectedId = kitId ?: selection?.id ?: KitStore.get(this).selectedId.value.orEmpty()
+        val kit = selection?.summary ?: KitStore.get(this).get(selectedId)
             ?: throw RunFailure(VpnFailure.KitUnavailable, "the selected kit is no longer stored")
         val settings = AppSettingsStore.get(this).settings.value
         notificationTitle = kit.name
@@ -285,10 +298,27 @@ class YumeVpnService : VpnService() {
         }
         YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Connecting to ${kit.name} (${kit.endpointLabel}).")
 
-        val session = kitStore.openSession(kit.id)
+        val owningJob = coroutineContext[Job]!!
+        val opened = selection?.let { (application as YumeApplication).services.open(it) }
+        val session = opened?.session ?: KitStore.get(this).openSession(kit.id)
             ?: throw RunFailure(VpnFailure.KitUnavailable, "the kit's files could not be read")
+        var authorityWatch: Job? = null
         var device: ParcelFileDescriptor? = null
         try {
+            // This sibling can cancel a blocking native start through the established
+            // stop path. Its captured job cannot stop a later manual/provider run.
+            authorityWatch = opened?.permit?.let { permit -> scope.launch {
+                while (owningJob.isActive && permit.valid()) delay(minOf(250L, maxOf(1L, permit.remainingMillis())))
+                if (owningJob.isActive) scope.launch {
+                    awaitEnd(owningJob)
+                    if (runJob === owningJob) {
+                        restartPreferences.edit().remove(KEY_KIT_ID).remove(KEY_PROVIDER).apply()
+                        YumeVpnRuntime.update { it.copy(phase = VpnPhase.Error, failure = VpnFailure.KitUnavailable,
+                            failureDetail = strings().message(MessageId.PROVIDER_SUSPENDED), status = null) }
+                        finishService()
+                    }
+                }
+            } }
             val dnsServers = usableDnsServers(settings)
             device = establish(kit, settings, dnsServers)
                 ?: throw RunFailure(VpnFailure.VpnPermission, "Android did not create the VPN interface")
@@ -297,9 +327,11 @@ class YumeVpnService : VpnService() {
             }
             serve(session, device, settings, patient, runId)
         } finally {
-            client.getAndSet(null)?.close()
+            val owned = client.get()
+            if (owned?.owner === owningJob && client.compareAndSet(owned, null)) owned.endpoint.close()
             runCatching { device?.close() }
-            session.close()
+            authorityWatch?.cancel()
+            if (opened != null) opened.close() else session.close()
         }
     }
 
@@ -348,7 +380,8 @@ class YumeVpnService : VpnService() {
             } catch (error: YumeException) {
                 throw RunFailure(VpnFailure.Configuration, describe(error))
             }
-            client.set(endpoint)
+            val owned = OwnedEndpoint(coroutineContext[Job]!!, endpoint)
+            client.set(owned)
             try {
                 try {
                     endpoint.setDevice(
@@ -406,7 +439,7 @@ class YumeVpnService : VpnService() {
                     carriedTx += it.payloadBytesSent
                 }
             } finally {
-                client.compareAndSet(endpoint, null)
+                client.compareAndSet(owned, null)
                 endpoint.close()
             }
         }
@@ -739,6 +772,8 @@ class YumeVpnService : VpnService() {
         private const val ACTION_CONNECT = "com.fixcraft.yume.action.CONNECT"
         private const val ACTION_DISCONNECT = "com.fixcraft.yume.action.DISCONNECT"
         private const val EXTRA_KIT_ID = "extra_kit_id"
+        private const val EXTRA_PROVIDER = "extra_provider_binding"
+        private const val KEY_PROVIDER = "provider_binding"
         private const val RESTART_PREFS_NAME = "yume_vpn_restart"
         private const val KEY_KIT_ID = "kit_id"
         private const val NOTIFICATION_ID = 1107
@@ -774,13 +809,19 @@ class YumeVpnService : VpnService() {
             context.startForegroundService(intent)
         }
 
-        /** After a locked restart: the kit kept for the restart, or the selected one. */
+        internal fun startProviderConnect(context: Context, selection: ServiceSelection) {
+            val intent = Intent(context, YumeVpnService::class.java).apply {
+                action = ACTION_CONNECT
+                putExtra(EXTRA_KIT_ID, selection.id)
+                putExtra(EXTRA_PROVIDER, selection.encode())
+            }
+            context.startForegroundService(intent)
+        }
+
+        /** Resume through the same service-owned authority resolution after unlock. */
         fun reconnectAfterUnlock(context: Context) {
-            val prefs = context.applicationContext.getSharedPreferences(RESTART_PREFS_NAME, Context.MODE_PRIVATE)
             context.getSystemService(NotificationManager::class.java).cancel(UNLOCK_NOTIFICATION_ID)
-            val kitId = prefs.getString(KEY_KIT_ID, null)?.takeIf { it.isNotBlank() }
-                ?: KitStore.get(context).selectedId.value
-            kitId?.let { startConnect(context, it) }
+            context.startForegroundService(Intent(context, YumeVpnService::class.java))
         }
 
         fun startDisconnect(context: Context) {

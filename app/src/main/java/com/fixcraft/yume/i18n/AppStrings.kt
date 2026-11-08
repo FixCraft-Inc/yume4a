@@ -407,6 +407,10 @@ class AppStrings private constructor(
         ThemeColorMode.System -> themeSystemDescription
     }
 
+    /** Country is declared by the operator; this only localizes its label. */
+    fun providerCountry(country: String): String = Locale.Builder().setRegion(country).build()
+        .getDisplayCountry(languageLocale(language))
+
     fun languageName(appLanguage: AppLanguage): String = when (appLanguage) {
         AppLanguage.SystemDefault -> systemDefaultLanguage
         AppLanguage.Maintained.English -> "English"

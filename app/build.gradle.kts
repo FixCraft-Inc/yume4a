@@ -1,7 +1,13 @@
 import java.io.File
 import java.lang.ProcessBuilder
 import java.time.Instant
+import java.net.URI
 import java.util.Properties
+import java.util.zip.ZipFile
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import java.security.MessageDigest
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 
 plugins {
     alias(libs.plugins.android.application)
@@ -44,6 +50,30 @@ val configuredAbis = (project.findProperty("yumeAbi") as? String)
     ?: listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
 require(configuredAbis.all { it in setOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64") }) {
     "Unsupported Android ABI"
+}
+
+// A consuming build supplies its public registration explicitly. Empty means
+// browser authorization is unavailable; manual and anonymous providers still work.
+val providerClientId = providers.gradleProperty("yumeProviderClientId").orElse("").get()
+val providerCallback = providers.gradleProperty("yumeProviderCallback").orElse("").get()
+require(providerClientId.isEmpty() == providerCallback.isEmpty()) { "Incomplete provider registration" }
+require(providerClientId.isEmpty() || Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,63}").matches(providerClientId)) {
+    "Invalid provider public client identifier"
+}
+val callbackUri = providerCallback.takeIf { it.isNotEmpty() }?.let(URI::create)
+require(callbackUri == null || (callbackUri.scheme == "https" && callbackUri.host != null &&
+    callbackUri.rawAuthority == callbackUri.host && callbackUri.rawPath == "/yume/oauth/callback" &&
+    callbackUri.rawQuery == null && callbackUri.rawFragment == null &&
+    Regex("[a-z0-9.-]+").matches(callbackUri.host))) { "Invalid provider callback" }
+
+// Optional distribution suggestions prefill the reviewed Add service form.
+// They never enroll or contact a provider without the user's consent.
+val suggestedProvider = providers.gradleProperty("yumeSuggestedProvider").orElse("").get()
+val suggestedIssuer = providers.gradleProperty("yumeSuggestedIssuer").orElse("").get()
+val canonicalProviderOrigin = Regex("https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
+require(suggestedProvider.isEmpty() || canonicalProviderOrigin.matches(suggestedProvider)) { "Invalid suggested provider origin" }
+require(suggestedIssuer.isEmpty() || (suggestedProvider.isNotEmpty() && callbackUri != null && canonicalProviderOrigin.matches(suggestedIssuer))) {
+    "A suggested issuer requires a provider and registered callback"
 }
 
 val basefwxEngineVersion = readTrimmedFile(sharedYumeRoot.resolve("basefwx/VERSION"), "Unknown")
@@ -185,10 +215,19 @@ android {
         buildConfigField("String", "BASEFWX_ENGINE_VERSION", "\"$basefwxEngineVersion\"")
         // ADB automation is compiled only into the dedicated `agent` build
         // type below. Production and ordinary debug APKs fail closed.
+        buildConfigField("String", "PROVIDER_CLIENT_ID", "\"$providerClientId\"")
+        buildConfigField("String", "PROVIDER_CALLBACK", "\"$providerCallback\"")
+        buildConfigField("String", "SUGGESTED_PROVIDER", "\"$suggestedProvider\"")
+        buildConfigField("String", "SUGGESTED_ISSUER", "\"$suggestedIssuer\"")
+        manifestPlaceholders["providerCallbackEnabled"] = (callbackUri != null).toString()
+        manifestPlaceholders["providerCallbackHost"] = callbackUri?.host ?: "unregistered.invalid"
         buildConfigField("boolean", "ENABLE_ADB_TEST_CONTROL", "false")
         buildConfigField("boolean", "ML_KIT_TRANSLATION", mlKitTranslation.toString())
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // These real-native cases require ephemeral host-provisioned kits.
+        // Run them explicitly after the fixture handoff, never as a stub pass.
+        testInstrumentationRunnerArguments["notAnnotation"] = "com.fixcraft.yume.provider.RequiresNativeFixtures"
     }
 
     flavorDimensions += "distribution"
@@ -241,6 +280,8 @@ android {
 
     packaging {
         resources {
+            // Complete dependency notices are packaged under assets/notices by
+            // generate<Variant>DependencyNotices, including resources excluded here.
             excludes += listOf(
                 "META-INF/*.kotlin_module",
                 "META-INF/AL2.0",
@@ -493,6 +534,8 @@ tasks.matching { it.name == "mergeDexRelease" || it.name == "mergeDexDebug" }.co
 }
 
 dependencies {
+    implementation(project(":provider-library"))
+    androidTestImplementation(testFixtures(project(":provider-library")))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
@@ -517,4 +560,141 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+}
+
+// The catalog owns dependency notice selection. Unknown or changed artifacts
+// fail the build until their license texts and notices have been reviewed.
+abstract class GenerateDependencyNotices : DefaultTask() {
+    @get:InputFile
+    abstract val catalogFile: RegularFileProperty
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val sourceFiles: ConfigurableFileCollection
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val runtimeFiles: ConfigurableFileCollection
+    @get:Input
+    abstract val coordinates: MapProperty<String, String>
+    @get:Input
+    abstract val nativeIdentity: MapProperty<String, String>
+    @get:Input
+    abstract val providerIdentity: MapProperty<String, String>
+    @get:Internal
+    abstract val checkoutDirectory: DirectoryProperty
+    @get:OutputDirectory
+    abstract val outputDirectory: DirectoryProperty
+    @get:javax.inject.Inject
+    abstract val fileOperations: FileSystemOperations
+
+    @TaskAction
+    fun generate() {
+        fun objectValue(value: Any?): Map<String, Any?> {
+            val map = value as? Map<*, *> ?: error("Expected a notice catalog object")
+            return map.entries.associate { (key, entry) ->
+                (key as? String ?: error("Expected a notice catalog key")) to entry
+            }
+        }
+        fun strings(value: Any?): List<String> =
+            (value as? List<*>)?.map { it as? String ?: error("Expected a notice name") }
+                ?: error("Expected a notice list")
+        fun hash(file: File): String = MessageDigest.getInstance("SHA-256")
+            .digest(file.readBytes()).joinToString("") { "%02x".format(it) }
+        val catalog = objectValue(JsonSlurper().parse(catalogFile.get().asFile))
+        check(catalog["schema"] == 1) { "Unsupported notice catalog schema" }
+        check(catalog["ndk"] == nativeIdentity.get()["ndk"]) { "NDK notice review required" }
+        val root = checkoutDirectory.get().asFile
+        objectValue(catalog["guards"]).forEach { (path, expected) ->
+            check(hash(root.resolve(path)) == expected) { "Native notice input changed: $path" }
+        }
+        val sources = objectValue(catalog["sources"])
+        val selected = strings(catalog["common"]).toMutableSet()
+        val known = objectValue(catalog["artifacts"])
+        val provider = providerIdentity.get()
+        val artifacts = runtimeFiles.files.sortedBy { it.name }.map { file ->
+            val coordinate = coordinates.get().getValue(file.name)
+            val shared = coordinate == "com.fixcraft.yume:provider-library:${provider.getValue("version")}"
+            val entry = if (shared) {
+                ZipFile(file).use { archive ->
+                    val item = archive.getEntry("assets/provider-library/provenance.json")
+                        ?: error("Shared provider source provenance missing")
+                    val provenance = objectValue(JsonSlurper().parse(archive.getInputStream(item)))
+                    check(provenance["version"] == provider["version"] &&
+                        provenance["source_sha256"] == provider["source_sha256"] &&
+                        provenance["component"] == "com.fixcraft.yume:provider-library") {
+                        "Shared provider source provenance differs"
+                    }
+                }
+                mapOf("sha256" to hash(file), "notices" to listOf("COPYRIGHT", "LICENSE"))
+            } else objectValue(known[coordinate] ?: error("Dependency notice review required: $coordinate"))
+            check(hash(file) == entry["sha256"]) { "Dependency notice review required: $coordinate" }
+            val notices = strings(entry["notices"])
+            check(notices.isNotEmpty()) { "Missing dependency notices: $coordinate" }
+            selected.addAll(notices)
+            mapOf("coordinate" to coordinate, "sha256" to entry["sha256"], "notices" to notices)
+        }
+        check(artifacts.isNotEmpty()) { "No runtime artifacts for dependency notices" }
+        val files = selected.sorted().associateWith { name ->
+            check(Regex("[A-Za-z0-9_.-]+").matches(name)) { "Invalid notice asset name" }
+            val source = objectValue(sources.getValue(name))
+            check(hash(root.resolve(source["path"] as String)) == source["sha256"]) {
+                "Notice source changed: $name"
+            }
+            mapOf("sha256" to source["sha256"], "origin" to source["origin"])
+        }
+        val manifest = temporaryDir.resolve("manifest.json")
+        manifest.writeText(JsonOutput.prettyPrint(JsonOutput.toJson(mapOf(
+            "schema" to 1, "nativeIdentity" to nativeIdentity.get(), "sourceComponents" to catalog["sourceComponents"],
+            "providerIdentity" to provider, "artifacts" to artifacts, "files" to files,
+        ))) + "\n")
+        fileOperations.sync {
+            into(outputDirectory)
+            into("notices") {
+                from(manifest)
+                selected.forEach { name ->
+                    val source = objectValue(sources.getValue(name))
+                    from(root.resolve(source["path"] as String)) { rename { name } }
+                }
+            }
+        }
+    }
+}
+
+val noticeCatalog = rootProject.file("notices/catalog.json")
+androidComponents.onVariants { variant ->
+    val runtime = configurations.named("${variant.name}RuntimeClasspath")
+    // Select only external artifacts here. AGP exposes several secondary
+    // artifacts for source projects, so bind the library's own AAR explicitly.
+    val resolved = providers.provider { runtime.get().incoming.artifactView {
+        componentFilter { it is ModuleComponentIdentifier }
+    }.artifacts.artifacts }
+    val providerVariant = if (variant.buildType == "debug") "debug" else "release"
+    val providerProject = project(":provider-library")
+    val providerAar = providerProject.layout.buildDirectory.file("outputs/aar/provider-library-$providerVariant.aar")
+    val notices = tasks.register<GenerateDependencyNotices>("generate${variant.name.replaceFirstChar(Char::uppercase)}DependencyNotices") {
+        dependsOn(":provider-library:bundle${providerVariant.replaceFirstChar(Char::uppercase)}Aar")
+        catalogFile.set(noticeCatalog)
+        checkoutDirectory.set(rootProject.layout.projectDirectory)
+        sourceFiles.from(providers.provider {
+            val catalog = JsonSlurper().parse(noticeCatalog) as Map<*, *>
+            val sources = catalog["sources"] as Map<*, *>
+            val guards = catalog["guards"] as Map<*, *>
+            sources.values.map { rootProject.file((it as Map<*, *>)["path"] as String) } +
+                guards.keys.map { rootProject.file(it as String) }
+        })
+        runtimeFiles.from(resolved.map { entries -> entries.map { it.file } }, providerAar)
+        coordinates.set(resolved.map { entries ->
+            val pairs = (entries.map {
+                val id = it.id.componentIdentifier as ModuleComponentIdentifier
+                it.file.name to "${id.group}:${id.module}:${id.version}"
+            } + (providerAar.get().asFile.name to "com.fixcraft.yume:provider-library:${providers.gradleProperty("yumeProviderVersion").get()}")).distinct()
+            check(pairs.map { it.first }.distinct().size == pairs.size) { "Ambiguous notice artifact name" }
+            pairs.toMap()
+        })
+        nativeIdentity.set(mapOf("commit" to sharedYumeHead, "dirty" to sharedYumeDirty.toString(),
+            "verified" to (!unverifiedYumeSource).toString(), "ndk" to pinnedNdkVersion))
+        providerIdentity.set(mapOf("version" to providers.gradleProperty("yumeProviderVersion").get(),
+            "source_sha256" to providers.gradleProperty("yumeProviderSourceSha256").get()))
+        outputDirectory.set(layout.buildDirectory.dir("generated/dependency-notices/${variant.name}"))
+    }
+    variant.sources.assets?.addGeneratedSourceDirectory(notices, GenerateDependencyNotices::outputDirectory)
 }

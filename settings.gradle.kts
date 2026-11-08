@@ -24,4 +24,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "YumeVPN"
 include(":app")
- 
+
+include(":provider-library")

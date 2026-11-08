@@ -1,0 +1,20 @@
+Yume for Android
+Copyright (C) 2026 FixCraft Inc.
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+FixCraft Inc.'s original code in this repository is free software: you can
+redistribute it and/or modify it under the terms of the GNU Affero General
+Public License as published by the Free Software Foundation, either version 3
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See LICENSE for the complete license text.
+
+This grant also covers FixCraft Inc.'s original code in earlier revisions of
+this repository. It does not withdraw any previously granted permissions.
+
+Third-party code and dependencies retain their respective copyright and
+license notices, including those in earlier revisions. THIRD_PARTY_LICENSES.md
+describes the current dependency notices and distribution requirements.

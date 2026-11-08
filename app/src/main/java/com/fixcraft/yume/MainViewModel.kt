@@ -1,5 +1,6 @@
 package com.fixcraft.yume
 
+import com.fixcraft.yume.consumer.summary
 import android.app.Application
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
@@ -55,8 +56,10 @@ data class MainUiState(
     val noticeMessage: String? = null,
     val busyState: BusyUiState? = null,
     val tuning: TuningUiState = TuningUiState(),
+    val services: com.fixcraft.yume.consumer.ServiceUiState = com.fixcraft.yume.consumer.ServiceUiState(),
 ) {
-    val selectedKit: KitSummary? = kits.firstOrNull { it.id == selectedKitId }
+    val selectedKit: KitSummary? = if (!services.loaded) null else
+        if (services.manual) kits.firstOrNull { it.id == selectedKitId } else services.selection?.summary
 }
 
 data class TuningUiState(
@@ -69,6 +72,7 @@ data class TuningUiState(
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
+    internal val services = (application as YumeApplication).services
     private val kitStore = KitStore.get(application)
     private val appSettingsStore = AppSettingsStore.get(application)
     private val _noticeMessage = MutableStateFlow<String?>(null)
@@ -81,6 +85,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var tuningLoadJob: Job? = null
 
     init {
+        services.reload()
         refreshDownloadedLanguages()
         viewModelScope.launch {
             kitStore.selectedId.collect { selectedId -> refreshTuning(selectedId) }
@@ -108,7 +113,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    val uiState: StateFlow<MainUiState> = combine(
+    private val localUiState: StateFlow<MainUiState> = combine(
         storedState,
         _appDataPasswordEnabled,
         _downloadedLanguageTags,
@@ -126,6 +131,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         started = SharingStarted.WhileSubscribed(5_000),
         initialValue = MainUiState(),
     )
+
+    val uiState = combine(localUiState, services.state) { local, service -> local.copy(services = service) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MainUiState())
 
     private fun strings(language: AppLanguage = appSettingsStore.settings.value.language) =
         appStrings(getApplication(), language)
@@ -146,7 +154,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Kits.
 
     fun selectKit(kitId: String) {
-        runCatching { kitStore.select(kitId) }
+        runCatching { kitStore.select(kitId); services.selectManual() }
             .onFailure { _noticeMessage.value = strings().kitRefusedStorage }
     }
 
@@ -266,7 +274,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             KitImport.Refused(com.fixcraft.yume.data.KitRefusal.Storage, throwable.message.orEmpty())
         }
         if (result is KitImport.Imported) {
-            runCatching { kitStore.select(result.kit.id) }
+            runCatching { kitStore.select(result.kit.id); services.selectManual() }
             YumeVpnRuntime.appendLog(VpnLogLevel.Info, "Added the kit ${result.kit.name} (${result.kit.endpointLabel}).")
             _noticeMessage.value = strings.kitAdded(result.kit.name)
         }
@@ -301,9 +309,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    data class ConnectRequest(val id: String, val service: com.fixcraft.yume.consumer.ServiceSelection?)
+    private var consentTarget: ConnectRequest? = null
+
+    fun captureConnectTarget() {
+        consentTarget = uiState.value.selectedKit?.let { ConnectRequest(it.id, uiState.value.services.selection) }
+    }
+
     fun connectSelectedKit() {
-        val kit = uiState.value.selectedKit ?: return
-        YumeVpnService.startConnect(getApplication(), kit.id)
+        val requested = consentTarget ?: return
+        consentTarget = null
+        val current = uiState.value
+        if (requested.id != current.selectedKit?.id || requested.service != current.services.selection) {
+            reportUiNotice(strings().message(com.fixcraft.yume.i18n.MessageId.PROVIDER_ERROR_BINDING))
+            return
+        }
+        if (requested.service != null) YumeVpnService.startProviderConnect(getApplication(), requested.service)
+        else YumeVpnService.startConnect(getApplication(), requested.id)
     }
 
     fun disconnect() {

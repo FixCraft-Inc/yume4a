@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fixcraft.yume.data.AppLanguage
 import com.fixcraft.yume.data.AppVaultManager
@@ -116,7 +117,32 @@ class MainActivity : ComponentActivity() {
             ) {
                 YumeApp(
                     uiState = uiState,
-                    onConnect = ::requestNotificationPermissionThenConnect,
+                    serviceActions = com.fixcraft.yume.ui.kits.ServiceActions(
+                        add = viewModel.services::add,
+                        authorize = { provider -> lifecycleScope.launch {
+                            try {
+                                val browser = withContext(Dispatchers.IO) { viewModel.services.authorize(provider) }
+                                startActivity(browser)
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                            catch (refused: com.fixcraft.yume.provider.ProviderCodec.Refusal) {
+                                viewModel.reportUiNotice(com.fixcraft.yume.ui.kits.providerFailure(
+                                    appStrings(this@MainActivity, uiState.appSettings.language), refused.code))
+                            } catch (error: Exception) {
+                                viewModel.services.browserLaunchFailed(provider)
+                                if (BuildConfig.DEBUG) android.util.Log.w("Yume.Provider", "Browser launch refused: " + error.javaClass.simpleName)
+                                viewModel.reportUiNotice(appStrings(this@MainActivity, uiState.appSettings.language)
+                                    .message(com.fixcraft.yume.i18n.MessageId.PROVIDER_ERROR_GENERIC))
+                            }
+                        } },
+                        catalog = viewModel.services::catalog,
+                        install = viewModel.services::install,
+                        select = viewModel.services::select,
+                        cancel = viewModel.services::cancel,
+                        remove = viewModel.services::remove,
+                        code = viewModel.services::submitCode,
+                        reload = viewModel.services::reload,
+                    ),
+                    onConnect = { viewModel.captureConnectTarget(); requestNotificationPermissionThenConnect() },
                     onDisconnect = viewModel::disconnect,
                     onRecoverKitIndex = viewModel::recoverKitIndex,
                     onSelectKit = viewModel::selectKit,

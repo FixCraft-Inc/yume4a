@@ -108,6 +108,7 @@ data class LanguagePreparationUiState(
 @Composable
 fun YumeApp(
     uiState: MainUiState,
+    serviceActions: com.fixcraft.yume.ui.kits.ServiceActions,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onRecoverKitIndex: () -> Unit,
@@ -244,6 +245,7 @@ fun YumeApp(
                     composable(AppRoute.Connect) {
                         KitsScreen(
                             uiState = uiState,
+                            serviceActions = serviceActions,
                             onRecoverKitIndex = onRecoverKitIndex,
                             onSelectKit = onSelectKit,
                             onRenameKit = onRenameKit,

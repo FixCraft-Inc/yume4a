@@ -58,6 +58,7 @@ internal object YumeNative {
     @JvmStatic external fun nativeCompatibility(): Array<String?>?
     @JvmStatic external fun nativeStatusName(code: Int): String
     @JvmStatic external fun nativeCheckConfig(json: ByteArray, role: IntArray, result: Array<String?>): Int
+    @JvmStatic external fun nativeValidateClientCredentials(baseDir: String, json: ByteArray, fingerprint: ByteArray, result: Array<String?>): Int
     @JvmStatic external fun nativeOpenKit(sealed: ByteArray, code: ByteArray, sink: KitSink, result: Array<String?>): Int
     @JvmStatic external fun nativeCreate(
         baseDir: String,

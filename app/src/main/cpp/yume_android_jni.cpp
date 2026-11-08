@@ -300,6 +300,45 @@ jint native_check_config(JNIEnv* env, jclass, jbyteArray json, jintArray role,
     return YUME_STATUS_INTERNAL_ERROR;
 }
 
+jint native_validate_client_credentials(JNIEnv* env, jclass, jstring base_dir,
+                                        jbyteArray json, jbyteArray fingerprint,
+                                        jobjectArray result) try {
+    if (fingerprint == nullptr || env->GetArrayLength(fingerprint) != 32)
+        return YUME_STATUS_INVALID_ARGUMENT;
+    const jbyte empty[32]{};
+    env->SetByteArrayRegion(fingerprint, 0, 32, empty);
+    if (env->ExceptionCheck()) return YUME_STATUS_INTERNAL_ERROR;
+    std::string directory;
+    std::vector<std::uint8_t> bytes;
+    if (!copy_string(env, base_dir, directory) || directory.empty() ||
+        !copy_bytes(env, json, kMaxConfigBytes, bytes))
+        return YUME_STATUS_INVALID_ARGUMENT;
+    RuntimePtr runtime(make_runtime(directory.c_str()));
+    if (!runtime) return YUME_STATUS_INTERNAL_ERROR;
+    yume_config* raw_config = nullptr;
+    yume_status status = yume_config_parse_json(runtime.get(), bytes.data(),
+                                                bytes.size(), &raw_config);
+    ConfigPtr config(raw_config);
+    if (status != YUME_STATUS_OK) {
+        report(env, result, runtime.get());
+        return status;
+    }
+    std::uint8_t identity[32]{};
+    status = yume_config_validate_client_credentials(config.get(), identity,
+                                                     sizeof(identity));
+    if (status != YUME_STATUS_OK) {
+        report(env, result, config.get());
+        return status;
+    }
+    env->SetByteArrayRegion(fingerprint, 0, 32,
+                            reinterpret_cast<const jbyte*>(identity));
+    return env->ExceptionCheck() ? YUME_STATUS_INTERNAL_ERROR : YUME_STATUS_OK;
+} catch (const std::bad_alloc&) {
+    return YUME_STATUS_RESOURCE_EXHAUSTED;
+} catch (...) {
+    return YUME_STATUS_INTERNAL_ERROR;
+}
+
 // Opens a sealed kit and hands each file to sink. The code is wiped here.
 // The file bytes become Java arrays that the caller wipes after storing them.
 jint native_open_kit(JNIEnv* env, jclass, jbyteArray sealed, jbyteArray code,
@@ -621,6 +660,9 @@ const JNINativeMethod kMethods[] = {
      reinterpret_cast<void*>(native_status_name)},
     {"nativeCheckConfig", "([B[I[Ljava/lang/String;)I",
      reinterpret_cast<void*>(native_check_config)},
+    {"nativeValidateClientCredentials",
+     "(Ljava/lang/String;[B[B[Ljava/lang/String;)I",
+     reinterpret_cast<void*>(native_validate_client_credentials)},
     {"nativeOpenKit",
      "([B[BLcom/fixcraft/yume/core/KitSink;[Ljava/lang/String;)I",
      reinterpret_cast<void*>(native_open_kit)},

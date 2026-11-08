@@ -68,6 +68,7 @@ private class ChosenFile(val name: String, val bytes: ByteArray)
 @Composable
 fun KitsScreen(
     uiState: MainUiState,
+    serviceActions: ServiceActions,
     onRecoverKitIndex: () -> Unit,
     onSelectKit: (String) -> Unit,
     onRenameKit: (String, String) -> Unit,
@@ -96,6 +97,7 @@ fun KitsScreen(
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        item { ProviderPanel(uiState.services, serviceActions, uiState.appSettings.advancedMode) }
         if (uiState.kitIndexCorrupt) {
             item {
                 SectionCard(title = strings.kitIndexCorrupt, detail = strings.recoverKitIndexDetail) {
@@ -106,7 +108,7 @@ fun KitsScreen(
             }
         }
         item {
-            SectionCard(title = strings.kitsTitle, info = strings.kitsSubtitle) {
+            SectionCard(title = strings.message(com.fixcraft.yume.i18n.MessageId.PROVIDER_MANUAL), info = strings.kitsSubtitle) {
                 Button(
                     onClick = { adding = true },
                     enabled = !uiState.kitIndexCorrupt,
@@ -130,7 +132,7 @@ fun KitsScreen(
         items(items = uiState.kits, key = { it.id }) { kit ->
             KitRow(
                 kit = kit,
-                selected = kit.id == uiState.selectedKitId,
+                selected = uiState.services.manual && kit.id == uiState.selectedKitId,
                 live = kit.id == liveKitId,
                 onSelect = { onSelectKit(kit.id) },
                 onRename = { renaming = kit },

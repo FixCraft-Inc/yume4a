@@ -251,28 +251,7 @@ class KitStore private constructor(context: Context) {
         } finally {
             bundle.fill(0)
         }
-        val directory = File(sessionRoot(appContext), randomName())
-        try {
-            makePrivateDirectory(directory)
-            var config: ByteArray? = null
-            for (file in files) {
-                if (file.path == KitBundle.CONFIG_PATH) {
-                    config = file.bytes.copyOf()
-                    continue
-                }
-                val target = File(directory, file.path)
-                target.parentFile?.takeIf { it != directory }?.let(::makePrivateDirectory)
-                FileOutputStream(target).use { it.write(file.bytes) }
-                Os.chmod(target.absolutePath, OsConstants.S_IRUSR or OsConstants.S_IWUSR)
-            }
-            val document = config ?: throw IllegalStateException("the kit has no yume.json")
-            return KitSession(directory, document, KitConfig.describe(document))
-        } catch (error: Exception) {
-            wipeDirectory(directory)
-            return null
-        } finally {
-            files.forEach { it.bytes.fill(0) }
-        }
+        return materializeSession(appContext, files)
     }
 
     /** Returns a copy of the stored yume.json for settings inspection. */
@@ -417,6 +396,39 @@ class KitStore private constructor(context: Context) {
                 throw IllegalStateException("cannot create the session directory")
             }
             Os.chmod(directory.absolutePath, OsConstants.S_IRWXU)
+        }
+
+        /** One transient session owner shared by independent manual/provider stores. */
+        internal fun openBundleSession(context: Context, bundle: ByteArray): KitSession =
+            materializeSession(context, KitBundle.decode(bundle))
+                ?: throw IllegalStateException("the session could not be materialized")
+
+        private fun materializeSession(context: Context, files: List<com.fixcraft.yume.core.KitFile>): KitSession? {
+            var directory: File? = null
+            var config: ByteArray? = null
+            try {
+                val created = File(sessionRoot(context), randomName())
+                directory = created
+                makePrivateDirectory(created)
+                for (file in files) {
+                    if (file.path == KitBundle.CONFIG_PATH) {
+                        config = file.bytes.copyOf()
+                        continue
+                    }
+                    val target = File(created, file.path)
+                    target.parentFile?.takeIf { it != created }?.let(::makePrivateDirectory)
+                    FileOutputStream(target).use { it.write(file.bytes) }
+                    Os.chmod(target.absolutePath, OsConstants.S_IRUSR or OsConstants.S_IWUSR)
+                }
+                val document = config ?: throw IllegalStateException("the kit has no yume.json")
+                return KitSession(created, document, KitConfig.describe(document)).also { config = null }
+            } catch (error: Exception) {
+                directory?.let(::wipeDirectory)
+                return null
+            } finally {
+                config?.fill(0)
+                files.forEach { it.bytes.fill(0) }
+            }
         }
 
         /** Removes what an earlier run left, such as after the process was killed. */

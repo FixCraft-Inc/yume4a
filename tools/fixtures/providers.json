@@ -1,0 +1,186 @@
+{
+  "now": 1800000000,
+  "registration": {
+    "client_id": "synthetic-public-client",
+    "redirect_uri": "https://client.example/oauth/callback"
+  },
+  "operators": [
+    {
+      "descriptor": {
+        "v": 1,
+        "provider": "https://alpha.example",
+        "label": "Synthetic alpha",
+        "expires_at": 1800003600,
+        "required": [
+          "sealed-kit-1",
+          "device-grants-1",
+          "browser-pkce-s256",
+          "device-bound-enrollment-1",
+          "server-location-1"
+        ],
+        "roles": [
+          "vpn"
+        ],
+        "auth": {
+          "issuer": "https://login.alpha.example",
+          "authorization_endpoint": "https://login.alpha.example/authorize",
+          "token_endpoint": "https://login.alpha.example/token",
+          "revocation_endpoint": "https://login.alpha.example/revoke",
+          "client_id": "synthetic-public-client",
+          "redirect_uri": "https://client.example/oauth/callback"
+        }
+      },
+      "catalog": {
+        "v": 1,
+        "provider": "https://alpha.example",
+        "device_id": "alpha-device-1",
+        "audience": "https://alpha.example/provider/v1",
+        "issued_at": 1800000000,
+        "expires_at": 1800000300,
+        "services": [
+          {
+            "id": "access",
+            "label": "Synthetic access",
+            "role": "vpn",
+            "required": [
+              "sealed-kit-1"
+            ],
+            "servers": [
+              {
+                "id": "alpha-edge",
+                "label": "Synthetic edge",
+                "host": "edge.alpha.example",
+                "port": 443,
+                "server_key_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "country": "US"
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "v": 1,
+        "provider": "https://alpha.example",
+        "device_id": "alpha-device-1",
+        "audience": "https://alpha.example/provider/v1",
+        "request_id": "alpha-request-1",
+        "service_id": "access",
+        "server_id": "alpha-edge",
+        "role": "vpn",
+        "previous_grant": null
+      },
+      "grant": {
+        "v": 1,
+        "provider": "https://alpha.example",
+        "device_id": "alpha-device-1",
+        "audience": "https://alpha.example/provider/v1",
+        "request_id": "alpha-request-1",
+        "service_id": "access",
+        "server_id": "alpha-edge",
+        "role": "vpn",
+        "previous_grant": null,
+        "grant_id": "alpha-grant-1",
+        "generation": 1,
+        "issued_at": 1800000000,
+        "refresh_after": 1800000120,
+        "expires_at": 1800000600,
+        "client_identity": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kit_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "kit_size": 1068
+      }
+    },
+    {
+      "descriptor": {
+        "v": 1,
+        "provider": "https://beta.example",
+        "label": "Synthetic beta",
+        "expires_at": 1800003600,
+        "required": [
+          "sealed-kit-1",
+          "device-grants-1",
+          "anonymous-device-1",
+          "server-location-1"
+        ],
+        "roles": [
+          "vpn"
+        ],
+        "auth": null
+      },
+      "catalog": {
+        "v": 1,
+        "provider": "https://beta.example",
+        "device_id": "beta-device-1",
+        "audience": "https://beta.example/provider/v1",
+        "issued_at": 1800000000,
+        "expires_at": 1800000300,
+        "services": [
+          {
+            "id": "access",
+            "label": "Synthetic access",
+            "role": "vpn",
+            "required": [
+              "sealed-kit-1"
+            ],
+            "servers": [
+              {
+                "id": "beta-edge",
+                "label": "Synthetic edge",
+                "host": "edge.beta.example",
+                "port": 443,
+                "server_key_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "country": null
+              }
+            ]
+          }
+        ]
+      },
+      "request": {
+        "v": 1,
+        "provider": "https://beta.example",
+        "device_id": "beta-device-1",
+        "audience": "https://beta.example/provider/v1",
+        "request_id": "beta-request-1",
+        "service_id": "access",
+        "server_id": "beta-edge",
+        "role": "vpn",
+        "previous_grant": null
+      },
+      "grant": {
+        "v": 1,
+        "provider": "https://beta.example",
+        "device_id": "beta-device-1",
+        "audience": "https://beta.example/provider/v1",
+        "request_id": "beta-request-1",
+        "service_id": "access",
+        "server_id": "beta-edge",
+        "role": "vpn",
+        "previous_grant": null,
+        "grant_id": "beta-grant-1",
+        "generation": 1,
+        "issued_at": 1800000000,
+        "refresh_after": 1800000120,
+        "expires_at": 1800000600,
+        "client_identity": "2222222222222222222222222222222222222222222222222222222222222222",
+        "kit_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+        "kit_size": 1068
+      }
+    }
+  ],
+  "tokens": {
+    "token_type": "DPoP",
+    "access_token": "SYNTHETIC-ACCOUNT-ACCESS-ONE",
+    "expires_in": 60,
+    "refresh_token": "SYNTHETIC-ACCOUNT-REFRESH-ONE",
+    "refresh_expires_in": 86400,
+    "scope": "provider.enroll"
+  },
+  "manual": {
+    "sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "size": 1068,
+    "host": "offline.example",
+    "port": 443,
+    "server_key_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "client_identity": "7777777777777777777777777777777777777777777777777777777777777777"
+  },
+  "anonymous_device_token": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDA"
+}

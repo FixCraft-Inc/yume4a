@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <queries>
+        <!-- Lets AppAuth's browser selector see Custom Tabs support. -->
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
+    </queries>
+    <application>
+        <!-- AppAuth constructs requests and selects browsers. Its stateful
+             activities persist PKCE material; each consumer owns callback delivery. -->
+        <activity android:name="net.openid.appauth.AuthorizationManagementActivity"
+            tools:node="remove" />
+        <activity android:name="net.openid.appauth.RedirectUriReceiverActivity"
+            tools:node="remove" />
+    </application>
+</manifest>
