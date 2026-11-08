@@ -17,11 +17,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -48,8 +51,10 @@ import com.fixcraft.yume.MainUiState
 import com.fixcraft.yume.R
 import com.fixcraft.yume.data.KitImport
 import com.fixcraft.yume.data.KitSummary
+import com.fixcraft.yume.i18n.MessageId
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.SectionCard
+import com.fixcraft.yume.ui.SectionHeader
 import com.fixcraft.yume.ui.StatusPill
 import com.fixcraft.yume.ui.appDialogProperties
 import com.fixcraft.yume.ui.appDialogWidth
@@ -69,6 +74,7 @@ private class ChosenFile(val name: String, val bytes: ByteArray)
 fun KitsScreen(
     uiState: MainUiState,
     serviceActions: ServiceActions,
+    onConnect: () -> Unit,
     onRecoverKitIndex: () -> Unit,
     onSelectKit: (String) -> Unit,
     onRenameKit: (String, String) -> Unit,
@@ -87,7 +93,7 @@ fun KitsScreen(
         AlertDialog(
             onDismissRequest = { recovering = false },
             title = { Text(strings.recoverKitIndex) },
-            text = { Text(strings.recoverKitIndexDetail) },
+            text = { Text(strings.recoverKitIndexDetail, Modifier.verticalScroll(rememberScrollState())) },
             confirmButton = { TextButton(onClick = { recovering = false; onRecoverKitIndex() }) { Text(strings.recoverKitIndex) } },
             dismissButton = { TextButton(onClick = { recovering = false }) { Text(strings.cancel) } },
         )
@@ -97,35 +103,33 @@ fun KitsScreen(
         contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item { ProviderPanel(uiState.services, serviceActions, uiState.appSettings.advancedMode) }
+        item {
+            ProviderPanel(uiState.services, serviceActions, uiState.appSettings.advancedMode, uiState.vpnState.isActive, onConnect, uiState.kits.isNotEmpty())
+        }
         if (uiState.kitIndexCorrupt) {
             item {
                 SectionCard(title = strings.kitIndexCorrupt, detail = strings.recoverKitIndexDetail) {
-                    Button(onClick = { recovering = true }, modifier = Modifier.fillMaxWidth(), colors = mainActionColors()) {
+                    Button(onClick = { recovering = true }, colors = mainActionColors()) {
                         Text(strings.recoverKitIndex)
                     }
                 }
             }
         }
         item {
-            SectionCard(title = strings.message(com.fixcraft.yume.i18n.MessageId.PROVIDER_MANUAL), info = strings.kitsSubtitle) {
-                Button(
-                    onClick = { adding = true },
-                    enabled = !uiState.kitIndexCorrupt,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = mainActionColors(),
-                ) {
-                    Text(strings.addKit)
+            SectionHeader(title = strings.message(MessageId.PROVIDER_MANUAL), info = strings.kitsSubtitle) {
+                // With nothing set up yet, adding is the next step. Afterwards it steps back.
+                if (uiState.kits.isEmpty() && uiState.services.entries.isEmpty()) {
+                    FilledTonalButton(onClick = { adding = true }, enabled = !uiState.kitIndexCorrupt) { Text(strings.addKit) }
+                } else {
+                    TextButton(onClick = { adding = true }, enabled = !uiState.kitIndexCorrupt) { Text(strings.addKit) }
                 }
             }
-        }
-        if (uiState.kits.isEmpty()) {
-            item {
+            // With a service set up, an empty list of kits needs no sentence of its own.
+            if (uiState.kits.isEmpty() && uiState.services.entries.isEmpty()) {
                 Text(
                     text = strings.noKitsYet,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 4.dp),
                 )
             }
         }
@@ -134,6 +138,8 @@ fun KitsScreen(
                 kit = kit,
                 selected = uiState.services.manual && kit.id == uiState.selectedKitId,
                 live = kit.id == liveKitId,
+                canConnect = !uiState.vpnState.isActive,
+                onConnect = onConnect,
                 onSelect = { onSelectKit(kit.id) },
                 onRename = { renaming = kit },
                 onDelete = { deleting = kit },
@@ -163,7 +169,7 @@ fun KitsScreen(
             onDismissRequest = { deleting = null },
             modifier = Modifier.appDialogWidth(),
             title = { Text(strings.deleteKitTitle) },
-            text = { Text("${kit.name}\n\n${strings.deleteKitDetail}") },
+            text = { Text("${kit.name}\n\n${strings.deleteKitDetail}", Modifier.verticalScroll(rememberScrollState())) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -187,6 +193,8 @@ private fun KitRow(
     kit: KitSummary,
     selected: Boolean,
     live: Boolean,
+    canConnect: Boolean,
+    onConnect: () -> Unit,
     onSelect: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
@@ -199,67 +207,74 @@ private fun KitRow(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
         border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
     ) {
-        Row(
+        Column(
             modifier = Modifier.padding(start = 20.dp, top = 14.dp, end = 8.dp, bottom = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text(
-                    text = kit.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = kit.endpointLabel,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (selected || live) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        if (live) {
-                            StatusPill(
-                                text = strings.live,
-                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                            )
-                        }
-                        if (selected) {
-                            StatusPill(
-                                text = strings.selected,
-                                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                            )
-                        }
-                    }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = kit.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = kit.endpointLabel,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                IconButton(onClick = onRename) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_edit_action),
+                        contentDescription = strings.renameKit,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // A kit in use stays until the VPN is stopped.
+                IconButton(onClick = onDelete, enabled = !live) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_delete_action),
+                        contentDescription = strings.delete,
+                        tint = if (live) {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
                 }
             }
-            IconButton(onClick = onRename) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_edit_action),
-                    contentDescription = strings.renameKit,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            // A kit in use stays until the VPN is stopped.
-            IconButton(onClick = onDelete, enabled = !live) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_delete_action),
-                    contentDescription = strings.delete,
-                    tint = if (live) {
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
+            // Below the icons, so a long translation of the next step keeps the card's width.
+            if (selected || live) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    itemVerticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (live) {
+                        StatusPill(
+                            text = strings.live,
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                        )
+                    }
+                    if (selected) {
+                        StatusPill(
+                            text = strings.selected,
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                    if (selected && canConnect) {
+                        Button(onClick = onConnect, colors = mainActionColors()) { Text(strings.connect) }
+                    }
+                }
             }
         }
     }

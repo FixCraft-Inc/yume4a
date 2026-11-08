@@ -54,6 +54,8 @@ import kotlin.math.max
 @Composable
 fun TrafficChartCard(vpnPhase: VpnPhase, modifier: Modifier = Modifier) {
     val history by YumeVpnRuntime.traffic.collectAsStateWithLifecycle()
+    // Before a run has produced a sample, an empty chart would only take the page's space.
+    if (history.samples.isEmpty() && vpnPhase != VpnPhase.Connected && vpnPhase != VpnPhase.Reconnecting) return
     val isConnected = vpnPhase == VpnPhase.Connected
     val strings = appStrings()
     val colors = trafficColors()

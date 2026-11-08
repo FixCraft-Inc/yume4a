@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -25,11 +27,15 @@ import com.fixcraft.yume.MainUiState
 import com.fixcraft.yume.R
 import com.fixcraft.yume.core.YumeStatus
 import com.fixcraft.yume.i18n.AppStrings
+import com.fixcraft.yume.i18n.MessageId
 import com.fixcraft.yume.i18n.appStrings
 import com.fixcraft.yume.ui.FactRow
 import com.fixcraft.yume.ui.StatusMessage
 import com.fixcraft.yume.ui.StatusPill
 import com.fixcraft.yume.ui.home.TrafficChartCard
+import com.fixcraft.yume.ui.kits.LocationMark
+import com.fixcraft.yume.ui.kits.originHost
+import com.fixcraft.yume.ui.kits.serverPlace
 import com.fixcraft.yume.ui.phaseTone
 import com.fixcraft.yume.ui.theme.mainActionColors
 import com.fixcraft.yume.vpn.VpnConnectionState
@@ -46,6 +52,9 @@ fun OverviewScreen(
     val strings = appStrings()
     val vpnState = uiState.vpnState
     val kit = uiState.selectedKit
+    val advanced = uiState.appSettings.advancedMode
+    val service = uiState.services.selection?.takeIf { !uiState.services.manual }
+    val serviceEntry = service?.let { chosen -> uiState.services.entries.firstOrNull { it.provider == chosen.provider } }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -62,9 +71,9 @@ fun OverviewScreen(
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     if (kit == null && !vpnState.isActive) {
-                        StatusMessage(headline = strings.noKitTitle, detail = strings.noKitDetail)
+                        StatusMessage(headline = strings.noKitTitle, detail = strings.message(MessageId.PROVIDER_NO_SELECTION))
                         Button(onClick = onOpenKits, modifier = Modifier.fillMaxWidth(), colors = mainActionColors()) {
-                            Text(strings.message(com.fixcraft.yume.i18n.MessageId.PROVIDER_ADD_SERVICE))
+                            Text(strings.message(MessageId.PROVIDER_CHOOSE_SERVER))
                         }
                     } else {
                         // The phase moves under the kit rather than splitting its name or address.
@@ -80,12 +89,28 @@ fun OverviewScreen(
                                     text = (if (vpnState.isActive) vpnState.kitName else null) ?: kit?.name.orEmpty(),
                                     style = MaterialTheme.typography.titleLarge,
                                 )
-                                Text(
-                                    text = (if (vpnState.isActive) vpnState.endpointLabel else null)
-                                        ?: kit?.endpointLabel.orEmpty(),
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                                if (service != null) {
+                                    val place = serverPlace(serviceEntry?.server?.country, strings::providerCountry)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        LocationMark(place)
+                                        Text(
+                                            text = place.name ?: strings.message(MessageId.PROVIDER_LOCATION_UNKNOWN),
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                if (service == null || advanced) {
+                                    Text(
+                                        text = (if (vpnState.isActive) vpnState.endpointLabel else null)
+                                            ?: kit?.endpointLabel.orEmpty(),
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                             val tone = phaseTone(vpnState.phase)
                             StatusPill(
@@ -105,10 +130,10 @@ fun OverviewScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        uiState.services.selection?.takeIf { !uiState.services.manual }?.let { service ->
-                            FactRow(strings.message(com.fixcraft.yume.i18n.MessageId.PROVIDER_SELECTED), service.provider)
+                        service?.let { chosen ->
+                            FactRow(strings.message(MessageId.PROVIDER_SELECTED), serviceEntry?.label ?: originHost(chosen.provider))
                         }
-                        SessionFacts(strings, vpnState)
+                        SessionFacts(strings, vpnState, advanced)
                         if (vpnState.isActive) {
                             OutlinedButton(
                                 onClick = onDisconnect,
@@ -139,7 +164,7 @@ fun OverviewScreen(
 }
 
 @Composable
-private fun SessionFacts(strings: AppStrings, state: VpnConnectionState) {
+private fun SessionFacts(strings: AppStrings, state: VpnConnectionState, advanced: Boolean) {
     if (state.phase != VpnPhase.Connected && state.phase != VpnPhase.Reconnecting) return
     val status = state.status
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -148,7 +173,7 @@ private fun SessionFacts(strings: AppStrings, state: VpnConnectionState) {
             FactRow(strings.openConnectionsLabel, (status.tcpConnections + status.udpDestinations).toString())
         }
         state.upstream?.let { FactRow(strings.networkLabel, strings.upstreamName(it)) }
-        state.serverAddress?.let { FactRow(strings.serverAddressLabel, it, monospace = true) }
+        if (advanced) state.serverAddress?.let { FactRow(strings.serverAddressLabel, it, monospace = true) }
     }
 }
 

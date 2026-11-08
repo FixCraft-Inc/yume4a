@@ -258,12 +258,30 @@ class ServiceLiveIntegrationTest {
         assertNull(services.state.value.error)
     }
 
+    /** Steps appear only on the rows they apply to, and the menu owns refreshing and removal. */
     private fun within(provider: String, label: String) {
-        // Each enrollment has the same actions. The semantic sibling's provider
-        // identifies its section in the actual rendered tree.
-        val entries = services.state.value.entries.filter { label != text(MessageId.PROVIDER_SIGN_IN) || it.issuer != null }
+        val state = services.state.value
+        if (label == text(MessageId.PROVIDER_REMOVE)) { menu(provider); click(label); return }
+        if (label == text(MessageId.PROVIDER_SERVERS) && state.catalogs[provider] != null) {
+            menu(provider); click(text(MessageId.PROVIDER_REFRESH_SERVERS)); return
+        }
+        val entries = state.entries.filter { row ->
+            when (label) {
+                text(MessageId.PROVIDER_SIGN_IN) -> row.issuer != null && !row.authorized
+                text(MessageId.PROVIDER_SERVERS) -> state.catalogs[row.provider] == null && (row.issuer == null || row.authorized)
+                text(MessageId.PROVIDER_SELECT) -> row.selection != null && (state.manual || state.selection?.provider != row.provider)
+                else -> true
+            }
+        }
         val index = entries.indexOfFirst { it.provider == provider }
         visible(hasText(label) and hasClickAction(), index).performClick()
+    }
+
+    private fun menu(provider: String) {
+        val entries = services.state.value.entries
+        val label = entries.single { it.provider == provider }.label
+        val index = entries.filter { it.label == label }.indexOfFirst { it.provider == provider }
+        visible(hasContentDescription(strings.providerMore(label)) and hasClickAction(), index).performClick()
     }
 
     private suspend fun provision(provider: String, wrong: Boolean = false) {
@@ -277,9 +295,8 @@ class ServiceLiveIntegrationTest {
             assertEquals(1, catalog.services.size)
             assertEquals(1, catalog.services.single().servers.size)
         }
-        val catalogProviders = services.state.value.entries.filter { services.state.value.catalogs[it.provider] != null }
-        val index = catalogProviders.indexOfFirst { it.provider == provider }
-        visible(hasText(text(MessageId.PROVIDER_PROVISION)) and hasClickAction(), index).performClick()
+        val server = services.state.value.catalogs.getValue(provider).services.single().servers.single()
+        visible(hasText(server.label) and hasClickAction()).performClick()
         await { services.state.value.codePrompt?.provider == provider }
         val prompt = services.state.value.codePrompt!!
         host("opening-code", prompt)

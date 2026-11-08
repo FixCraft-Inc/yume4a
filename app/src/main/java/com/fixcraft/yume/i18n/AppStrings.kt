@@ -110,7 +110,6 @@ class AppStrings private constructor(
     val connect = t(MessageId.CONNECT)
     val disconnect = t(MessageId.DISCONNECT)
     val noKitTitle = t(MessageId.NO_SERVER_YET)
-    val noKitDetail = t(MessageId.ADD_THE_KIT_YOUR_SERVER_S_OWNER_GAVE_YOU_THEN_CONNECT)
     val addKit = t(MessageId.ADD_A_KIT)
     val phaseIdle = t(MessageId.READY)
     val phasePermission = t(MessageId.PERMISSION_NEEDED)
@@ -332,7 +331,6 @@ class AppStrings private constructor(
     val failedToDisableAppDataPassword = t(MessageId.COULDN_T_REMOVE_THE_APP_DATA_PASSWORD)
     val deviceGroupTitle = t(MessageId.DEVICE)
     val aboutGroupTitle = t(MessageId.ABOUT)
-    val systemGroupTitle = t(MessageId.SYSTEM)
     val creditsTitle = t(MessageId.CREDITS)
     val authorLabel = t(MessageId.AUTHOR)
     val companyLabel = t(MessageId.COMPANY)
@@ -474,6 +472,22 @@ class AppStrings private constructor(
         fill(failedToDeleteLanguageDownloadTemplate, languageName)
 
     fun nextAttempt(seconds: Long): String = fill(nextAttemptTemplate, seconds)
+
+    /** A time of day in the app's language, which can differ from the device's. */
+    fun shortTime(epochSeconds: Long): String =
+        java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT, languageLocale(language)).format(java.util.Date(epochSeconds * 1000))
+
+    fun providerMore(label: String): String = fill(t(MessageId.PROVIDER_MORE), label)
+
+    fun providerAccessUntil(time: String): String = fill(t(MessageId.PROVIDER_ACCESS_UNTIL), time)
+
+    fun providerAccessRenew(time: String): String = fill(t(MessageId.PROVIDER_ACCESS_RENEW), time)
+
+    fun providerSignInNote(host: String): String = fill(t(MessageId.PROVIDER_SIGN_IN_NOTE), host)
+
+    fun providerSuggestedBody(provider: String, issuer: String): String = fill(t(MessageId.PROVIDER_SUGGESTED_BODY), provider, issuer)
+
+    fun providerRemoveNotice(host: String): String = fill(t(MessageId.PROVIDER_REMOVE_NOTICE), host)
 
     fun kitAdded(name: String): String = fill(kitAddedTemplate, name)
 

@@ -32,6 +32,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -46,7 +47,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -61,6 +61,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -177,6 +178,16 @@ fun YumeApp(
             }
         }
 
+        // A service without a chosen server, as right after sign-in returns from the
+        // browser, has its next step on Connect. Choosing Overview afterwards stays there.
+        val needsServer = uiState.services.loaded && uiState.selectedKit == null &&
+            uiState.services.entries.isNotEmpty() && !uiState.vpnState.isActive
+        // NavHost sets the graph while composing below, so this waits for its first entry.
+        val navigationReady = backStackEntry != null
+        LaunchedEffect(needsServer, navigationReady) {
+            if (needsServer && navigationReady && currentRoute == AppRoute.Overview) navigateToTopLevel(AppRoute.Connect)
+        }
+
         LaunchedEffect(uiState.noticeMessage) {
             uiState.noticeMessage?.let { message ->
                 snackbarHostState.showSnackbar(message)
@@ -246,6 +257,7 @@ fun YumeApp(
                         KitsScreen(
                             uiState = uiState,
                             serviceActions = serviceActions,
+                            onConnect = onConnect,
                             onRecoverKitIndex = onRecoverKitIndex,
                             onSelectKit = onSelectKit,
                             onRenameKit = onRenameKit,
@@ -407,7 +419,7 @@ private fun AppTopBar(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(
-                    modifier = Modifier.width(72.dp),
+                    modifier = Modifier.width(48.dp),
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     androidx.compose.animation.AnimatedVisibility(
@@ -415,8 +427,8 @@ private fun AppTopBar(
                         enter = fadeIn(animationSpec = tween(90)),
                         exit = fadeOut(animationSpec = tween(70)),
                     ) {
-                        TextButton(onClick = onBack) {
-                            Text(strings.back)
+                        IconButton(onClick = onBack) {
+                            Icon(painter = painterResource(R.drawable.ic_arrow_back), contentDescription = strings.back)
                         }
                     }
                 }
@@ -438,10 +450,12 @@ private fun AppTopBar(
                         textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        // A long title shrinks to fit before it would lose its last letters.
+                        autoSize = TextAutoSize.StepBased(minFontSize = 16.sp, maxFontSize = MaterialTheme.typography.titleLarge.fontSize),
                     )
                 }
 
-                Spacer(modifier = Modifier.width(72.dp))
+                Spacer(modifier = Modifier.width(48.dp))
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
         }

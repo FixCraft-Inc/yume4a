@@ -289,16 +289,6 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
-            TuningCard(
-                uiState = uiState,
-                onMoveSlider = onMoveTuningSlider,
-                onApply = onApplyTuning,
-                onOpenExpert = { showExpertWarning = true },
-                onSelectPreset = onSelectTuningPreset,
-            )
-        }
-
-        item {
             SettingGroupCard(
                 title = strings.themeGroupTitle,
                 subtitle = null,
@@ -322,6 +312,20 @@ fun SettingsScreen(
                         onClick = { onSetAmoledDarkTheme(!uiState.appSettings.amoledDarkTheme) },
                     )
                 }
+            }
+        }
+
+        item {
+            SettingGroupCard(
+                title = strings.languageGroupTitle,
+                subtitle = null,
+            ) {
+                SettingActionRow(
+                    label = strings.appLanguageLabel,
+                    value = languageSummary,
+                    iconRes = R.drawable.ic_translate_action,
+                    onClick = { showLanguageDialog = true },
+                )
             }
         }
 
@@ -358,16 +362,15 @@ fun SettingsScreen(
             }
         }
 
-        item {
-            SettingGroupCard(
-                title = strings.languageGroupTitle,
-                subtitle = null,
-            ) {
-                SettingActionRow(
-                    label = strings.appLanguageLabel,
-                    value = languageSummary,
-                    iconRes = R.drawable.ic_translate_action,
-                    onClick = { showLanguageDialog = true },
+        val tunable = uiState.selectedKit != null && uiState.tuning.kitId == uiState.selectedKitId && uiState.tuning.limits != null
+        if (tunable || uiState.appSettings.advancedMode) {
+            item {
+                TuningCard(
+                    uiState = uiState,
+                    onMoveSlider = onMoveTuningSlider,
+                    onApply = onApplyTuning,
+                    onOpenExpert = { showExpertWarning = true },
+                    onSelectPreset = onSelectTuningPreset,
                 )
             }
         }
@@ -415,6 +418,28 @@ fun SettingsScreen(
                 SettingFact(strings.notificationsLabel, if (notificationsAllowed) strings.allowed else strings.permissionRequired)
                 SettingFact(strings.batteryOptimizationLabel, if (batteryOptimized) strings.optimized else strings.unrestricted)
                 SettingFact(strings.dynamicColorsLabel, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) strings.available else strings.unavailableOnAndroidVersion)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    OutlinedButton(
+                        onClick = { AndroidSystemSettings.openBatteryOptimizationControls(context) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(if (batteryOptimized) strings.allowBackground else strings.batterySettingsButton)
+                    }
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    OutlinedButton(
+                        onClick = {
+                            context.startActivity(
+                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                }
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(strings.notificationSettingsButton)
+                    }
+                }
             }
         }
 
@@ -443,36 +468,6 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(strings.creditsTitle)
-                }
-            }
-        }
-
-        item {
-            SettingGroupCard(
-                title = strings.systemGroupTitle,
-                subtitle = null,
-            ) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    OutlinedButton(
-                        onClick = { AndroidSystemSettings.openBatteryOptimizationControls(context) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(if (batteryOptimized) strings.allowBackground else strings.batterySettingsButton)
-                    }
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    OutlinedButton(
-                        onClick = {
-                            context.startActivity(
-                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                                }
-                            )
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(strings.notificationSettingsButton)
-                    }
                 }
             }
         }
@@ -937,6 +932,8 @@ private fun SettingToggleRow(
             .fillMaxWidth()
             .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange),
         color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        // The palette's container equals surfaceVariant, whose default content colour reads as disabled.
+        contentColor = MaterialTheme.colorScheme.onSurface,
         shape = MaterialTheme.shapes.large,
     ) {
         Row(

@@ -8,34 +8,47 @@ app reads local enrollment state without contacting a built-in provider.
 
 1. Choose **Add service**, enter the provider's canonical HTTPS origin and, for
    browser sign-in, its separately accepted issuer origin. Confirm consent to
-   use those origins for VPN access.
-2. Review the returned service label, provider and issuer. A label is display
-   data, not proof of server authentication. If the service requires an account,
-   choose **Sign in with browser** and complete authorization in the external
-   browser. Browser sign-in requires the registration below.
-3. Choose **Load servers** to request the enrollment's entitled catalog. An empty
-   list means that enrollment has no available servers. Cached entries do not
-   establish current entitlement, and provisioning rechecks catalog freshness.
-4. Choose **Provision or refresh** for the intended server. Device-bound browser
-   enrollment obtains the opening code automatically through its proof-bound
-   API session. Only anonymous providers require a code from the operator's
-   separate trusted channel. The native opener and credential validator check
-   the downloaded kit before the provider store publishes it.
-5. Choose **Use this server**, then **Connect** on Overview. Android's notification,
-   battery and VPN consent steps remain owned by the existing connection flow.
+   use those origins for VPN access. A distribution that suggests a provider
+   shows it as a card that names both origins. Nothing is added or contacted
+   until **Continue**, and **Use another service** opens the empty choice.
+2. The service appears as one row: its label, its account state and the next
+   step. A label is display data, not proof of server authentication. Before
+   sign-in the row names the requested access, the provider and the issuer, each
+   with its own label, even when the two origins are the same text. If the
+   service requires an account, choose **Sign in with browser** and complete
+   authorization in the external browser. Browser sign-in requires the
+   registration below.
+3. A completed sign-in returns to Connect and loads the enrollment's entitled
+   servers. After a restart, choose **Load servers**. An empty list means that enrollment has no available
+   servers. Cached entries do not establish current entitlement, and
+   provisioning rechecks catalog freshness.
+4. Choose a server. Each row shows its flag, country and label, and the choice
+   requests a device lease and selects it. Device-bound browser enrollment obtains
+   the opening code automatically through its proof-bound API session. Only
+   anonymous providers require a code from the operator's separate trusted
+   channel. The native opener and credential validator check the downloaded kit
+   before the provider store publishes it.
+5. Choose **Connect**, on the row or on Overview. Android's notification, battery
+   and VPN consent steps remain owned by the existing connection flow. If another
+   route is selected, the row offers **Use this server** first.
 
-The current client stores one installed server per provider enrollment. Refresh
-keeps the same service and server and rotates the grant. To use another server
-from that provider, remove the service and add it again. It does not silently
-switch servers or providers after an error.
+Each row's menu holds **Refresh servers**, **Service details** and **Remove
+service**. The details list the labeled provider and sign-in origins and the
+server address. Advanced mode adds the grant, native client identity, expected
+server key and transport expiry.
+
+The current client stores one installed server per provider enrollment. Choosing
+that server again renews its lease once renewal is allowed, or requests a new
+lease after expiry or suspension. To use another server from that provider,
+remove the service and add it again. It does not silently switch servers or
+providers after an error.
 
 Manual kits remain below Services on Connect. Import the operator's sealed file
 and its separately supplied code, select the kit, then connect. This path needs
 no provider account, descriptor request or provider clock. Provider enrollment
-never copies credentials into the manual-kit index. Advanced mode adds grant,
-native client identity, expected server key and transport expiry details. DNS,
-IPv6 and manual-kit tuning remain in their existing settings owners. Selecting
-or provisioning a service does not overwrite those preferences.
+never copies credentials into the manual-kit index. DNS, IPv6 and manual-kit
+tuning remain in their existing settings owners. Selecting or provisioning a
+service does not overwrite those preferences.
 
 ## Browser registration
 
@@ -51,11 +64,13 @@ registration. A consuming build supplies both Gradle properties:
 A distribution may also set `-PyumeSuggestedProvider=https://provider.example.org`
 and `-PyumeSuggestedIssuer=https://account.example.org`. Both default to empty.
 They must be canonical HTTPS origins; an issuer suggestion also requires a
-provider suggestion and registered callback. They prefill the editable Add
-service form, which still requires explicit consent before any request.
-Server lists show the operator-declared country in the chosen application
-language when supplied, followed by the server label. Advanced mode shows
-the endpoint address. Country metadata is not evidence of traffic egress.
+provider suggestion and registered callback. They drive the suggestion card and
+prefill the editable Add service form, and neither adds a service by itself.
+Server lists show the operator-declared country's flag and name in the chosen
+application language, followed by the server label. A server without a declared
+country shows a plain globe and says its location is not given. The flag is
+decoration, so only the name reaches a screen reader. Advanced mode shows the
+endpoint address. Country metadata is not evidence of traffic egress.
 
 These illustrative values are not a working registration. The callback must
 use HTTPS, its exact app-controlled host and the fixed `/yume/oauth/callback`
@@ -141,7 +156,8 @@ appropriate. A lost or cancelled browser attempt requires a new attempt. An
 unavailable selected server does not trigger a fallback to another server,
 provider or manual kit.
 
-Choose **Remove service** and confirm its origin to remove that enrollment.
+Choose **Remove service** from the row's menu and confirm its origin to remove
+that enrollment.
 Removal invalidates its run permits and pending operations before local
 deletion, then attempts bounded remote revocation. It works offline and reports
 that remote revocation may remain unknown. Other providers, manual kits and
