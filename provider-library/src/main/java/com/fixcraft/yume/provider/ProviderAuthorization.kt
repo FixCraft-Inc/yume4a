@@ -8,6 +8,7 @@ import android.content.pm.verify.domain.DomainVerificationUserState
 import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
+import android.provider.Settings
 import androidx.browser.customtabs.CustomTabsIntent
 import net.openid.appauth.AuthorizationRequest
 import net.openid.appauth.AuthorizationServiceConfiguration
@@ -52,15 +53,24 @@ object ProviderAppLinks {
         if (context.packageName != registration.applicationId || Build.VERSION.SDK_INT < 31) {
             throw ProviderCodec.Refusal("unsupported")
         }
+        // Android has not verified this app's callback link, or link handling is off for it.
+        // A local code of its own, because the person can act on it, unlike a provider mismatch.
         val manager = context.getSystemService(DomainVerificationManager::class.java)
         val state = manager?.getDomainVerificationUserState(context.packageName)
         if (state?.isLinkHandlingAllowed != true ||
             state.hostToStateMap[uri.host] != DomainVerificationUserState.DOMAIN_STATE_VERIFIED) {
-            throw ProviderCodec.Refusal("binding")
+            throw ProviderCodec.Refusal("link_unverified")
         }
         val intent = Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)
         val resolved = context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
-        if (resolved?.activityInfo?.packageName != context.packageName) throw ProviderCodec.Refusal("binding")
+        if (resolved?.activityInfo?.packageName != context.packageName) throw ProviderCodec.Refusal("link_unverified")
+    }
+
+    /** Android's page for this app's links, where a `link_unverified` refusal can be resolved. */
+    fun settingsIntent(context: Context): Intent {
+        val app = Uri.fromParts("package", context.packageName, null)
+        return if (Build.VERSION.SDK_INT >= 31) Intent(Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS, app)
+            else Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, app)
     }
 }
 

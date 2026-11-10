@@ -256,9 +256,13 @@ class ProviderClientTest {
         seedAccount(expired)
     }
 
+    private suspend fun prepare(provider: String, code: () -> CharArray = { "7777777777777777777777777".toCharArray() }) =
+        client.prepare(provider, renew = true) { code() }
+
+    /** Chooses the synthetic server, as a tap does, and prepares it, as Connect does. */
     private suspend fun install(provider: String): ProviderCodec.Grant {
-        val catalog = client.catalog(provider)
-        return client.install(provider, catalog, "service", "server") { "7777777777777777777777777".toCharArray() }
+        client.choose(provider, client.catalog(provider), "service", "server")
+        return prepare(provider).grant
     }
 
     @Test
@@ -418,36 +422,39 @@ class ProviderClientTest {
     }
 
     @Test
-    fun anAmbiguousGrantKeepsItsExactRequestAcrossReopenAndOnlyOneExplicitRetry() = runBlocking {
+    fun anUnansweredGrantRequestIsRepeatedExactlyAcrossReopenForEveryExplicitRetry() = runBlocking {
         client.add(BETA, null)
-        val firstCatalog = client.catalog(BETA)
+        client.choose(BETA, client.catalog(BETA), "service", "server")
         transport.failGrants = true
-        assertEquals("unavailable", outcome { client.install(BETA, firstCatalog, "service", "server") { CharArray(25) } })
+        assertEquals("unavailable", outcome { prepare(BETA) { CharArray(25) } })
         val first = transport.grants.single()
         assertEquals(0, kits.calls.get())
         client.close()
         reopen()
         transport.failGrants = true
-        val freshCatalog = client.catalog(BETA)
-        assertEquals("unavailable", outcome { client.install(BETA, freshCatalog, "service", "server") { CharArray(25) } })
-        assertEquals(first, transport.grants.single())
-        assertEquals("state", outcome { client.install(BETA, freshCatalog, "service", "server") { CharArray(25) } })
-        assertEquals(1, transport.grants.size)
-        assertEquals(0, kits.calls.get())
+        // Each explicit attempt repeats the stored body. No new grant request is ever minted.
+        repeat(2) { assertEquals("unavailable", outcome { prepare(BETA) { CharArray(25) } }) }
+        assertEquals(listOf(first, first), transport.grants)
+        transport.failGrants = false
+        prepare(BETA)
+        assertEquals(listOf(first, first, first), transport.grants)
+        assertEquals(1, kits.calls.get())
     }
 
     @Test
     fun failedFinalStorageCommitCannotPublishAValidatedReplacement() = runBlocking {
         client.add(BETA, null)
-        val selected = client.catalog(BETA)
+        client.choose(BETA, client.catalog(BETA), "service", "server")
         kits.beforeValidation = { storageFault = ProviderStore.Checkpoint.AfterStageSync }
         try {
-            client.install(BETA, selected, "service", "server") { "7777777777777777777777777".toCharArray() }
+            prepare(BETA)
             throw AssertionError("Expected injected storage failure")
         } catch (_: IOException) { }
         storageFault = null
-        assertTrue(metadata(BETA).getBoolean("suspended"))
+        // Nothing was published, and the unanswered request stays for an explicit retry.
+        assertFalse(metadata(BETA).getBoolean("suspended"))
         assertTrue(metadata(BETA).isNull("grant"))
+        assertFalse(metadata(BETA).isNull("pending"))
         assertEquals("state", outcome { client.lease(BETA).close() })
         assertEquals(1, kits.calls.get())
     }

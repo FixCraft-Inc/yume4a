@@ -21,8 +21,12 @@ object ProviderCodec {
     private val digestPattern = Regex("[0-9a-f]{64}")
     private val hostLabel = Regex("[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
-    /** Only stable error codes cross this boundary; peer text is never an exception message. */
-    class Refusal(val code: String) : Exception(code)
+    /**
+     * Only stable error codes cross this boundary; peer text is never an exception message.
+     * [unsent] is true only when the request certainly never left the device, because no
+     * connection to the peer could be opened. Every other failure may have been delivered.
+     */
+    class Refusal(val code: String, val unsent: Boolean = false) : Exception(code)
 
     data class Context(
         val provider: String,
@@ -86,6 +90,13 @@ object ProviderCodec {
         val issuedAt: Long, val refreshAfter: Long, val expiresAt: Long,
         val clientIdentity: String, val kitSha256: String, val kitSize: Int,
     ) {
+        /**
+         * When a client replaces this grant: the provider's earliest refresh time,
+         * but never before half the lease, so a provider allowing an immediate
+         * refresh does not make a connection renew continually.
+         */
+        val renewAt: Long get() = maxOf(refreshAfter, issuedAt + (expiresAt - issuedAt) / 2)
+
         fun fields(): Map<String, Any?> = request.fields() + mapOf(
             "grant_id" to grantId, "generation" to generation, "issued_at" to issuedAt,
             "refresh_after" to refreshAfter, "expires_at" to expiresAt,

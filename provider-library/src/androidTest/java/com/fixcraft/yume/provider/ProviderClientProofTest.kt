@@ -95,6 +95,11 @@ class ProviderClientProofTest {
         var accountRefused = false
         var refreshRefused = false
         var descriptorRefusal: String? = null
+        // The provider's answer to the next grant requests, which are still recorded.
+        var grantRefusal: String? = null
+        // How the transport fails the next refresh, as the real HTTP owner reports it.
+        var refreshFailure: ProviderCodec.Refusal? = null
+        val revoked = mutableListOf<String>()
 
         fun descriptor(): ProviderCodec.Descriptor = ProviderCodec.Descriptor(PROVIDER, "Synthetic alpha", clock.seconds + 3600,
             listOf("sealed-kit-1", "device-grants-1", "browser-pkce-s256") +
@@ -116,9 +121,9 @@ class ProviderClientProofTest {
                     ProviderCodec.encode(descriptor().fields())
                 }
                 endpoint == "$ISSUER/token" -> {
-                    if (refreshRefused && body!!.toString(Charsets.US_ASCII).contains("grant_type=refresh_token")) {
-                        throw ProviderCodec.Refusal("unauthorized")
-                    }
+                    val refreshing = body!!.toString(Charsets.US_ASCII).contains("grant_type=refresh_token")
+                    if (refreshRefused && refreshing) throw ProviderCodec.Refusal("unauthorized")
+                    if (refreshing) refreshFailure?.let { throw it }
                     val bound = requireNotNull(proofs.last().thumbprint)
                     if (family == null || body!!.toString(Charsets.US_ASCII).contains("grant_type=authorization_code")) family = bound
                     assertEquals(family, bound)
@@ -141,10 +146,13 @@ class ProviderClientProofTest {
                 "expires_at" to clock.seconds + 300, "services" to listOf(mapOf("id" to "service", "label" to "Service",
                     "role" to "vpn", "required" to emptyList<String>(), "servers" to listOf(mapOf("id" to "server",
                         "label" to "Tokyo", "host" to "edge.alpha.example", "port" to 443L,
-                        "server_key_sha256" to "f".repeat(64), "country" to "JP"))))), ProviderCodec.METADATA_LIMIT)
+                        "server_key_sha256" to "f".repeat(64), "country" to "JP"), mapOf("id" to "other",
+                        "label" to "Virginia", "host" to "edge2.alpha.example", "port" to 443L,
+                        "server_key_sha256" to "e".repeat(64), "country" to "US"))))), ProviderCodec.METADATA_LIMIT)
             endpoint.endsWith("/grants") -> {
                 // Each grant has its own ID and identity. A renewal is the next generation.
                 val request = fields(body!!).also { grantRequests += it }
+                grantRefusal?.let { throw ProviderCodec.Refusal(it) }
                 generation = if (request["previous_grant"] == null) 1L else generation + 1
                 ProviderCodec.encode(request + mapOf("grant_id" to "grant-${grantRequests.size}",
                     "generation" to generation, "issued_at" to clock.seconds, "refresh_after" to clock.seconds + 60,
@@ -156,7 +164,10 @@ class ProviderClientProofTest {
                 codeRequests++
                 ProviderCodec.encode(fields(body!!) + ("opening_code" to CODE) + openingCodeBinding)
             }
-            endpoint.endsWith("/revoke") -> ProviderCodec.encode(fields(body!!) + ("status" to "revoked"))
+            endpoint.endsWith("/revoke") -> fields(body!!).let { request ->
+                revoked += request.getValue("grant_id") as String
+                ProviderCodec.encode(request + ("status" to "revoked"))
+            }
             else -> throw AssertionError("Unexpected synthetic endpoint")
         }
 
@@ -218,6 +229,16 @@ class ProviderClientProofTest {
     private suspend fun outcome(block: suspend () -> Unit): String = try { block(); "success" }
         catch (refusal: ProviderCodec.Refusal) { refusal.code }
 
+    /** A connection's preparation. Device-bound providers deliver the code themselves. */
+    private suspend fun prepare(renew: Boolean = true): ProviderClient.Prepared =
+        client.prepare(PROVIDER, renew) { throw AssertionError("not anonymous") }
+
+    /** Chooses [server] from a fresh catalog, as a tap does, then prepares it as Connect does. */
+    private suspend fun connect(server: String = "server"): ProviderClient.Prepared {
+        client.choose(PROVIDER, client.catalog(PROVIDER), "service", server)
+        return prepare()
+    }
+
     @Test fun signInBindsADeviceKeyAndTheBoundDeviceFetchesItsOpeningCode() = runBlocking {
         client.add(PROVIDER, ISSUER)
         assertFalse(client.enrollments().single().authorized)
@@ -230,13 +251,16 @@ class ProviderClientProofTest {
         assertEquals(ProviderProof.thumbprint(keys.load(epoch())!!), exchange.thumbprint)
         assertTrue(client.enrollments().single().authorized)
         val catalog = client.catalog(PROVIDER)
-        assertEquals("JP", catalog.services.single().servers.single().country)
-        client.install(PROVIDER, catalog, "service", "server") { throw AssertionError("Device-bound providers deliver the code") }
+        assertEquals("JP", catalog.services.single().servers.first().country)
+        // Choosing is local. Preparing fetches its own catalog before the grant.
+        client.choose(PROVIDER, catalog, "service", "server")
+        assertEquals(2, issuer.proofs.size)
+        prepare()
         assertEquals(listOf(CODE), validatedCodes)
         assertEquals(1, issuer.codeRequests)
         val api = issuer.proofs.drop(1)
-        assertEquals(listOf("POST" to "/catalog", "POST" to "/grants", "GET" to "/grants/grant-1/kit", "POST" to "/opening-code"),
-            api.map { it.method to it.url.removePrefix("$PROVIDER/provider/v1") })
+        assertEquals(listOf("POST" to "/catalog", "POST" to "/catalog", "POST" to "/grants", "GET" to "/grants/grant-1/kit",
+            "POST" to "/opening-code"), api.map { it.method to it.url.removePrefix("$PROVIDER/provider/v1") })
         val ath = Base64.getUrlEncoder().withoutPadding().encodeToString(
             MessageDigest.getInstance("SHA-256").digest("SYNTHETIC-ACCESS-ONE".toByteArray()))
         assertTrue(api.all { it.thumbprint == exchange.thumbprint && it.ath == ath })
@@ -264,7 +288,7 @@ class ProviderClientProofTest {
     private suspend fun installed() {
         client.add(PROVIDER, ISSUER)
         signIn()
-        client.install(PROVIDER, client.catalog(PROVIDER), "service", "server") { throw AssertionError("not anonymous") }
+        connect()
         assertNotNull(client.enrollments().single().grant)
     }
 
@@ -282,11 +306,35 @@ class ProviderClientProofTest {
         assertEquals("unauthorized", outcome { client.catalog(PROVIDER) })
         assertSignInAndGrantForgotten()
         assertEquals("state", outcome { client.lease(PROVIDER).close() })
-        // Signing in again leads to a fresh grant, never a renewal of the closed one.
+        // The chosen server survives, and signing in again leads to a fresh grant for it.
+        assertEquals("server", client.enrollments().single().choice?.server?.id)
         issuer.accountRefused = false
         signIn()
-        client.install(PROVIDER, client.catalog(PROVIDER), "service", "server") { throw AssertionError("not anonymous") }
+        prepare()
         assertNull(issuer.grantRequests.last()["previous_grant"])
+        client.lease(PROVIDER).close()
+    }
+
+    /** A connection that could not even be opened sent nothing, so the refresh token is unspent. */
+    @Test fun aRefreshThatNeverLeftThePhoneKeepsTheSignIn() = runBlocking {
+        installed()
+        clock.advance(61)
+        issuer.refreshFailure = ProviderCodec.Refusal("unavailable", unsent = true)
+        assertEquals("unavailable", outcome { client.catalog(PROVIDER) })
+        assertTrue(client.enrollments().single().authorized)
+        issuer.refreshFailure = null
+        issuer.access = "SYNTHETIC-ACCESS-TWO"
+        assertEquals("success", outcome { client.catalog(PROVIDER) })
+    }
+
+    /** A refresh that may have reached the issuer could have spent its token, so it needs a new sign-in. */
+    @Test fun aRefreshLostAfterSendingRequiresSigningInAgain() = runBlocking {
+        installed()
+        clock.advance(61)
+        issuer.refreshFailure = ProviderCodec.Refusal("unavailable")
+        assertEquals("unavailable", outcome { client.catalog(PROVIDER) })
+        assertFalse(client.enrollments().single().authorized)
+        // The lease is separate from the sign-in and keeps working.
         client.lease(PROVIDER).close()
     }
 
@@ -298,21 +346,106 @@ class ProviderClientProofTest {
         assertSignInAndGrantForgotten()
     }
 
-    @Test fun aDueLeaseRenewsItsGrantAndAnExpiredOneStartsFresh() = runBlocking {
+    @Test fun aCurrentGrantIsReusedUntilItsRenewalTimeWithoutTheNetwork() = runBlocking {
+        installed()
+        val requests = issuer.proofs.size to issuer.bareRequests.size
+        // The provider allows a refresh after 60 seconds. The client waits for half the lease.
+        clock.advance(299)
+        assertEquals("grant-1", prepare().grant.grantId)
+        assertEquals(requests, issuer.proofs.size to issuer.bareRequests.size)
+    }
+
+    @Test fun aDueGrantIsReplacedByAFreshOneAndTheOldOneIsRevoked() = runBlocking {
         installed()
         // Each refresh returns new tokens, as a real issuer does.
-        clock.advance(61)
+        clock.advance(301)
         issuer.access = "SYNTHETIC-ACCESS-TWO"
-        client.install(PROVIDER, client.catalog(PROVIDER), "service", "server") { throw AssertionError("not anonymous") }
-        assertEquals("grant-1", issuer.grantRequests.last()["previous_grant"])
+        val renewed = prepare()
+        assertEquals("grant-2", renewed.grant.grantId)
+        assertNull(renewed.renewalRefusal)
+        // A fresh grant, not a rotation: the old one keeps working until the caller moves.
+        assertNull(issuer.grantRequests.last()["previous_grant"])
         assertEquals("grant-2", client.enrollments().single().grant?.grantId)
-        // The provider refuses to renew an expired grant, so the client asks for a fresh one.
+        assertTrue(issuer.revoked.isEmpty())
+        assertTrue(client.releaseRetired(PROVIDER))
+        assertEquals(listOf("grant-1"), issuer.revoked)
+        // An expired grant is replaced the same way.
         clock.advance(601)
         issuer.access = "SYNTHETIC-ACCESS-THREE"
-        client.install(PROVIDER, client.catalog(PROVIDER), "service", "server") { throw AssertionError("not anonymous") }
-        assertNull(issuer.grantRequests.last()["previous_grant"])
-        assertEquals("grant-3", client.enrollments().single().grant?.grantId)
+        assertEquals("grant-3", prepare().grant.grantId)
         client.lease(PROVIDER).close()
+    }
+
+    @Test fun aRenewalOutageKeepsTheLiveGrantAndRetriesTheSameRequest() = runBlocking {
+        installed()
+        clock.advance(301)
+        issuer.access = "SYNTHETIC-ACCESS-TWO"
+        issuer.grantRefusal = "unavailable"
+        val kept = prepare()
+        assertEquals("grant-1" to "unavailable", kept.grant.grantId to kept.renewalRefusal)
+        assertFalse(client.enrollments().single().suspended)
+        client.lease(PROVIDER).close()
+        issuer.grantRefusal = null
+        assertEquals("grant-3", prepare().grant.grantId)
+        val (lost, retried) = issuer.grantRequests.takeLast(2)
+        assertEquals(lost["request_id"], retried["request_id"])
+    }
+
+    /** The phone that lost one answer could never try again. Explicit retries repeat the same request until it is answered. */
+    @Test fun explicitRetriesOfAnUnansweredRequestAreNotCapped() = runBlocking {
+        client.add(PROVIDER, ISSUER)
+        signIn()
+        client.choose(PROVIDER, client.catalog(PROVIDER), "service", "server")
+        issuer.grantRefusal = "unavailable"
+        repeat(3) { assertEquals("unavailable", outcome { prepare() }) }
+        issuer.grantRefusal = null
+        assertEquals("success", outcome { prepare() })
+        assertEquals(1, issuer.grantRequests.map { it["request_id"] }.toSet().size)
+        assertFalse(metadata().has("retries"))
+    }
+
+    @Test fun aDefinitiveRefusalEndsThePendingRequest() = runBlocking {
+        client.add(PROVIDER, ISSUER)
+        signIn()
+        client.choose(PROVIDER, client.catalog(PROVIDER), "service", "server")
+        issuer.grantRefusal = "not_entitled"
+        assertEquals("not_entitled", outcome { prepare() })
+        assertTrue(metadata().isNull("pending"))
+        issuer.grantRefusal = null
+        prepare()
+        val (refused, fresh) = issuer.grantRequests.takeLast(2)
+        assertNotEquals(refused["request_id"], fresh["request_id"])
+    }
+
+    @Test fun choosingAnotherServerIsLocalAndConnectingMovesToAFreshGrant() = runBlocking {
+        installed()
+        val requests = issuer.proofs.size
+        client.choose(PROVIDER, client.catalog(PROVIDER), "service", "other")
+        assertEquals(requests + 1, issuer.proofs.size)
+        assertEquals("other", client.enrollments().single().choice?.server?.id)
+        // The installed grant stays usable until the new one exists.
+        assertEquals("server", client.enrollments().single().grant?.request?.serverId)
+        val moved = prepare()
+        assertEquals("other" to null, moved.grant.request.serverId to issuer.grantRequests.last()["previous_grant"])
+        assertEquals("US", client.enrollments().single().server?.country)
+        assertTrue(client.releaseRetired(PROVIDER))
+        assertEquals(listOf("grant-1"), issuer.revoked)
+    }
+
+    /** A blocked provider API must not stop a connection that still holds a live grant. */
+    @Test fun aStartingConnectionUsesItsLiveGrantPastTheRenewalTimeWithoutTheNetwork() = runBlocking {
+        installed()
+        val requests = issuer.proofs.size to issuer.bareRequests.size
+        clock.advance(301)
+        issuer.descriptorRefusal = "unavailable"
+        // Taken as it is: no descriptor, catalog or grant request, so nothing to refuse.
+        val started = prepare(renew = false)
+        assertEquals("grant-1" to null, started.grant.grantId to started.renewalRefusal)
+        assertEquals(requests, issuer.proofs.size to issuer.bareRequests.size)
+        // Too close to its end, it is replaced, and an unreachable provider then keeps it as it is.
+        clock.advance(600 - 301 - 119)
+        val kept = prepare(renew = false)
+        assertEquals("grant-1" to "unavailable", kept.grant.grantId to kept.renewalRefusal)
     }
 
     @Test fun anOutageKeepsTheLeaseButAChangedProviderSuspendsIt() = runBlocking {
@@ -330,16 +463,17 @@ class ProviderClientProofTest {
     @Test fun anotherGrantsDeliveredCodeCannotReachNativeValidation() = runBlocking {
         client.add(PROVIDER, ISSUER)
         signIn()
-        val catalog = client.catalog(PROVIDER)
+        client.choose(PROVIDER, client.catalog(PROVIDER), "service", "server")
         issuer.openingCodeBinding = mapOf("grant_id" to "another-grant")
-        assertEquals("binding", outcome {
-            client.install(PROVIDER, catalog, "service", "server") { throw AssertionError("not anonymous") }
-        })
+        assertEquals("binding", outcome { prepare() })
         assertEquals(1, issuer.codeRequests)
         assertTrue(validatedCodes.isEmpty())
         val enrollment = client.enrollments().single()
         assertNull(enrollment.grant)
-        assertTrue(enrollment.suspended)
+        assertFalse(enrollment.suspended)
+        // The refused grant is retired for revocation, and its request is over.
+        assertTrue(metadata().isNull("pending"))
+        assertEquals("grant-1", metadata().getJSONArray("retired").getJSONObject(0).getString("grant"))
     }
 
     @Test fun eachSignInUsesAFreshKey() = runBlocking {
@@ -354,8 +488,7 @@ class ProviderClientProofTest {
     @Test fun removalRevokesWithAProofThenDeletesTheKey() = runBlocking {
         client.add(PROVIDER, ISSUER)
         signIn()
-        val catalog = client.catalog(PROVIDER)
-        client.install(PROVIDER, catalog, "service", "server") { throw AssertionError("not anonymous") }
+        connect()
         val removed = epoch()
         assertTrue(client.remove(PROVIDER))
         assertEquals("$PROVIDER/provider/v1/revoke", issuer.proofs.last().url)

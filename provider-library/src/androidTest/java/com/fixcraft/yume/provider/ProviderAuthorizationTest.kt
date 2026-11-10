@@ -373,10 +373,10 @@ class ProviderAuthorizationTest {
             .getDomainVerificationUserState(context.packageName)
         assertTrue(state?.hostToStateMap?.get(Uri.parse(CALLBACK).host) != DomainVerificationUserState.DOMAIN_STATE_VERIFIED)
         val exactApp = registration.copy(applicationId = context.packageName)
-        refusal("binding") { ProviderAppLinks.verify(context, exactApp) }
+        refusal("link_unverified") { ProviderAppLinks.verify(context, exactApp) }
         val clock = Clock()
         val owner = ProviderAuthorization(clock)
-        refusal("binding") { owner.begin(binding, descriptor(clock), "epoch-one", exactApp, context) }
+        refusal("link_unverified") { owner.begin(binding, descriptor(clock), "epoch-one", exactApp, context) }
         // No pending state was created before OS verification failed.
         begin(owner, clock)
         owner.clear()

@@ -69,6 +69,14 @@ internal object VpnRunPolicy {
     }
 
     /**
+     * How an endpoint that stopped by itself after starting is shown. An
+     * incompatible stop is a server refusing the kit's limits, which
+     * retrying does not change. Any other stop is the device or library.
+     */
+    fun stoppedKind(lastFailure: Int): VpnFailure =
+        if (lastFailure == YumeStatusCode.INCOMPATIBLE) VpnFailure.Configuration else VpnFailure.Device
+
+    /**
      * Whether a failed start ends the run. A refusal or a bad configuration
      * does not improve by retrying. Otherwise a run keeps trying when Android
      * started it (nobody is watching) or once it had connected.

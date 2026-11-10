@@ -48,23 +48,34 @@ serializes its authorization request, including the verifier, into saved state.
 Pending attempts instead live only in the process. Restart requires a new
 attempt. Exact callback, issuer, state, registration, resource and deadlines are
 checked before a single-use code is exchanged. Ambiguous token exchange or
-refresh loss requires sign-in again.
+refresh loss requires sign-in again. A refresh whose connection could not even
+be opened sent nothing, so it keeps the sign-in. Every provider request opens
+its own connection: a pooled one can outlive the network or VPN tunnel it was
+opened through.
 
 A refused sign-in ends more than the tokens. When the issuer refuses a refresh
 token or authorization code (`invalid_grant`), or a provider answers
 `unauthorized` to the account's own credential, the client forgets the account
-tokens and the grant they obtained, then stops that grant's connections. The
-provider closes a grant together with the sign-in that obtained it, so after
-signing in again the user chooses a server for a fresh grant. A refresh that
-gets no answer forgets only the spent tokens and leaves the lease running.
+tokens and the grants they obtained, then stops their connections. The
+provider closes a grant together with the sign-in that obtained it. The chosen
+server stays, so after signing in again the next connection acquires a fresh
+grant for it. A refresh that gets no answer forgets only the spent tokens and
+leaves the lease running.
 
-`ServiceController.renewAfter` reports when a selected lease may be renewed
-without a person: only device-bound providers qualify, since an anonymous
-provider's opening code is typed by hand. `renew` loads a fresh catalog and
-installs the same server. The provider closes the old grant before issuing the
-next, so the caller's connection ends and it reconnects with the returned
-selection. A lease that has already expired cannot be renewed, so installing
-then asks for a fresh grant instead.
+`ServiceController.choose` records a server from the loaded catalog for its
+enrollment and selects that provider's `ServiceRoute`, without the network. The
+stored route names only provider, epoch and role; the chosen server lives in the
+enrollment record. A connection calls `prepare(route, renew)`, which returns a
+lease-bound `ServiceSelection`. With `renew` false, a starting connection takes
+any live grant for the chosen server unless it ends within two minutes, so a
+blocked provider API does not stop a reconnect. Otherwise a grant is reused
+until `Grant.renewAt`, the later of the provider's `refresh_after` and half the
+lease. After that, and for any other server, a fresh grant is issued while the
+current one stays usable; the replaced grant is revoked about 30 seconds later
+or retried until it expires. A renewal the provider cannot answer returns the
+live grant with its refusal. `renewAfter` reports when a running connection
+should call `prepare` again: only device-bound providers qualify, since an
+anonymous provider's opening code is typed by hand.
 
 A consumer may supply a suspend `authorizationAccess` hook. Callback validation
 and single-use consumption happen first; then the provider operation lane owns
@@ -102,8 +113,10 @@ ordinary system trust; no client TLS or hostname check is overridden.
 
 Before opening a browser, the wrapper requires the installed application's
 domain to be OS-verified and enabled, and the exact callback to resolve to that
-application. User-selected domain handling alone is insufficient. This check
-requires Android 12 or later. The default trusted-clock adapter uses Android's
+application. User-selected domain handling alone is insufficient. A failure
+here is the local refusal `link_unverified`, kept apart from `binding` because
+the person can act on it: `ProviderAppLinks.settingsIntent` opens Android's
+link settings for the application. This check requires Android 12 or later. The default trusted-clock adapter uses Android's
 network time on Android 13 or later and suspends when it is unavailable. An
 older platform needs an independently qualified trusted-clock adapter; manual
 kit import has no provider-clock dependency.
@@ -140,7 +153,8 @@ remote rotation suspend reuse. Descriptor revalidation suspends on a changed or
 refused descriptor, but not when the provider is unreachable or rate limited:
 an outage says nothing about the provider's identity, and the lease keeps its
 own deadline. A failed grant request retains its exact
-idempotency body for at most one explicit retry, rather than minting another
+idempotency body for explicit retries until the provider answers it
+definitively, rather than minting another
 identity under a new request ID.
 
 The consumer binds a selected server to its provider, enrollment epoch, device,

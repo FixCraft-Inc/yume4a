@@ -2,6 +2,7 @@ package com.fixcraft.yume.provider
 
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
+import java.io.IOException
 import java.net.CookieHandler
 import java.net.URL
 import java.util.concurrent.ArrayBlockingQueue
@@ -64,7 +65,8 @@ class ProviderHttp internal constructor(private val beforeConnect: () -> Unit) :
                     }
                 }
             }
-            refusal?.let { request.finish(null, ProviderCodec.Refusal(it)) }
+            // A request no worker accepted was never sent.
+            refusal?.let { request.finish(null, ProviderCodec.Refusal(it, unsent = it == "unavailable")) }
         }
     }
 
@@ -143,6 +145,9 @@ class ProviderHttp internal constructor(private val beforeConnect: () -> Unit) :
                 current.setRequestProperty("Accept", responseType)
                 current.setRequestProperty("Accept-Encoding", "identity")
                 current.setRequestProperty("Cache-Control", "no-store")
+                // Each request opens its own connection. A pooled one can outlive the
+                // network or VPN tunnel it was opened through, and then fails on reuse.
+                current.setRequestProperty("Connection", "close")
                 bearer?.let {
                     current.setRequestProperty("Authorization", (if (proof != null) "DPoP " else "Bearer ") + it.value)
                     it.deviceId?.let { device -> current.setRequestProperty("X-Device-ID", device) }
@@ -153,8 +158,13 @@ class ProviderHttp internal constructor(private val beforeConnect: () -> Unit) :
                     current.doOutput = true
                     current.setRequestProperty("Content-Type", requestType)
                     current.setFixedLengthStreamingMode(body.size)
-                    current.outputStream.use { it.write(body) }
                 }
+                // Nothing is sent before the connection and its TLS session exist, so a
+                // failure here is the one case known not to have reached the peer.
+                try { current.connect() }
+                catch (_: IOException) { throw ProviderCodec.Refusal("unavailable", unsent = true) }
+                if (!live()) return
+                body?.let { bytes -> current.outputStream.use { it.write(bytes) } }
                 if (!live()) return
                 val status = current.responseCode
                 if (status in 300..399) throw ProviderCodec.Refusal("binding")

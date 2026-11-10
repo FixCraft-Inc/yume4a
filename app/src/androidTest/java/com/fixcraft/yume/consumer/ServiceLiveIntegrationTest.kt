@@ -269,7 +269,7 @@ class ServiceLiveIntegrationTest {
             when (label) {
                 text(MessageId.PROVIDER_SIGN_IN) -> row.issuer != null && !row.authorized
                 text(MessageId.PROVIDER_SERVERS) -> state.catalogs[row.provider] == null && (row.issuer == null || row.authorized)
-                text(MessageId.PROVIDER_SELECT) -> row.selection != null && (state.manual || state.selection?.provider != row.provider)
+                text(MessageId.PROVIDER_SELECT) -> row.choice != null && (state.manual || state.selection?.provider != row.provider)
                 else -> true
             }
         }
@@ -284,7 +284,12 @@ class ServiceLiveIntegrationTest {
         visible(hasContentDescription(strings.providerMore(label)) and hasClickAction(), index).performClick()
     }
 
-    private suspend fun provision(provider: String, wrong: Boolean = false) {
+    /**
+     * Chooses the provider's one server, which is local, then connects: Connect
+     * fetches the grant, kit and, for an anonymous provider, the typed opening
+     * code. Returns the held grant's binding, or null after a wrong code.
+     */
+    private suspend fun provision(provider: String, wrong: Boolean = false): ServiceSelection? {
         mark("provision:$provider:wrong=$wrong")
         if (!services.state.value.catalogs.containsKey(provider)) {
             within(provider, text(MessageId.PROVIDER_SERVERS))
@@ -297,35 +302,48 @@ class ServiceLiveIntegrationTest {
         }
         val server = services.state.value.catalogs.getValue(provider).services.single().servers.single()
         visible(hasText(server.label) and hasClickAction()).performClick()
-        await { services.state.value.codePrompt?.provider == provider }
-        val prompt = services.state.value.codePrompt!!
-        host("opening-code", prompt)
-        val file = File(handoff, prompt.grant + ".code")
-        val code = file.readText().trim().toCharArray(); assertTrue(file.delete())
-        try {
-            if (wrong) code[0] = if (code[0] == '0') '1' else '0'
-            input(text(MessageId.CODE), String(code)); click(strings.save)
-        } finally { code.fill('\u0000') }
-        idle()
+        await { services.state.value.selection?.provider == provider && provider !in services.state.value.busy }; idle()
+        nav(strings.overviewTab)
+        click(strings.connect)
+        val prompt = if (entry(provider).issuer != null) null else {
+            await { services.state.value.codePrompt?.provider == provider }
+            val prompt = services.state.value.codePrompt!!
+            host("opening-code", prompt)
+            val file = File(handoff, prompt.grant + ".code")
+            val code = file.readText().trim().toCharArray(); assertTrue(file.delete())
+            try {
+                if (wrong) code[0] = if (code[0] == '0') '1' else '0'
+                input(text(MessageId.CODE), String(code)); click(strings.save)
+            } finally { code.fill('\u0000') }
+            idle()
+            prompt
+        }
         if (wrong) {
+            await { YumeVpnRuntime.state.value.phase == VpnPhase.Error }
             assertNotNull(services.state.value.error)
             assertNull(entry(provider).selection)
-        } else {
-            mark("selected:$provider")
-            await { services.state.value.selection?.provider == provider || services.state.value.error != null }
-            assertNull(services.state.value.error)
-            val selection = requireNotNull(entry(provider).selection)
-            services.open(selection).use { opened ->
-                val expected = JSONObject(File(handoff, prompt.grant + ".json").readText())
-                assertEquals(expected.getString("client_identity"), selection.identity)
-                assertEquals(expected.getString("server_key_sha256"), selection.serverKey)
-                assertEquals(expected.getString("host"), opened.session.description.host)
-                assertEquals(expected.getInt("port"), opened.session.description.port)
-                val files = expected.getJSONObject("files")
-                for (path in files.keys()) assertEquals(files.getString(path), hash(if (path == "yume.json") opened.session.config else File(opened.session.directory, path).readBytes()))
-            }
+            return null
         }
+        await { YumeVpnRuntime.state.value.phase == VpnPhase.Connected }
+        click(strings.disconnect); await { YumeVpnRuntime.state.value.phase == VpnPhase.Idle }
+        mark("selected:$provider")
+        assertNull(services.state.value.error)
+        val selection = requireNotNull(entry(provider).selection)
+        // The grant outlives the disconnect, and the host describes the kit it issued.
+        if (prompt != null) services.open(selection).use { opened ->
+            val expected = JSONObject(File(handoff, prompt.grant + ".json").readText())
+            assertEquals(expected.getString("client_identity"), selection.identity)
+            assertEquals(expected.getString("server_key_sha256"), selection.serverKey)
+            assertEquals(expected.getString("host"), opened.session.description.host)
+            assertEquals(expected.getInt("port"), opened.session.description.port)
+            val files = expected.getJSONObject("files")
+            for (path in files.keys()) assertEquals(files.getString(path), hash(if (path == "yume.json") opened.session.config else File(opened.session.directory, path).readBytes()))
+        }
+        return selection
     }
+
+    /** The selected route a held grant belongs to, which is what a run reports as its kit. */
+    private fun routeId(selection: ServiceSelection) = "provider:${selection.epoch}"
 
     private suspend fun connectAndStop(id: String, automatic: Boolean = false) {
         mark("connect:$id:automatic=$automatic")
@@ -344,12 +362,12 @@ class ServiceLiveIntegrationTest {
 
     private suspend fun startSelected(selection: ServiceSelection, label: String) {
         nav(strings.connectTab)
-        within(selection.provider, text(MessageId.PROVIDER_SELECT))
-        await { services.state.value.selection == selection }; idle()
+        if (services.state.value.selection?.provider != selection.provider) within(selection.provider, text(MessageId.PROVIDER_SELECT))
+        await { services.state.value.selection?.provider == selection.provider && "selection" !in services.state.value.busy }; idle()
         nav(strings.overviewTab)
         click(strings.connect)
         await { YumeVpnRuntime.state.value.phase == VpnPhase.Connected }
-        packets(selection.id, label)
+        packets(routeId(selection), label)
     }
 
     private fun manualHash(id: String): String {
@@ -357,51 +375,57 @@ class ServiceLiveIntegrationTest {
         return try { hash(bytes) } finally { bytes.fill(0) }
     }
 
-    private suspend fun rotateLive(previous: ServiceSelection): ServiceSelection {
-        assertEquals(previous.id, YumeVpnRuntime.state.value.kitId)
+    /**
+     * A connected run renews at half its lease: a fresh grant is prepared through
+     * the tunnel, then the run moves to it while its interface stays in place.
+     */
+    private suspend fun renewLive(previous: ServiceSelection): ServiceSelection {
+        assertEquals(routeId(previous), YumeVpnRuntime.state.value.kitId)
         assertEquals(VpnPhase.Connected, YumeVpnRuntime.state.value.phase)
-        nav(strings.connectTab)
-        provision(previous.provider)
-        await { YumeVpnRuntime.state.value.phase == VpnPhase.Error }
-        assertEquals(previous.id, YumeVpnRuntime.state.value.kitId)
-        assertEquals(VpnFailure.KitUnavailable, YumeVpnRuntime.state.value.failure)
+        val run = YumeVpnRuntime.state.value.runId
+        val renewAt = requireNotNull(services.renewAfter(previous))
+        val wait = (renewAt - System.currentTimeMillis() / 1000 + 90).coerceAtLeast(30) * 1000
+        withTimeout(wait) {
+            while (entry(previous.provider).selection?.grant == previous.grant || YumeVpnRuntime.state.value.runId == run ||
+                YumeVpnRuntime.state.value.phase != VpnPhase.Connected) delay(250)
+        }
         val replacement = requireNotNull(entry(previous.provider).selection)
         assertNotEquals(previous.grant, replacement.grant)
         assertNotEquals(previous.identity, replacement.identity)
         assertEquals(previous.copy(grant = replacement.grant, identity = replacement.identity), replacement)
-        evidence.put("live_rotation:${previous.provider}", true)
+        assertEquals(routeId(previous), YumeVpnRuntime.state.value.kitId)
+        evidence.put("live_renewal_in_tunnel:${previous.provider}", true)
         return replacement
     }
 
-    private suspend fun y4Live(betaInitial: ServiceSelection, manualId: String): ServiceSelection {
+    private suspend fun y4Live(betaCurrent: ServiceSelection, manualId: String) {
         val preferences = settings.settings.value
         val manualBefore = manualHash(manualId)
         val alphaInitial = requireNotNull(entry(alpha).selection)
-        startSelected(betaInitial, "beta-initial")
-        val betaCurrent = rotateLive(betaInitial)
+        // The anonymous provider's opening code is typed by hand, so its grant renews only at a person's Connect.
+        startSelected(betaCurrent, "beta-initial")
         assertEquals(alphaInitial, entry(alpha).selection)
         assertEquals(manualBefore, manualHash(manualId))
-        startSelected(betaCurrent, "beta-rotated")
         click(strings.disconnect); await { YumeVpnRuntime.state.value.phase == VpnPhase.Idle }
 
         startSelected(alphaInitial, "alpha-before-api-expiry")
         val run = YumeVpnRuntime.state.value.runId
         host("account-expired", selected = alphaInitial)
-        packets(alphaInitial.id, "alpha-after-api-expiry")
+        packets(routeId(alphaInitial), "alpha-after-api-expiry")
         assertEquals(run, YumeVpnRuntime.state.value.runId)
         nav(strings.connectTab)
         val previousCatalog = services.state.value.catalogs[alpha]
         within(alpha, text(MessageId.PROVIDER_SERVERS))
         await { services.state.value.catalogs[alpha] != previousCatalog || services.state.value.error != null }; idle()
         assertNull(services.state.value.error)
-        assertEquals(alphaInitial, services.state.value.selection)
+        assertEquals(alpha, services.state.value.selection?.provider)
         assertEquals(run, YumeVpnRuntime.state.value.runId)
-        packets(alphaInitial.id, "alpha-after-api-refresh")
+        packets(routeId(alphaInitial), "alpha-after-api-refresh")
         evidence.put("account_api_expiry_and_refresh_preserve_transport", true)
-        val alphaCurrent = rotateLive(alphaInitial)
+        val alphaCurrent = renewLive(alphaInitial)
         assertEquals(betaCurrent, entry(beta).selection)
         assertEquals(manualBefore, manualHash(manualId))
-        startSelected(alphaCurrent, "alpha-rotated")
+        packets(routeId(alphaCurrent), "alpha-renewed")
 
         mark("revoke-live-alpha")
         val network = vpnNetwork()
@@ -417,8 +441,8 @@ class ServiceLiveIntegrationTest {
                 catch (_: IOException) { /* A reset also closes the authenticated stream. */ }
             }
             await { YumeVpnRuntime.state.value.phase != VpnPhase.Connected }
-            assertEquals(alphaCurrent, services.state.value.selection)
-            assertEquals(alphaCurrent.id, YumeVpnRuntime.state.value.kitId)
+            assertEquals(alpha, services.state.value.selection?.provider)
+            assertEquals(routeId(alphaCurrent), YumeVpnRuntime.state.value.kitId)
             assertTrue(YumeVpnRuntime.state.value.status?.sessions?.let { it <= sessions } ?: true)
             assertNotEquals(VpnPhase.Connected, YumeVpnRuntime.state.value.phase)
             // Stop retries, then make a fresh explicit attempt with the same local
@@ -434,10 +458,10 @@ class ServiceLiveIntegrationTest {
                 attempt.phase == VpnPhase.Error
             }
             val refused = YumeVpnRuntime.state.value
-            assertEquals(alphaCurrent.id, refused.kitId)
+            assertEquals(routeId(alphaCurrent), refused.kitId)
             assertFalse(refused.isActive)
             assertNotEquals(VpnFailure.None, refused.failure)
-            assertEquals(alphaCurrent, services.state.value.selection)
+            assertEquals(alphaCurrent, entry(alpha).selection)
             assertEquals(betaCurrent, entry(beta).selection)
             assertEquals(manualBefore, manualHash(manualId))
             evidence.put("revoked_admission_failure", refused.failure.name)
@@ -455,7 +479,6 @@ class ServiceLiveIntegrationTest {
         startSelected(betaCurrent, "beta-after-alpha-revoke-and-removal")
         click(strings.disconnect); await { YumeVpnRuntime.state.value.phase == VpnPhase.Idle }
         evidence.put("two_provider_manual_and_preferences_isolation", true)
-        return betaCurrent
     }
 
     @Test fun presentationAndProvisioning() = runBlocking {
@@ -470,9 +493,9 @@ class ServiceLiveIntegrationTest {
         }
         nav(strings.connectTab)
         add(beta)
-        provision(beta, wrong = true)
-        provision(beta)
-        var betaSelection = requireNotNull(services.state.value.selection)
+        assertNull(provision(beta, wrong = true))
+        val betaSelection = requireNotNull(provision(beta))
+        val betaRoute = requireNotNull(services.state.value.selection)
         evidence.put("simple_anonymous_wrong_code_exact_retry", true)
 
         mark("manual-picker")
@@ -493,7 +516,7 @@ class ServiceLiveIntegrationTest {
         assertEquals(manualId, kits.selectedId.value)
         nav(strings.overviewTab)
         compose.onNodeWithText("Y3 independent manual").assertExists()
-        services.select(betaSelection); await { services.state.value.selection == betaSelection }; idle()
+        services.useProvider(beta); await { services.state.value.selection == betaRoute }; idle()
 
         nav(strings.connectTab)
         add(alpha, config.getString("issuer"))
@@ -520,29 +543,29 @@ class ServiceLiveIntegrationTest {
         assertEquals(listOf("9.9.9.9"), settings.settings.value.dnsServers)
         assertFalse(settings.settings.value.carryIpv6)
         assertEquals(listOf(manualId), kits.kits.value.map { it.id })
-        if (traffic != null) betaSelection = y4Live(betaSelection, manualId)
-        services.select(betaSelection); await { services.state.value.selection == betaSelection }; idle()
-        connectAndStop(betaSelection.id)
-        connectAndStop(betaSelection.id)
+        if (traffic != null) y4Live(betaSelection, manualId)
+        services.useProvider(beta); await { services.state.value.selection == betaRoute }; idle()
+        connectAndStop(betaRoute.id)
+        connectAndStop(betaRoute.id)
         evidence.put("provider_connect_stop_reconnect_stop", true)
-        assertEquals(betaSelection, services.selectedForRestart())
+        assertEquals(betaRoute, services.selectedForRestart())
         // The host now kills this process. No pending PKCE state is serialized.
         if (traffic == null) {
             services.authorize(alpha)
             assertEquals(alpha, services.state.value.authorizing)
         }
-        File(handoff, "restart.json").writeText(JSONObject().put("selection", JSONObject(betaSelection.encode()))
+        File(handoff, "restart.json").writeText(JSONObject().put("selection", JSONObject(betaRoute.encode()))
             .put("manual", manualId).toString())
         File(handoff, "presentation-evidence.json").writeText(evidence.toString(2))
     }
 
     @Test fun afterProcessDeath() = runBlocking {
         val saved = JSONObject(File(handoff, "restart.json").readText())
-        val selected = ServiceSelection.decode(saved.getJSONObject("selection").toString())
+        val selected = requireNotNull(ServiceRoute.decode(saved.getJSONObject("selection").toString()))
         val preferences = settings.settings.value
         val manualBefore = manualHash(saved.getString("manual"))
         await { services.state.value.loaded }
-        assertEquals(selected, services.state.value.selection)
+        assertEquals(selected, services.state.value.selection?.copy(choice = null))
         assertNull(services.state.value.authorizing)
         assertNull(services.state.value.codePrompt)
         assertTrue(services.state.value.catalogs.isEmpty())
@@ -562,12 +585,12 @@ class ServiceLiveIntegrationTest {
         assertEquals(VpnFailure.KitUnavailable, YumeVpnRuntime.state.value.failure)
         assertEquals(text(MessageId.PROVIDER_SUSPENDED), YumeVpnRuntime.state.value.failureDetail)
         assertFalse(YumeVpnRuntime.state.value.isActive)
-        assertEquals(selected, services.state.value.selection)
+        assertEquals(selected, services.state.value.selection?.copy(choice = null))
         assertFalse(services.state.value.manual)
         evidence.put("live_transport_expiry_stops_exact_run", true)
         if (traffic == null) {
             val alphaSelection = requireNotNull(entry(alpha).selection)
-            services.select(alphaSelection); await { services.state.value.selection == alphaSelection }; idle()
+            services.useProvider(alpha); await { services.state.value.selection?.provider == alpha }; idle()
             click(strings.connect)
             await { YumeVpnRuntime.state.value.phase == VpnPhase.Connected }
             nav(strings.connectTab)
@@ -576,7 +599,7 @@ class ServiceLiveIntegrationTest {
             compose.onNode(hasText(text(MessageId.PROVIDER_REMOVE)) and hasClickAction() and
                 androidx.compose.ui.test.hasAnyAncestor(androidx.compose.ui.test.isDialog())).performClick()
             await { YumeVpnRuntime.state.value.phase == VpnPhase.Error }
-            assertEquals(alphaSelection.id, YumeVpnRuntime.state.value.kitId)
+            assertEquals(routeId(alphaSelection), YumeVpnRuntime.state.value.kitId)
             assertEquals(VpnFailure.KitUnavailable, YumeVpnRuntime.state.value.failure)
             assertEquals(text(MessageId.PROVIDER_SUSPENDED), YumeVpnRuntime.state.value.failureDetail)
             await { services.state.value.entries.none { it.provider == alpha } }

@@ -3,9 +3,9 @@ package com.fixcraft.yume.consumer
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.fixcraft.yume.provider.ProviderClient
 import com.fixcraft.yume.provider.ProviderCodec
-import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,6 +28,7 @@ class ServiceSelectionTest {
         host = "edge.operator.example",
         port = 443,
         label = "Synthetic server", role = "vpn",
+        providerLabel = "Synthetic operator",
     )
 
     private val request get() = ProviderCodec.GrantRequest(
@@ -52,15 +53,14 @@ class ServiceSelectionTest {
     )
 
     @Test
-    fun persistedSelectionRetainsEveryBindingAndSummary() {
-        val restored = ServiceSelection.decode(selected.encode())
-        assertEquals(selected, restored)
-        assertEquals("provider:${selected.epoch}:${selected.grant}", restored.id)
-        assertEquals(selected.id, restored.summary.id)
-        assertEquals(selected.label, restored.summary.name)
-        assertEquals(selected.host, restored.summary.host)
-        assertEquals(selected.port, restored.summary.port)
-        lease().use { assertTrue(restored.matches(it, "vpn")) }
+    fun aRouteSummarizesItsChosenServerAndNothingBeforeAChoice() {
+        val route = ServiceRoute(selected.provider, selected.epoch, "vpn", ProviderClient.Choice(selected.service, server))
+        val summary = requireNotNull(route.summary)
+        assertEquals("provider:${selected.epoch}", summary.id)
+        assertEquals(selected.label to selected.host, summary.name to summary.host)
+        assertEquals(selected.port, summary.port)
+        assertNull(route.copy(choice = null).summary)
+        lease().use { assertTrue(selected.matches(it, "vpn")) }
     }
 
     @Test
@@ -115,35 +115,12 @@ class ServiceSelectionTest {
         val entry = ProviderClient.Enrollment(selected.provider, selected.epoch,
             "Synthetic operator", null, grant, server, false)
         assertEquals(selected, ServiceSelection.from(entry))
+        // The declared country is presentation for the notification, never part of the binding.
+        val placed = ServiceSelection.from(entry.copy(server = server.copy(country = "JP")))
+        assertEquals("JP", placed.country)
+        lease().use { assertTrue(placed.matches(it, "vpn")) }
         assertRefused { ServiceSelection.from(entry.copy(grant = null)) }
         assertRefused { ServiceSelection.from(entry.copy(server = null)) }
-    }
-
-    @Test
-    fun malformedOrIncompletePersistedBindingsAreRefused() {
-        assertRefused { ServiceSelection.decode("{") }
-        assertRefused { ServiceSelection.decode(" ".repeat(4_097)) }
-        val missing = JSONObject(selected.encode()).apply { remove("grant") }
-        assertRefused { ServiceSelection.decode(missing.toString()) }
-        val extra = JSONObject(selected.encode()).put("fallback", "manual")
-        assertRefused { ServiceSelection.decode(extra.toString()) }
-        val invalid = mapOf(
-            "provider" to "http://operator.example",
-            "epoch" to "invalid-epoch",
-            "device" to "device with spaces",
-            "service" to "service/escape",
-            "server" to "",
-            "grant" to "grant?other",
-            "identity" to "A".repeat(64),
-            "serverKey" to "b".repeat(63),
-            "host" to "127.0.0.1",
-            "port" to 0,
-            "label" to "",
-        )
-        invalid.forEach { (field, value) ->
-            val changed = JSONObject(selected.encode()).put(field, value)
-            assertRefused(field) { ServiceSelection.decode(changed.toString()) }
-        }
     }
 
     private fun assertRefused(field: String = "binding", action: () -> Unit) {

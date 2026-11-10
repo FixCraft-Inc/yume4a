@@ -309,7 +309,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    data class ConnectRequest(val id: String, val service: com.fixcraft.yume.consumer.ServiceSelection?)
+    data class ConnectRequest(val id: String, val service: com.fixcraft.yume.consumer.ServiceRoute?)
     private var consentTarget: ConnectRequest? = null
 
     fun captureConnectTarget() {

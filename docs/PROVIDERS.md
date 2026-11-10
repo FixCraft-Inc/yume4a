@@ -274,15 +274,21 @@ The first four fields have the catalog meanings. The next four are identifiers.
 `previous_grant` is `null` for initial issuance or the installed grant ID for
 refresh. Bind selection to a fresh catalog. A refresh keeps the same provider,
 device, service, server and role. Moving servers requires a new explicit choice.
+A client may instead renew with a fresh initial grant (`previous_grant` null)
+while its current grant still works, then revoke the current one. The shared
+Android client does this, at the later of `refresh_after` and half the lease.
 
 `request_id` is a fresh random identifier and an idempotency key, bound to the
 authenticated account (or public device), exact body and operation. Keep its
-result for 86400 seconds, with at most 64 retained results per principal. Refuse
+result for 86400 seconds. A principal may start at most 64 operations in any
+hour, since grants renew at half their lease and each replaced grant is revoked. Refuse
 new requests with `rate_limited` when full, preserving live idempotency records.
 An identical retry returns the same grant, with its
 original expiry. A changed body with the same key is `conflict`. After the
-30 second deadline, perform at most one identical retry by explicit action.
-Never automatically generate another grant to recover an ambiguous response.
+30 second deadline, repeat the identical request only by explicit action, as
+often as the person retries, until a definitive answer (`revoked`,
+`not_entitled`, `binding`, `malformed` or `unsupported`) ends it. Never
+automatically generate another grant to recover an ambiguous response.
 
 The successful response repeats every request field and adds:
 
@@ -335,9 +341,11 @@ Errors have exactly `v: 1`, `error`, `retry_after`. `retry_after` is an integer
 `malformed` (HTTP 400), `binding` (400), `unsupported` (422), `unauthorized`
 (401), `not_entitled` (403), `conflict` (409), `stale` (409), `revoked` (410),
 `rate_limited` (429), `unavailable` (503). No peer text or credential is echoed.
-Local failures add `state`, `storage` and `cancelled`. Refusal never changes
-provider, TLS verification, route length or direct-routing consent. A single
-visible error ends the attempt, with no unbounded retry or login loop.
+Local failures add `state`, `storage`, `cancelled` and `link_unverified`, the
+last when Android has not verified the client's own callback link. Refusal
+never changes provider, TLS verification, route length or direct-routing
+consent. A single visible error ends the attempt, with no unbounded retry or
+login loop.
 
 ## Transport enforcement and existing tooling
 

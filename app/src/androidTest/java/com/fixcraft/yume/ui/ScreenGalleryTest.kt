@@ -24,7 +24,9 @@ import com.fixcraft.yume.MainUiState
 import com.fixcraft.yume.TuningUiState
 import com.fixcraft.yume.consumer.CodePrompt
 import com.fixcraft.yume.consumer.ServiceEntry
+import com.fixcraft.yume.consumer.ServiceRoute
 import com.fixcraft.yume.consumer.ServiceSelection
+import com.fixcraft.yume.provider.ProviderClient
 import com.fixcraft.yume.consumer.ServiceUiState
 import com.fixcraft.yume.core.YumeStatus
 import com.fixcraft.yume.data.AppLanguage
@@ -291,7 +293,13 @@ class ScreenGalleryTest {
         services = ServiceUiState(loaded = true, manual = true))
 
     private fun routeState(selection: ServiceSelection) = MainUiState(services = ServiceUiState(
-        entries = listOf(signedIn(selection)), catalogs = mapOf(PROVIDER to CATALOG), selection = selection, loaded = true, browserRegistered = true))
+        entries = listOf(signedIn(selection)), catalogs = mapOf(PROVIDER to CATALOG), selection = routeOf(selection), loaded = true, browserRegistered = true))
+
+    /** The selected route a held grant belongs to, as the controller publishes it. */
+    private fun routeOf(selection: ServiceSelection) = ServiceRoute(PROVIDER, EPOCH, "vpn", choiceOf(selection))
+
+    private fun choiceOf(selection: ServiceSelection) =
+        ProviderClient.Choice(selection.service, SERVERS.first { it.id == selection.server })
 
     private fun selectedRoute() = selection(JAPAN)
 
@@ -301,7 +309,8 @@ class ScreenGalleryTest {
     private fun signedIn(selection: ServiceSelection?, server: ProviderCodec.Server? = JAPAN, renewAfter: Long? = FUTURE,
                          expiresAt: Long? = FUTURE + 1800, suspended: Boolean = false) =
         ServiceEntry(PROVIDER, EXAMPLE_LABEL, ISSUER, selection, expiresAt.takeIf { selection != null }, suspended, authorized = true,
-            server = server.takeIf { selection != null }, renewAfter = renewAfter.takeIf { selection != null })
+            server = server.takeIf { selection != null }, renewAfter = renewAfter.takeIf { selection != null },
+            choice = selection?.let(::choiceOf))
 
     private fun signedOut(issuer: String? = ISSUER, label: String = EXAMPLE_LABEL) =
         ServiceEntry(PROVIDER, label, issuer, null, null, false)
@@ -309,7 +318,6 @@ class ScreenGalleryTest {
     private fun serviceStates(): List<Pair<String, ServiceUiState>> {
         val base = ServiceUiState(loaded = true, browserRegistered = true)
         val chosen = selection(JAPAN)
-        val now = System.currentTimeMillis() / 1000
         return listOf(
             "empty" to base.copy(manual = true),
             "signed-out" to base.copy(entries = listOf(signedOut())),
@@ -323,26 +331,24 @@ class ScreenGalleryTest {
             "signed-in-no-list" to base.copy(entries = listOf(signedIn(null))),
             "signed-in-no-servers" to base.copy(entries = listOf(signedIn(null)), catalogs = mapOf(PROVIDER to CATALOG.copy(services = emptyList()))),
             "servers-unselected" to base.copy(entries = listOf(signedIn(null)), catalogs = mapOf(PROVIDER to CATALOG)),
+            "servers-grouped" to base.copy(entries = listOf(signedIn(chosen)), catalogs = mapOf(PROVIDER to CATALOG_GROUPED), selection = routeOf(chosen)),
             "servers-unknown-country" to base.copy(entries = listOf(signedIn(null)), catalogs = mapOf(PROVIDER to CATALOG_UNKNOWN)),
             "servers-long-names" to base.copy(entries = listOf(signedIn(null, server = null).copy(label = LONG_LABEL)), catalogs = mapOf(PROVIDER to CATALOG_LONG)),
             "server-provisioning" to base.copy(entries = listOf(signedIn(null)), catalogs = mapOf(PROVIDER to CATALOG), busy = setOf(PROVIDER)),
-            "server-selected" to base.copy(entries = listOf(signedIn(chosen)), catalogs = mapOf(PROVIDER to CATALOG), selection = chosen),
-            "server-selected-no-list" to base.copy(entries = listOf(signedIn(chosen)), selection = chosen),
+            "server-selected" to base.copy(entries = listOf(signedIn(chosen)), catalogs = mapOf(PROVIDER to CATALOG), selection = routeOf(chosen)),
+            "server-selected-no-list" to base.copy(entries = listOf(signedIn(chosen)), selection = routeOf(chosen)),
             "server-installed-not-in-use" to base.copy(entries = listOf(signedIn(chosen)), catalogs = mapOf(PROVIDER to CATALOG), manual = true),
-            "lease-renewal-due" to base.copy(entries = listOf(signedIn(chosen, renewAfter = now - 60, expiresAt = now + 600)), catalogs = mapOf(PROVIDER to CATALOG), selection = chosen),
-            "lease-renewing" to base.copy(entries = listOf(signedIn(chosen, renewAfter = now - 60, expiresAt = now + 600)), catalogs = mapOf(PROVIDER to CATALOG), selection = chosen, busy = setOf(PROVIDER)),
-            "lease-expired" to base.copy(entries = listOf(signedIn(chosen, renewAfter = now - 3600, expiresAt = now - 60)), catalogs = mapOf(PROVIDER to CATALOG), selection = chosen),
-            "suspended" to base.copy(entries = listOf(signedIn(chosen, suspended = true)), selection = chosen),
+            "suspended" to base.copy(entries = listOf(signedIn(chosen, suspended = true)), selection = routeOf(chosen)),
             "error-unauthorized" to base.copy(entries = listOf(signedOut()), error = "unauthorized"),
             "error-not-entitled" to base.copy(entries = listOf(signedIn(null)), catalogs = mapOf(PROVIDER to CATALOG), error = "not_entitled"),
-            "error-unavailable" to base.copy(entries = listOf(signedIn(chosen)), catalogs = mapOf(PROVIDER to CATALOG), selection = chosen, error = "unavailable"),
+            "error-unavailable" to base.copy(entries = listOf(signedIn(chosen)), catalogs = mapOf(PROVIDER to CATALOG), selection = routeOf(chosen), error = "unavailable"),
             "error-rate-limited" to base.copy(entries = listOf(signedIn(null)), error = "rate_limited"),
             "error-stale" to base.copy(entries = listOf(signedIn(null)), catalogs = mapOf(PROVIDER to CATALOG), error = "stale"),
-            "error-binding" to base.copy(entries = listOf(signedIn(chosen)), selection = chosen, error = "binding"),
+            "error-binding" to base.copy(entries = listOf(signedIn(chosen)), selection = routeOf(chosen), error = "binding"),
             "error-storage" to base.copy(entries = listOf(signedIn(null)), error = "storage"),
             "removed" to base.copy(manual = false, removed = true),
             "two-providers" to base.copy(entries = listOf(signedIn(chosen), signedOut(label = "Second operator").copy(provider = "https://second.example.net", issuer = "https://second.example.net")),
-                catalogs = mapOf(PROVIDER to CATALOG), selection = chosen),
+                catalogs = mapOf(PROVIDER to CATALOG), selection = routeOf(chosen)),
             "code-prompt" to base.copy(entries = listOf(signedOut(issuer = null)), codePrompt = CodePrompt("example", PROVIDER, "example-grant")),
         )
     }
@@ -384,8 +390,9 @@ class ScreenGalleryTest {
         const val EXAMPLE_LABEL = "Example Network"
         const val LONG_LABEL = "Example Community Network of the Northern Prefectures, Volunteer Operators' Association"
         const val FUTURE = 4_102_444_800L
-        val JAPAN = ProviderCodec.Server("jp-vpn", "JP1 VPN", "jp1.example.org", 443, "b".repeat(64), "JP")
-        val STATES = ProviderCodec.Server("us2-vpn", "US2 VPN", "us2.example.org", 443, "c".repeat(64), "US")
+        val JAPAN = ProviderCodec.Server("jp-vpn", "Japan #1", "jp1.example.org", 443, "b".repeat(64), "JP")
+        val JAPAN_TWO = ProviderCodec.Server("jp2-vpn", "Japan #2", "jp2.example.org", 443, "f".repeat(64), "JP")
+        val STATES = ProviderCodec.Server("us2-vpn", "United States #1", "us2.example.org", 443, "c".repeat(64), "US")
         val UNKNOWN = ProviderCodec.Server("lab-vpn", "Lab VPN", "lab.example.org", 8443, "d".repeat(64), null)
         val LONG_SERVER = ProviderCodec.Server("long-vpn", "Very long server name for the north-east regional backbone", "a-long-host-name.north-east.example.org", 44301, "e".repeat(64), "GB")
         private fun catalog(vararg servers: ProviderCodec.Server) = ProviderCodec.Catalog(PROVIDER, "example-device", "$PROVIDER/provider/v1",
@@ -393,6 +400,8 @@ class ScreenGalleryTest {
         val CATALOG = catalog(JAPAN, STATES)
         val CATALOG_UNKNOWN = catalog(JAPAN, UNKNOWN)
         val CATALOG_LONG = catalog(LONG_SERVER, STATES, UNKNOWN)
+        val CATALOG_GROUPED = catalog(JAPAN, JAPAN_TWO, STATES)
+        val SERVERS = listOf(JAPAN, JAPAN_TWO, STATES, UNKNOWN, LONG_SERVER)
         val KIT = KitSummary("kit-1", "Home server", "home.example.net", 8443, 0)
         val KIT_LONG = KitSummary("kit-2", "A long kit name for the family server", "a-very-long-host-name-for-an-operator.example.net", 44301, 0)
         val LOG = listOf(

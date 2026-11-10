@@ -20,7 +20,8 @@ internal class YumeServiceAdapter(context: Context) : ServiceAdapter<KitSession>
     override fun openSession(bundle: ByteArray): KitSession = KitStore.openBundleSession(app, bundle)
 }
 
-internal val ServiceSelection.summary: KitSummary get() = KitSummary(id, label, host, port, 0)
+/** The route as the screens' kit summary. Null until a server is chosen. The address is display data only. */
+internal val ServiceRoute.summary: KitSummary? get() = choice?.server?.let { KitSummary(id, it.label, it.host, it.port, 0) }
 
 internal fun yumeServiceController(context: Context, registration: ProviderRegistration?): ServiceController<KitSession> {
     val app = context.applicationContext ?: context

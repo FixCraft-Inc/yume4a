@@ -9,6 +9,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import net.openid.appauth.TokenRequest
+import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
@@ -45,6 +46,19 @@ class ProviderClient(
     private class Account(val tokens: ProviderCodec.Tokens, val accessUntil: Long, val refreshUntil: Long) {
         override fun toString() = "Account(redacted)"
     }
+
+    /**
+     * The server a person chose for this enrollment. Display data from a catalog,
+     * not authority: [prepare] binds a grant only to a fresh catalog's entry.
+     */
+    data class Choice(val service: String, val server: ProviderCodec.Server)
+
+    /** A replaced grant that is still live at the provider until revoked or expired. */
+    private class Retired(val grantId: String, val expiresAt: Long)
+
+    /** A usable grant, and the refusal of a due renewal that could not replace it yet. */
+    class Prepared(val grant: ProviderCodec.Grant, val renewalRefusal: String?)
+
     private class Record(
         val context: ProviderCodec.Context,
         var descriptor: ProviderCodec.Descriptor,
@@ -55,8 +69,11 @@ class ProviderClient(
         var grant: ProviderCodec.Grant? = null,
         var server: ProviderCodec.Server? = null,
         var suspended: Boolean = false,
+        // The idempotency body of an unanswered grant request. Only an explicit
+        // retry reuses it, and a definitive answer clears it.
         var pendingRequest: ProviderCodec.GrantRequest? = null,
-        var retries: Int = 0,
+        var choice: Choice? = null,
+        val retired: MutableList<Retired> = mutableListOf(),
     )
     private val platform = platform.applicationContext
     private val lanes = ConcurrentHashMap<String, Lane>()
@@ -180,57 +197,116 @@ class ProviderClient(
     }
 
     /**
+     * Records [server] of [service] in [selected] as this enrollment's chosen
+     * server. Local only: nothing is requested until [prepare].
+     */
+    suspend fun choose(provider: String, selected: ProviderCodec.Catalog, service: String, server: String) =
+        operation(provider) { lane, generation ->
+            snapshot(provider) { record, epoch, bundles ->
+                if (selected.provider != provider || selected.deviceId != record.context.deviceId ||
+                    selected.audience != record.context.audience) throw ProviderCodec.Refusal("binding")
+                val entry = selected.services.firstOrNull { it.id == service && it.role == record.context.role }
+                    ?.servers?.firstOrNull { it.id == server } ?: throw ProviderCodec.Refusal("not_entitled")
+                record.choice = Choice(service, entry)
+                persist(record, epoch, bundles, lane, generation)
+            }
+        }
+
+    /**
+     * Makes the chosen server usable and returns its grant. A current grant for
+     * that server is returned without the network until [ProviderCodec.Grant.renewAt], or,
+     * when [renew] is false, until shortly before it expires: a connection
+     * starts on it at once and renews later through its own tunnel, so a
+     * blocked provider API does not stop it. Otherwise, and for any other
+     * server, a fresh grant is issued while the current one stays usable. When
+     * a due renewal fails for a transient reason and the current grant is still
+     * live, that grant is returned with the refusal, so the caller keeps its
+     * connection and tries again later.
+     *
      * A device-bound provider delivers the opening code to the bound device
      * itself. [openingCode] supplies it only for anonymous providers, whose
      * code arrives through a separately authenticated channel.
      */
-    suspend fun install(provider: String, selected: ProviderCodec.Catalog, service: String, server: String,
-                        openingCode: suspend (ProviderCodec.Grant) -> CharArray): ProviderCodec.Grant =
+    suspend fun prepare(provider: String, renew: Boolean, openingCode: suspend (ProviderCodec.Grant) -> CharArray): Prepared {
+        val (choice, current) = operation(provider) { _, _ ->
+            snapshot(provider) { record, _, _ ->
+                val choice = record.choice ?: throw ProviderCodec.Refusal("state")
+                choice to record.grant?.takeIf { grant ->
+                    !record.suspended && now().seconds < grant.expiresAt &&
+                        grant.request.serviceId == choice.service && grant.request.serverId == choice.server.id
+                }
+            }
+        }
+        val seconds = now().seconds
+        if (current != null && (seconds < current.renewAt || (!renew && seconds < current.expiresAt - CONNECT_MARGIN_SECONDS))) {
+            return Prepared(current, null)
+        }
+        return try {
+            Prepared(issue(provider, catalog(provider), choice.service, choice.server.id, openingCode), null)
+        } catch (refused: ProviderCodec.Refusal) {
+            if (current == null || refused.code !in RENEWAL_TRANSIENT || now().seconds >= current.expiresAt) throw refused
+            Prepared(current, refused.code)
+        }
+    }
+
+    /**
+     * Issues and stores a fresh grant for one server. Earlier grants stay usable
+     * until this one's kit is validated and stored, and are then retired for
+     * [releaseRetired]. A failure leaves the earlier grant in place.
+     */
+    private suspend fun issue(provider: String, selected: ProviderCodec.Catalog, service: String, server: String,
+                              openingCode: suspend (ProviderCodec.Grant) -> CharArray): ProviderCodec.Grant =
         operation(provider) { lane, generation ->
             snapshot(provider) { record, epoch, bundles ->
                 revalidate(record, epoch, bundles, lane, generation)
-                // An expired grant cannot be renewed: the provider has closed it.
-                // Ask for a fresh grant instead, on any entitled server.
-                val previous = record.grant?.takeIf { now().seconds < it.expiresAt }
-                if (previous != null && (previous.request.serviceId != service || previous.request.serverId != server)) {
-                    throw ProviderCodec.Refusal("binding")
-                }
-                val pending = record.pendingRequest
-                if (pending != null && (pending.serviceId != service || pending.serverId != server || record.retries >= 1)) {
-                    throw ProviderCodec.Refusal("state")
-                }
-                val request = pending ?: ProviderCodec.GrantRequest(provider, record.context.deviceId, ProviderAuthorization.randomIdentifier(),
-                    service, server, record.context.role, previous?.grantId)
+                // An unanswered request for this server is repeated exactly, so the
+                // provider returns its grant rather than issuing another.
+                val request = record.pendingRequest?.takeIf { it.serviceId == service && it.serverId == server && it.previousGrant == null }
+                    ?: ProviderCodec.GrantRequest(provider, record.context.deviceId, ProviderAuthorization.randomIdentifier(),
+                        service, server, record.context.role, null)
                 val edge = ProviderCodec.request(request, selected, record.context, now().seconds)
-                if (previous != null && now().seconds < previous.refreshAfter) throw ProviderCodec.Refusal("stale")
                 // Each request below can learn that the sign-in ended.
                 suspend fun <T> account(call: suspend () -> T): T = signedIn(record, epoch, lane, generation, call)
                 val credential = credential(record, epoch, bundles, lane, generation)
-                // Remote rotation may succeed even if any later step fails. Persist
-                // suspension before the request so restart cannot restore old authority.
-                record.suspended = true
-                record.pendingRequest = request
-                record.retries = if (pending == null) 0 else record.retries + 1
-                persist(record, epoch, bundles, lane, generation)
-                connections.stop(provider)
-                val body = ProviderCodec.encode(request.fields())
-                val raw = try { account { api(credential, "${record.context.audience}/grants", body, ProviderCodec.METADATA_LIMIT) } }
-                    finally { body.fill(0) }
-                val grant = try { ProviderCodec.grant(raw, request, previous, now().seconds) } finally { raw.fill(0) }
-                val sealed = account { api(credential, "${record.context.audience}/grants/${grant.grantId}/kit", null, grant.kitSize,
-                    "application/octet-stream", record.context.deviceId) }
+                // A lost response must be retried with the same body, even after a restart.
+                if (record.pendingRequest != request) {
+                    record.pendingRequest = request
+                    persist(record, epoch, bundles, lane, generation)
+                }
+                // A definitive answer ends this request. Anything else keeps it for an explicit retry.
+                suspend fun <T> answered(issued: ProviderCodec.Grant?, call: suspend () -> T): T = try { call() }
+                    catch (refused: ProviderCodec.Refusal) {
+                        if (refused.code in DEFINITIVE && record.pendingRequest == request) {
+                            record.pendingRequest = null
+                            issued?.let { retire(record, it.grantId, it.expiresAt) }
+                            persist(record, epoch, bundles, lane, generation)
+                        }
+                        throw refused
+                    }
+                val grant = answered(null) {
+                    val body = ProviderCodec.encode(request.fields())
+                    val raw = try { account { api(credential, "${record.context.audience}/grants", body, ProviderCodec.METADATA_LIMIT) } }
+                        finally { body.fill(0) }
+                    try { ProviderCodec.grant(raw, request, null, now().seconds) } finally { raw.fill(0) }
+                }
+                // The provider's answers about this grant can end it. A local validation
+                // failure, such as a mistyped opening code, keeps it for a corrected retry.
+                val sealed = answered(grant) { account { api(credential, "${record.context.audience}/grants/${grant.grantId}/kit", null,
+                    grant.kitSize, "application/octet-stream", record.context.deviceId) } }
                 try {
                     val code = if (ProviderCodec.DEVICE_BOUND in record.descriptor.required) {
-                        account { deliveredCode(record, credential, grant) }
+                        answered(grant) { account { deliveredCode(record, credential, grant) } }
                     } else openingCode(grant)
                     try {
                         kits.validate(sealed, code, grant, edge).use { kit ->
                             if (now().seconds >= grant.expiresAt) throw ProviderCodec.Refusal("stale")
+                            record.grant?.takeIf { it.grantId != grant.grantId }?.let { retire(record, it.grantId, it.expiresAt) }
                             record.grant = grant
                             record.server = edge
+                            // Refresh the choice's catalog data, unless the person chose another server meanwhile.
+                            if (record.choice?.service == service && record.choice?.server?.id == server) record.choice = Choice(service, edge)
                             record.suspended = false
                             record.pendingRequest = null
-                            record.retries = 0
                             persist(record, epoch, mapOf(grant.grantId to kit.bundle), lane, generation)
                             transportDeadlines[provider] = grant.grantId to
                                 (now().elapsedMillis + (grant.expiresAt - now().seconds) * 1000)
@@ -240,6 +316,46 @@ class ProviderClient(
                 grant
             }
         }
+
+    /**
+     * Revokes retired grants that have not expired. One the provider confirms,
+     * or answers as already ended, is forgotten. One that cannot be reached
+     * stays for a later attempt until its own expiry closes it anyway.
+     */
+    suspend fun releaseRetired(provider: String): Boolean = operation(provider) { lane, generation ->
+        snapshot(provider) { record, epoch, bundles ->
+            val current = now().seconds
+            record.retired.removeAll { it.expiresAt <= current }
+            if (record.retired.isEmpty()) return@snapshot true
+            val credential = try { credential(record, epoch, bundles, lane, generation) }
+                catch (refused: ProviderCodec.Refusal) {
+                    // A provider closes a sign-in's grants when it ends that sign-in.
+                    if (refused.code == "unauthorized") record.retired.clear()
+                    persist(record, epoch, bundles, lane, generation)
+                    return@snapshot record.retired.isEmpty()
+                }
+            val closed = withTimeoutOrNull(RELEASE_MILLIS) {
+                record.retired.filter { retired ->
+                    val fields = base(record) + mapOf("request_id" to ProviderAuthorization.randomIdentifier(), "grant_id" to retired.grantId)
+                    val body = ProviderCodec.encode(fields)
+                    try {
+                        val reply = api(credential, "${record.context.audience}/revoke", body)
+                        try { ProviderCodec.decode(reply) == fields + ("status" to "revoked") } finally { reply.fill(0) }
+                    } catch (refused: ProviderCodec.Refusal) { refused.code == "revoked" }
+                    finally { body.fill(0) }
+                }.map { it.grantId }.toSet()
+            }.orEmpty()
+            record.retired.removeAll { it.grantId in closed }
+            persist(record, epoch, bundles, lane, generation)
+            record.retired.isEmpty()
+        }
+    }
+
+    private fun retire(record: Record, grantId: String, expiresAt: Long) {
+        if (record.retired.none { it.grantId == grantId }) record.retired += Retired(grantId, expiresAt)
+        // The provider's own expiry ends the oldest ones if a long outage fills the list.
+        while (record.retired.size > MAX_RETIRED) record.retired.removeAt(0)
+    }
 
     /** Explicit acquisition rechecks a lease. The consumer must stop at its returned deadline. */
     suspend fun lease(provider: String): Lease = operation(provider) { lane, generation ->
@@ -275,7 +391,7 @@ class ProviderClient(
      */
     data class Enrollment(val provider: String, val epoch: String, val label: String, val issuer: String?,
                           val grant: ProviderCodec.Grant?, val server: ProviderCodec.Server?, val suspended: Boolean,
-                          val authorized: Boolean = false)
+                          val authorized: Boolean = false, val choice: Choice? = null)
 
     fun enrollments(): List<Enrollment> = store.origins().map { provider ->
         val epoch = store.epoch(provider) ?: throw ProviderCodec.Refusal("storage")
@@ -285,7 +401,8 @@ class ProviderClient(
             if (record.context.provider != provider) throw ProviderCodec.Refusal("binding")
             Enrollment(provider, epoch.value, record.descriptor.label, record.context.acceptedIssuer,
                 record.grant, record.server, record.suspended,
-                if (record.descriptor.auth == null) record.deviceCredential != null else record.account != null)
+                if (record.descriptor.auth == null) record.deviceCredential != null else record.account != null,
+                record.choice)
         }
     }
 
@@ -343,8 +460,9 @@ class ProviderClient(
             val token = account ?: record.deviceCredential
             // A browser-authorized token without its device key cannot authenticate.
             val credential = token?.takeIf { account == null || key != null }?.let { Credential(ProviderBearer(provider, it), key) }
-            if (record.grant != null && credential != null) {
-                val fields = base(record) + mapOf("request_id" to ProviderAuthorization.randomIdentifier(), "grant_id" to record.grant!!.grantId)
+            val live = listOfNotNull(record.grant?.grantId) + record.retired.map { it.grantId }
+            if (credential != null) live.forEach { grantId ->
+                val fields = base(record) + mapOf("request_id" to ProviderAuthorization.randomIdentifier(), "grant_id" to grantId)
                 val body = ProviderCodec.encode(fields)
                 try {
                     val reply = api(credential, "${record.context.audience}/revoke", body)
@@ -355,7 +473,7 @@ class ProviderClient(
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { confirmed = false }
                 finally { body.fill(0) }
-            } else if (record.grant != null) confirmed = false
+            } else if (live.isNotEmpty()) confirmed = false
             val auth = record.descriptor.auth
             if (auth != null && record.account != null) {
                 val body = ProviderAuthorization.form(mapOf("token" to record.account!!.tokens.refreshToken, "client_id" to auth.clientId))
@@ -396,9 +514,9 @@ class ProviderClient(
      * `unauthorized` answer means the issuer or provider ended that sign-in,
      * for example through account-wide logout. Grants belong to the sign-in
      * that obtained them, and the provider closes them with it, so the local
-     * account and grant are both forgotten and their connections stop. The
-     * enrollment then reads signed out, and after signing in again the user
-     * chooses a server for a fresh grant rather than renewing a closed one.
+     * account and its grants are all forgotten and their connections stop. The
+     * enrollment then reads signed out. Its chosen server stays, and after
+     * signing in again the next [prepare] issues a fresh grant for it.
      */
     private suspend fun <T> signedIn(record: Record, epoch: ProviderStore.Epoch, lane: Lane, generation: Long,
                                      request: suspend () -> T): T = try { request() }
@@ -408,7 +526,7 @@ class ProviderClient(
                 record.grant = null
                 record.server = null
                 record.pendingRequest = null
-                record.retries = 0
+                record.retired.clear()
                 // Suspension guarded the closed grant. Nothing usable remains to guard.
                 record.suspended = false
                 transportDeadlines.remove(record.context.provider)
@@ -451,6 +569,13 @@ class ProviderClient(
                     http.request(auth.issuer, auth.tokenEndpoint, body,
                         requestType = "application/x-www-form-urlencoded", proof = proof)
                 }
+            } catch (refused: ProviderCodec.Refusal) {
+                // A refresh that never reached the issuer left its single-use token unspent.
+                if (refused.unsent) {
+                    record.account = account
+                    persist(record, epoch, bundles, lane, generation)
+                }
+                throw refused
             } finally { body.fill(0) }
             try {
                 val tokens = ProviderCodec.tokens(raw, account.tokens)
@@ -572,10 +697,11 @@ class ProviderClient(
             .put("descriptor", JSONObject(record.descriptor.fields())).put("saved", record.savedAt)
             .put("deviceCredential", record.deviceCredential ?: JSONObject.NULL).put("deviceUntil", record.deviceUntil)
             .put("suspended", record.suspended).put("grant", record.grant?.let { JSONObject(it.fields()) } ?: JSONObject.NULL)
-            .put("server", record.server?.let { server -> JSONObject().put("id", server.id).put("label", server.label)
-                .put("host", server.host).put("port", server.port).put("key", server.serverKeySha256)
-                .put("country", server.country ?: JSONObject.NULL) } ?: JSONObject.NULL)
-            .put("pending", record.pendingRequest?.let { JSONObject(it.fields()) } ?: JSONObject.NULL).put("retries", record.retries)
+            .put("server", record.server?.let(::serverJson) ?: JSONObject.NULL)
+            .put("pending", record.pendingRequest?.let { JSONObject(it.fields()) } ?: JSONObject.NULL)
+            .put("choice", record.choice?.let { choice -> JSONObject().put("service", choice.service)
+                .put("server", serverJson(choice.server)) } ?: JSONObject.NULL)
+            .put("retired", JSONArray(record.retired.map { JSONObject().put("grant", it.grantId).put("expires", it.expiresAt) }))
         record.account?.let { account -> json.put("account", JSONObject().put("type", "DPoP").put("access", account.tokens.accessToken)
             .put("refresh", account.tokens.refreshToken).put("accessUntil", account.accessUntil).put("refreshUntil", account.refreshUntil)) }
         return json.toString().toByteArray(Charsets.UTF_8).also {
@@ -606,7 +732,12 @@ class ProviderClient(
             record.pendingRequest = ProviderCodec.GrantRequest(context.provider, context.deviceId, pending.getString("request_id"),
                 pending.getString("service_id"), pending.getString("server_id"), context.role,
                 if (pending.isNull("previous_grant")) null else pending.getString("previous_grant"))
-            record.retries = json.getInt("retries")
+        }
+        json.optJSONArray("retired")?.let { retired ->
+            for (index in 0 until minOf(retired.length(), MAX_RETIRED)) {
+                val entry = retired.getJSONObject(index)
+                record.retired += Retired(ProviderCodec.identifier(entry.getString("grant")), entry.getLong("expires"))
+            }
         }
         if (!json.isNull("grant")) {
             val g = json.getJSONObject("grant")
@@ -616,13 +747,19 @@ class ProviderClient(
             record.grant = ProviderCodec.Grant(request, g.getString("grant_id"), g.getLong("generation"), g.getLong("issued_at"),
                 g.getLong("refresh_after"), g.getLong("expires_at"), g.getString("client_identity"), g.getString("kit_sha256"), g.getInt("kit_size"))
         }
-        json.optJSONObject("server")?.let { server ->
-            record.server = ProviderCodec.Server(server.getString("id"), server.getString("label"),
-                server.getString("host"), server.getInt("port"), server.getString("key"),
-                if (server.isNull("country")) null else server.getString("country"))
-        }
+        json.optJSONObject("server")?.let { record.server = server(it) }
+        record.choice = json.optJSONObject("choice")?.let { Choice(it.getString("service"), server(it.getJSONObject("server"))) }
+            // A record installed before choices existed chose its installed server.
+            ?: record.grant?.let { grant -> record.server?.let { Choice(grant.request.serviceId, it) } }
         return record
     }
+
+    private fun serverJson(server: ProviderCodec.Server): JSONObject = JSONObject().put("id", server.id)
+        .put("label", server.label).put("host", server.host).put("port", server.port)
+        .put("key", server.serverKeySha256).put("country", server.country ?: JSONObject.NULL)
+
+    private fun server(json: JSONObject) = ProviderCodec.Server(json.getString("id"), json.getString("label"),
+        json.getString("host"), json.getInt("port"), json.getString("key"), if (json.isNull("country")) null else json.getString("country"))
 
     override fun close() {
         closed = true
@@ -635,5 +772,14 @@ class ProviderClient(
     private companion object {
         /** Failures to reach a provider, and local stops, as opposed to its answers. */
         val TRANSIENT = setOf("unavailable", "rate_limited", "cancelled", "state")
+        /** Answers that end a grant request: repeating its body cannot succeed. */
+        val DEFINITIVE = setOf("revoked", "not_entitled", "binding", "malformed", "unsupported")
+        /** Renewal failures that leave a live grant worth keeping until the next attempt. */
+        val RENEWAL_TRANSIENT = setOf("unavailable", "rate_limited", "conflict", "stale")
+        /** Retired grants waiting for revocation. Each expires within an hour regardless. */
+        const val MAX_RETIRED = 8
+        const val RELEASE_MILLIS = 15_000L
+        /** A connection that starts on a grant needs at least this long before it ends. */
+        const val CONNECT_MARGIN_SECONDS = 120L
     }
 }

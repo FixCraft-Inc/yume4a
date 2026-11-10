@@ -37,11 +37,14 @@ service**. The details list the labeled provider and sign-in origins and the
 server address. Advanced mode adds the grant, native client identity, expected
 server key and transport expiry.
 
-The current client stores one installed server per provider enrollment. Choosing
-that server again renews its lease once renewal is allowed, or requests a new
-lease after expiry or suspension. To use another server from that provider,
-remove the service and add it again. It does not silently switch servers or
-providers after an error.
+Servers are listed by country, one row per country, and a country with several
+servers opens into its list. Choosing a server only records it for that
+provider and selects the provider; nothing is requested yet. Connect acquires
+the lease for the chosen server, and a live connection moves to a newly chosen
+server at once, keeping the VPN interface in place so traffic waits in the
+tunnel during the move. Lease times stay in the service details, since the app
+renews leases itself. It does not silently switch servers or providers after an
+error.
 
 Manual kits remain below Services on Connect. Import the operator's sealed file
 and its separately supplied code, select the kit, then connect. This path needs
@@ -135,16 +138,18 @@ mismatched grant.
 
 Account-token and anonymous-device API expiry remain independent of transport
 expiry. Account access-token expiry, or a refresh that gets no answer, does not
-itself end an existing valid transport lease. Leases are short, so the VPN
-renews its lease once renewal is allowed: it restarts on the renewed grant and
-reconnects within seconds. An always-on restart renews a due or expired lease
-before connecting. When the issuer or provider
-refuses the sign-in itself, its grant ends with it: the app shows the service
-as signed out, and after signing in again the user chooses a server. Provisioning suspends the prior grant
-before a potentially ambiguous remote rotation. A failed installation publishes
-no usable replacement. One explicit retry can reuse the exact pending grant
-request. Codes remain process-local and owned mutable buffers are cleared when
-released.
+itself end an existing valid transport lease. A grant outlives a disconnect, so
+reconnecting within its lease needs no provider API, and a starting connection
+uses any live grant at once. At half its lease a connected VPN prepares a fresh
+grant through its own tunnel, moves to it with the interface held, and the old
+grant is revoked afterwards. A renewal the provider cannot answer keeps the live
+grant and is tried again later. When the issuer or provider refuses the sign-in
+itself, its grants end with it: the app shows the service as signed out, and
+after signing in again Connect acquires a fresh grant for the same chosen
+server. A failed acquisition publishes no usable replacement and leaves the
+previous grant usable. An unanswered grant request keeps its exact body, and
+each explicit retry repeats it until the provider answers definitively. Codes
+remain process-local and owned mutable buffers are cleared when released.
 
 ## Failure and removal
 

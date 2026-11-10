@@ -1,6 +1,8 @@
 package com.fixcraft.yume.ui.kits
 
+import android.content.ActivityNotFoundException
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,12 +36,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -56,11 +60,11 @@ import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.R
 import com.fixcraft.yume.consumer.CodePrompt
 import com.fixcraft.yume.consumer.ServiceEntry
-import com.fixcraft.yume.consumer.ServiceSelection
 import com.fixcraft.yume.consumer.ServiceUiState
 import com.fixcraft.yume.i18n.AppStrings
 import com.fixcraft.yume.i18n.MessageId
 import com.fixcraft.yume.i18n.appStrings
+import com.fixcraft.yume.provider.ProviderAppLinks
 import com.fixcraft.yume.provider.ProviderCodec
 import com.fixcraft.yume.ui.FactRow
 import com.fixcraft.yume.ui.SectionHeader
@@ -74,8 +78,10 @@ class ServiceActions(
     val add: (String, String?) -> Unit,
     val authorize: (String) -> Unit,
     val catalog: (String) -> Unit,
-    val install: (String, ProviderCodec.Catalog, String, String) -> Unit,
-    val select: (ServiceSelection) -> Unit,
+    /** Provider, service and server: records the choice, without the network. */
+    val choose: (String, String, String) -> Unit,
+    /** Selects a provider's route with the server already chosen for it. */
+    val useProvider: (String) -> Unit,
     val cancel: (String) -> Unit,
     val remove: (String) -> Unit,
     val code: (String, CharArray) -> Unit,
@@ -140,6 +146,7 @@ fun ProviderPanel(
             Text(providerFailure(strings, code), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
             // Stored records that could not be read can be read again without the network.
             if (code == "storage") TextButton(onClick = actions.reload) { Text(strings.message(MessageId.PROVIDER_REFRESH)) }
+            if (code == "link_unverified") LinkSettingsButton()
         }
         if (state.removed) Muted(strings.message(MessageId.PROVIDER_REMOVED))
         if (suggestion != null) {
@@ -152,6 +159,16 @@ fun ProviderPanel(
             ServiceRow(entry, state, actions, advanced, vpnActive, onConnect, onDetails = { details = entry }, onRemove = { removing = entry })
         }
     }
+}
+
+/** Opens Android's link settings for this app, where link handling can be turned on. */
+@Composable
+private fun LinkSettingsButton() {
+    val context = LocalContext.current
+    TextButton(onClick = {
+        try { context.startActivity(ProviderAppLinks.settingsIntent(context)) }
+        catch (_: ActivityNotFoundException) { }
+    }) { Text(appStrings().message(MessageId.PROVIDER_LINK_SETTINGS)) }
 }
 
 /** States what will be contacted before anything is. */
@@ -195,7 +212,6 @@ private fun ServiceRow(
     val inUse = !state.manual && state.selection?.provider == entry.provider
     val canAskForServers = entry.issuer == null || entry.authorized
     val catalog = state.catalogs[entry.provider]
-    val access = grantAccess(entry, System.currentTimeMillis() / 1000)
     ServiceCard(highlighted = inUse) {
         Row(verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f).padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -240,21 +256,18 @@ private fun ServiceRow(
             ServerList(entry, catalog, inUse, vpnActive, advanced, busy, actions)
             if (catalog == null) {
                 val load = strings.message(MessageId.PROVIDER_SERVERS)
-                // With a server installed, the list is a refresh and Connect stays the next step.
-                if (entry.selection == null || entry.suspended) {
+                // With a server chosen, the list is a refresh and Connect stays the next step.
+                if (entry.choice == null || entry.suspended) {
                     Button(onClick = { actions.catalog(entry.provider) }, enabled = !busy, colors = mainActionColors()) { Text(load) }
                 } else {
                     TextButton(onClick = { actions.catalog(entry.provider) }, enabled = !busy) { Text(load) }
                 }
             }
         }
-        // A suspended row already says what to do, and a lease cannot open until then.
-        if (!entry.suspended) {
-            access?.let { AccessLine(it, entry.expiresAt) }
-            val installed = entry.selection
+        // A suspended row already says what to do. Leases renew on their own, so their times stay in the details.
+        if (!entry.suspended && entry.choice != null && !busy) {
             when {
-                installed == null || busy -> Unit
-                !inUse -> Button(onClick = { actions.select(installed) }, colors = mainActionColors()) {
+                !inUse -> Button(onClick = { actions.useProvider(entry.provider) }, colors = mainActionColors()) {
                     Text(strings.message(MessageId.PROVIDER_SELECT))
                 }
                 !vpnActive -> Button(onClick = onConnect, colors = mainActionColors()) { Text(strings.connect) }
@@ -296,36 +309,75 @@ private fun Working(text: String, action: String, onAction: () -> Unit) {
 }
 
 /**
- * The account's servers by place and name. Choosing one requests a device lease and
- * selects it. An installed choice cannot silently move to another server, and
- * choosing it again renews its lease once that is allowed.
+ * The account's servers by place, one row per country. A country with several
+ * servers opens into its list. Choosing a server only records the choice: the
+ * lease is requested when a connection starts, and a live connection moves to
+ * the new server at once.
  */
 @Composable
 private fun ServerList(entry: ServiceEntry, catalog: ProviderCodec.Catalog?, inUse: Boolean, vpnActive: Boolean, advanced: Boolean, busy: Boolean, actions: ServiceActions) {
     val strings = appStrings()
-    val installed = entry.selection
+    val chosen = entry.choice
     val tag = when { !inUse -> null; vpnActive -> strings.live; else -> strings.selected }
     if (catalog == null) {
-        // The list is not loaded yet, but the installed server is known from the last one.
-        val server = entry.server
-        if (installed != null && server != null) ServerRow(server.country, installed.label, server.host, server.port, advanced, tag, selected = inUse, enabled = false) {}
+        // The list is not loaded yet, but the chosen server is known from the last one.
+        if (chosen != null) ServerRow(chosen.server.country, chosen.server.label, chosen.server.host, chosen.server.port, advanced, tag,
+            selected = inUse, enabled = false, showPlace = true) {}
         return
     }
-    val servers = catalog.services.flatMap { service -> service.servers.map { service to it } }
+    val servers = catalog.services.flatMap { service -> service.servers.map { service.id to it } }
     if (servers.isEmpty()) Muted(strings.message(MessageId.PROVIDER_EMPTY))
-    servers.forEach { (service, server) ->
-        val current = installed?.service == service.id && installed.server == server.id
-        ServerRow(server.country, server.label, server.host, server.port, advanced, tag.takeIf { current }, selected = current && inUse,
-            enabled = !busy && (installed == null || current)) {
-            // Decided at the tap: the screen may have been open since the lease could renew.
-            val renew = current && grantAccess(entry, System.currentTimeMillis() / 1000) != GrantAccess.Active
-            when {
-                !current || renew -> actions.install(entry.provider, catalog, service.id, server.id)
-                !inUse -> actions.select(installed)
+    countryGroups(servers.map { it.second.country }).forEach { group ->
+        key(group.country) {
+            val members = group.indices.map { servers[it] }
+            fun isChosen(choice: Pair<String, ProviderCodec.Server>) = chosen?.service == choice.first && chosen.server.id == choice.second.id
+            if (members.size == 1) {
+                val member = members.single()
+                ServerChoice(member.second, advanced, tag, isChosen(member), inUse, busy, showPlace = true) { actions.choose(entry.provider, member.first, member.second.id) }
+            } else {
+                var expanded by remember { mutableStateOf(members.any(::isChosen)) }
+                CountryRow(group.country, expanded, onToggle = { expanded = !expanded })
+                if (expanded) Column(Modifier.padding(start = 40.dp)) {
+                    members.forEach { member ->
+                        ServerChoice(member.second, advanced, tag, isChosen(member), inUse, busy, showPlace = false) {
+                            actions.choose(entry.provider, member.first, member.second.id)
+                        }
+                    }
+                }
             }
         }
     }
-    if (installed != null && servers.size > 1) Muted(strings.message(MessageId.PROVIDER_CHANGE_SERVER))
+}
+
+/** One server in the list. Choosing the server already in use does nothing. */
+@Composable
+private fun ServerChoice(server: ProviderCodec.Server, advanced: Boolean, tag: String?, chosen: Boolean, inUse: Boolean, busy: Boolean,
+                         showPlace: Boolean, onChoose: () -> Unit) {
+    ServerRow(server.country, server.label, server.host, server.port, advanced, tag.takeIf { chosen },
+        selected = chosen && inUse, enabled = !busy, showPlace = showPlace) {
+        if (!chosen || !inUse) onChoose()
+    }
+}
+
+/** A country with several servers: its flag and name, opening into the list. */
+@Composable
+private fun CountryRow(country: String?, expanded: Boolean, onToggle: () -> Unit) {
+    val strings = appStrings()
+    val place = serverPlace(country, strings::providerCountry)
+    val name = place.name ?: strings.message(MessageId.PROVIDER_LOCATION_UNKNOWN)
+    val action = if (expanded) strings.providerServersHide(name) else strings.providerServersShow(name)
+    Row(
+        Modifier.fillMaxWidth().padding(end = 8.dp).heightIn(min = 56.dp).clip(MaterialTheme.shapes.medium)
+            .clickable(onClickLabel = action, role = Role.Button, onClick = onToggle).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(Modifier.size(24.dp))
+        LocationMark(place)
+        Text(name, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+        Icon(painterResource(if (expanded) R.drawable.ic_expand_less else R.drawable.ic_expand_more), null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
 
 @Composable
@@ -338,6 +390,7 @@ private fun ServerRow(
     tag: String?,
     selected: Boolean,
     enabled: Boolean,
+    showPlace: Boolean,
     onClick: () -> Unit,
 ) {
     val strings = appStrings()
@@ -349,11 +402,13 @@ private fun ServerRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         RadioButton(selected = selected, onClick = null, enabled = enabled)
-        LocationMark(place)
+        if (showPlace) LocationMark(place)
         FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.SpaceBetween, verticalArrangement = Arrangement.spacedBy(4.dp), itemVerticalAlignment = Alignment.CenterVertically) {
             Column {
-                Text(place.name ?: strings.message(MessageId.PROVIDER_LOCATION_UNKNOWN), style = MaterialTheme.typography.bodyLarge)
-                Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // Inside an opened country the country is already said, so the server's own name leads.
+                if (showPlace) Text(place.name ?: strings.message(MessageId.PROVIDER_LOCATION_UNKNOWN), style = MaterialTheme.typography.bodyLarge)
+                Text(label, style = if (showPlace) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
+                    color = if (showPlace) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
                 if (advanced) Text("$host:$port", style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             tag?.let { StatusPill(it, MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer) }
@@ -369,19 +424,6 @@ internal fun LocationMark(place: ServerPlace) {
         Text(flag, fontSize = 22.sp, modifier = Modifier.widthIn(min = 28.dp).clearAndSetSemantics {})
     } else {
         Icon(painterResource(R.drawable.ic_globe), null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-/** Leases last up to an hour, so the row says when this one ends. */
-@Composable
-private fun AccessLine(access: GrantAccess, expiresAt: Long?) {
-    val strings = appStrings()
-    val time = expiresAt?.let(strings::shortTime)
-    when {
-        access == GrantAccess.Ended -> Muted(strings.message(MessageId.PROVIDER_ACCESS_ENDED))
-        time == null -> Unit
-        access == GrantAccess.Renewable -> Muted(strings.providerAccessRenew(time))
-        else -> Muted(strings.providerAccessUntil(time))
     }
 }
 
@@ -491,6 +533,7 @@ fun providerFailure(strings: AppStrings, code: String): String = strings.message
     "unsupported" -> MessageId.PROVIDER_ERROR_UNSUPPORTED
     "storage", "state" -> MessageId.PROVIDER_ERROR_STORAGE
     "binding" -> MessageId.PROVIDER_ERROR_BINDING
+    "link_unverified" -> MessageId.PROVIDER_ERROR_LINK_UNVERIFIED
     "revoked" -> MessageId.PROVIDER_SUSPENDED
     else -> MessageId.PROVIDER_ERROR_GENERIC
 })

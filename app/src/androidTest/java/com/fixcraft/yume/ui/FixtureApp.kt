@@ -9,7 +9,7 @@ import com.fixcraft.yume.ui.kits.ServiceActions
 import com.fixcraft.yume.ui.theme.YumeVPNTheme
 
 private val nothing = ServiceActions(
-    add = { _, _ -> }, authorize = {}, catalog = {}, install = { _, _, _, _ -> }, select = {},
+    add = { _, _ -> }, authorize = {}, catalog = {}, choose = { _, _, _ -> }, useProvider = {},
     cancel = {}, remove = {}, code = { _, code -> code.fill('\u0000') }, reload = {},
 )
 

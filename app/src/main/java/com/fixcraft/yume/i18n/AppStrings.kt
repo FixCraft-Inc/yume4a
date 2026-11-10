@@ -356,6 +356,8 @@ class AppStrings private constructor(
     val notificationReconnecting = t(MessageId.RECONNECTING)
     val notificationWaitingForNetwork = t(MessageId.WAITING_FOR_NETWORK)
     val notificationDisconnecting = t(MessageId.DISCONNECTING)
+    fun notificationProtectedIn(country: String): String = fill(t(MessageId.NOTIFICATION_PROTECTED_IN), country)
+    fun notificationRates(download: String, upload: String): String = fill(t(MessageId.NOTIFICATION_RATES), download, upload)
 
     // Credits and components.
     val developerQuoteLabel = t(MessageId.RECOGNITION)
@@ -473,15 +475,11 @@ class AppStrings private constructor(
 
     fun nextAttempt(seconds: Long): String = fill(nextAttemptTemplate, seconds)
 
-    /** A time of day in the app's language, which can differ from the device's. */
-    fun shortTime(epochSeconds: Long): String =
-        java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT, languageLocale(language)).format(java.util.Date(epochSeconds * 1000))
-
     fun providerMore(label: String): String = fill(t(MessageId.PROVIDER_MORE), label)
 
-    fun providerAccessUntil(time: String): String = fill(t(MessageId.PROVIDER_ACCESS_UNTIL), time)
+    fun providerServersShow(country: String): String = fill(t(MessageId.PROVIDER_SERVERS_SHOW), country)
 
-    fun providerAccessRenew(time: String): String = fill(t(MessageId.PROVIDER_ACCESS_RENEW), time)
+    fun providerServersHide(country: String): String = fill(t(MessageId.PROVIDER_SERVERS_HIDE), country)
 
     fun providerSignInNote(host: String): String = fill(t(MessageId.PROVIDER_SIGN_IN_NOTE), host)
 

@@ -1,9 +1,6 @@
 package com.fixcraft.yume.ui.kits
 
-import com.fixcraft.yume.consumer.ServiceEntry
-import com.fixcraft.yume.consumer.ServiceSelection
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ServerPresentationTest {
@@ -28,21 +25,12 @@ class ServerPresentationTest {
         for (code in listOf("", "J", "JPN", "jp", "J1", "🇯🇵")) assertEquals(code, ServerPlace(null, null), place(code))
     }
 
-    private fun entry(selection: ServiceSelection?, renewAfter: Long? = 200, expiresAt: Long? = 300, suspended: Boolean = false) =
-        ServiceEntry("https://api.example.org", "Example", null, selection, expiresAt, suspended, renewAfter = renewAfter)
-
-    private val selection = ServiceSelection("https://api.example.org", "00000000-0000-4000-8000-000000000001", "d", "s", "e", "g",
-        "a".repeat(64), "b".repeat(64), "jp1.example.org", 443, "JP1", "vpn")
-
-    @Test fun noInstalledServerHasNoLease() = assertNull(grantAccess(entry(null), 100))
-
-    @Test fun aLeaseMovesFromActiveToRenewableToEnded() {
-        assertEquals(GrantAccess.Active, grantAccess(entry(selection), 199))
-        assertEquals(GrantAccess.Renewable, grantAccess(entry(selection), 200))
-        assertEquals(GrantAccess.Ended, grantAccess(entry(selection), 300))
+    @Test fun serversGroupByCountryInTheOrderTheyFirstAppear() {
+        assertEquals(listOf(CountryGroup("US", listOf(0, 3)), CountryGroup("JP", listOf(1)), CountryGroup(null, listOf(2, 4))),
+            countryGroups(listOf("US", "JP", null, "US", null)))
     }
 
-    @Test fun suspensionEndsAccessAtOnce() = assertEquals(GrantAccess.Ended, grantAccess(entry(selection, suspended = true), 100))
+    @Test fun anEmptyListHasNoGroups() = assertEquals(emptyList<CountryGroup>(), countryGroups(emptyList()))
 
     @Test fun originHostDropsOnlyTheScheme() {
         assertEquals("api.example.org", originHost("https://api.example.org"))

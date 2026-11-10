@@ -308,6 +308,12 @@ class Operator:
         contract.require(server_public == (self.server / "credentials/server-composite.pub.pem").read_bytes(), "binding")
         return {"identity": entry["identity"]["sha256"], "server_key_sha256": hashlib.sha256(server_public).hexdigest()}
 
+    def recent_operations(self, principal: str, now: int) -> int:
+        """Grant and revoke operations started in the last hour. Results stay for 86400 seconds either way."""
+        since = now + 86400 - 3600
+        return sum(self.database.execute("SELECT count(*) FROM " + table + " WHERE principal=? AND retain_until>?",
+                                         (principal, since)).fetchone()[0] for table in ("requests", "revocations"))
+
     def issue(self, principal: str, request: dict) -> dict:
         now = int(time.time())
         with self.database:
@@ -325,9 +331,7 @@ class Operator:
             if existing["result"] is not None:
                 return json.loads(existing["result"])
             return self.finish(existing)
-        count = self.database.execute("SELECT count(*) FROM requests WHERE principal=?", (principal,)).fetchone()[0]
-        count += self.database.execute("SELECT count(*) FROM revocations WHERE principal=?", (principal,)).fetchone()[0]
-        contract.require(count < 64, "rate_limited")
+        contract.require(self.recent_operations(principal, now) < 64, "rate_limited")
         previous = request["previous_grant"]
         if previous is not None:
             row = self.row(previous)
@@ -396,9 +400,7 @@ class Operator:
         else:
             grant = self.row(request["grant_id"])
             contract.require(grant is not None and grant["principal"] == principal, "unauthorized")
-            count = sum(self.database.execute("SELECT count(*) FROM " + table + " WHERE principal=?", (principal,)).fetchone()[0]
-                        for table in ("requests", "revocations"))
-            contract.require(count < 64, "rate_limited")
+            contract.require(self.recent_operations(principal, int(time.time())) < 64, "rate_limited")
             with self.database:
                 self.database.execute("INSERT INTO revocations VALUES (?,?,?,NULL,?)",
                                       (principal, request["request_id"], encoded(request), int(time.time()) + 86400))

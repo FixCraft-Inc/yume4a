@@ -17,6 +17,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,20 +32,20 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Presentation data is separate from the provider client's authenticated vault
- * records. [authorized] means local API credentials exist. [server] is the
- * installed server's catalog entry, for display only. From [renewAfter] (UTC
- * seconds), installing the same server again renews its grant. Before it,
- * that install is refused as `stale`.
+ * records. [authorized] means local API credentials exist. [choice] is the
+ * server chosen for this enrollment. [selection] and [server] describe the
+ * grant currently held, if any, for display only. [renewAfter] (UTC seconds)
+ * is when a connection replaces that grant with a fresh one.
  */
 data class ServiceEntry(val provider: String, val label: String, val issuer: String?,
                         val selection: ServiceSelection?, val expiresAt: Long?, val suspended: Boolean,
                         val authorized: Boolean = false, val server: ProviderCodec.Server? = null,
-                        val renewAfter: Long? = null)
+                        val renewAfter: Long? = null, val choice: ProviderClient.Choice? = null)
 data class CodePrompt(val id: String, val provider: String, val grant: String)
 data class ServiceUiState(
     val entries: List<ServiceEntry> = emptyList(),
     val catalogs: Map<String, ProviderCodec.Catalog> = emptyMap(),
-    val selection: ServiceSelection? = null,
+    val selection: ServiceRoute? = null,
     val manual: Boolean = false,
     val loaded: Boolean = false,
     val busy: Set<String> = emptySet(),
@@ -59,6 +60,10 @@ data class ServiceUiState(
  * One process owner. Consumer adapters retain application context only. Closes client/store/callback
  * registration on explicit teardown, and never persists a PKCE attempt or opening code.
  * Android may kill the process without any teardown callback.
+ *
+ * Choosing a server is local. A connection calls [prepare] for the selected
+ * route, which acquires or renews the grant, and [open] for its lease. A grant
+ * outlives a disconnect, so reconnecting within its lease needs no provider API.
  */
 class ServiceController<S : AutoCloseable>(
     @Suppress("UNUSED_PARAMETER") context: Context,
@@ -73,7 +78,7 @@ class ServiceController<S : AutoCloseable>(
     private val lifecycle = Any()
     private val authority = Any()
     private val selectionLock = Any()
-    // Finish cancellation before the next lease captures its client generation.
+    // Serializes route writes so a later choice cannot be overwritten by an earlier one.
     private val selectionLane = Mutex()
     private val jobsLock = Any()
     private val selectionGeneration = AtomicLong()
@@ -85,6 +90,8 @@ class ServiceController<S : AutoCloseable>(
     private val codes = ConcurrentHashMap<String, CodeSlot>()
     private val codePromptLock = Mutex()
     private val browserLane = Mutex()
+    // When a due renewal failed for a transient reason, the next attempt waits until then (UTC seconds).
+    private val renewalBackoff = ConcurrentHashMap<String, Long>()
     // Guarded by lifecycle, including cancellation between client return and UI publication.
     private var browserProvider: String? = null
     private var browserGeneration = 0L
@@ -119,22 +126,37 @@ class ServiceController<S : AutoCloseable>(
         }
     }
 
-    fun reload() = perform("local") { reloadNow() }
+    fun reload() { perform("local") { reloadNow() } }
 
-    /** Always-on startup reads the stored authenticated choice. A locked/corrupt
-     * provider choice must never become a manual fallback, and one whose provider
-     * was removed is returned as stored so that [open] refuses it. */
-    fun selectedForRestart(): ServiceSelection? = synchronized(selectionLock) {
-        if (!adapter.ensureReady()) throw ProviderCodec.Refusal("storage")
-        readSelection()
+    /** What the person last selected: manual kits, a route, or a stored value that names no usable route. */
+    private sealed interface Stored {
+        object Manual : Stored
+        object Unusable : Stored
+        class Route(val route: ServiceRoute) : Stored
     }
 
-    private fun readSelection(): ServiceSelection? {
+    private fun readRoute(): Stored {
         val raw = adapter.readSelection()
         return try {
-            if (raw == null || raw.contentEquals(MANUAL)) null
-            else ServiceSelection.decode(String(raw, Charsets.UTF_8))
+            if (raw == null || raw.contentEquals(MANUAL)) Stored.Manual
+            else ServiceRoute.decode(String(raw, Charsets.UTF_8))?.takeIf { it.role == role }?.let(Stored::Route) ?: Stored.Unusable
         } finally { raw?.fill(0) }
+    }
+
+    /** The stored route joined with its enrollment's current choice, or null when that enrollment is gone. */
+    private fun live(route: ServiceRoute, enrollments: List<ProviderClient.Enrollment>): ServiceRoute? =
+        enrollments.firstOrNull { it.provider == route.provider && it.epoch == route.epoch }?.let { route.copy(choice = it.choice) }
+
+    /** Always-on startup reads the stored authenticated choice. A locked, corrupt or
+     * unrecognized provider choice must never become a manual fallback, and one whose
+     * provider was removed is returned as stored so that [prepare] refuses it. */
+    fun selectedForRestart(): ServiceRoute? = synchronized(selectionLock) {
+        if (!adapter.ensureReady()) throw ProviderCodec.Refusal("storage")
+        when (val stored = readRoute()) {
+            Stored.Manual -> null
+            Stored.Unusable -> throw ProviderCodec.Refusal("state")
+            is Stored.Route -> live(stored.route, client().enrollments()) ?: stored.route
+        }
     }
 
     private fun reloadNow() {
@@ -144,20 +166,16 @@ class ServiceController<S : AutoCloseable>(
         val entries = enrollments.map { entry ->
             ServiceEntry(entry.provider, entry.label, entry.issuer,
                 if (entry.grant != null && entry.server != null) ServiceSelection.from(entry) else null,
-                entry.grant?.expiresAt, entry.suspended, entry.authorized, entry.server, entry.grant?.refreshAfter)
+                entry.grant?.expiresAt, entry.suspended, entry.authorized, entry.server, entry.grant?.renewAt, entry.choice)
         }
         synchronized(selectionLock) {
             if (selectionGeneration.get() != revision) return
-            val stored = readSelection()
-            // A choice whose provider was removed, or whose grant was replaced or
-            // forgotten, names no usable route. It stays stored, so restart still
-            // refuses it, but it is neither shown as the route nor turned into
-            // manual use. The user chooses again.
-            val live = stored?.takeIf { selection ->
-                enrollments.any { it.provider == selection.provider && it.epoch == selection.epoch &&
-                    it.grant?.grantId == selection.grant }
-            }
-            stateFlow.update { it.copy(entries = entries, selection = live, manual = stored == null, loaded = true) }
+            val stored = readRoute()
+            // A route whose provider was removed, or added again under a new epoch,
+            // names nothing usable. It stays stored, so restart still refuses it, but
+            // it is neither shown nor turned into manual use. The person chooses again.
+            val route = (stored as? Stored.Route)?.let { live(it.route, enrollments) }
+            stateFlow.update { it.copy(entries = entries, selection = route, manual = stored is Stored.Manual, loaded = true) }
         }
     }
 
@@ -166,9 +184,11 @@ class ServiceController<S : AutoCloseable>(
         try { reloadNow() } catch (_: Exception) { /* The step's own error is already published. */ }
     }
 
-    fun add(provider: String, issuer: String?) = perform(provider) {
-        client().add(provider, issuer, role)
-        reloadNow()
+    fun add(provider: String, issuer: String?) {
+        perform(provider) {
+            client().add(provider, issuer, role)
+            reloadNow()
+        }
     }
 
     suspend fun authorize(provider: String): Intent = browserLane.withLock {
@@ -213,7 +233,7 @@ class ServiceController<S : AutoCloseable>(
         stateFlow.update { it.copy(error = "unavailable") }
     }
 
-    fun catalog(provider: String) = perform(provider) { loadCatalog(provider) }
+    fun catalog(provider: String) { perform(provider) { loadCatalog(provider) } }
 
     private suspend fun loadCatalog(provider: String) {
         val catalog = client().catalog(provider)
@@ -221,36 +241,90 @@ class ServiceController<S : AutoCloseable>(
         reloadNow()
     }
 
-    fun install(provider: String, catalog: ProviderCodec.Catalog, service: String, server: String) {
+    /**
+     * Records [server] of [service] as [provider]'s chosen server and selects that
+     * provider's route. Local only: the server comes from the last loaded catalog,
+     * and nothing is requested until a connection calls [prepare]. Returns the
+     * job that saves it, or null when no list is loaded.
+     */
+    fun choose(provider: String, service: String, server: String): Job? {
+        val catalog = state.value.catalogs[provider] ?: return null
         val revision = selectionGeneration.incrementAndGet()
-        perform(provider) {
-            client().install(provider, catalog, service, server) { grant ->
-                codePromptLock.withLock {
-                    val prompt = CodePrompt(UUID.randomUUID().toString(), provider, grant.grantId)
-                    val slot = CodeSlot()
-                    check(codes.putIfAbsent(prompt.id, slot) == null)
-                    try {
-                        stateFlow.update { it.copy(codePrompt = prompt) }
-                        withTimeout(300_000) { slot.signal.await() }
-                        slot.take() ?: throw ProviderCodec.Refusal("cancelled")
-                    } finally {
-                        codes.remove(prompt.id, slot)
-                        slot.close()
-                        stateFlow.update { if (it.codePrompt?.id == prompt.id) it.copy(codePrompt = null) else it }
-                    }
-                }
-            }
+        return perform(provider) {
+            client().choose(provider, catalog, service, server)
+            selectionLane.withLock { saveRoute(provider, revision) }
             reloadNow()
-            val selected = state.value.entries.single { it.provider == provider }.selection
-                ?: throw ProviderCodec.Refusal("state")
-            selectNow(selected, revision)
+        }
+    }
+
+    /** Selects [provider]'s route with whatever server it has chosen. */
+    fun useProvider(provider: String) {
+        val revision = selectionGeneration.incrementAndGet()
+        perform("selection", replace = true) {
+            selectionLane.withLock { saveRoute(provider, revision) }
+            reloadNow()
+        }
+    }
+
+    /** Stores [provider]'s route, unless a later selection or manual choice superseded this one. */
+    private fun saveRoute(provider: String, revision: Long) {
+        val enrollment = client().enrollments().firstOrNull { it.provider == provider } ?: throw ProviderCodec.Refusal("state")
+        val route = ServiceRoute(provider, enrollment.epoch, role, enrollment.choice)
+        synchronized(selectionLock) {
+            if (selectionGeneration.get() != revision) return
+            saveSelection(route.encode().toByteArray(Charsets.UTF_8))
+            stateFlow.update { it.copy(selection = route, manual = false, loaded = true) }
         }
     }
 
     /**
-     * When [selection]'s lease may be renewed without a person, in UTC seconds.
-     * Null when it cannot be: the provider is anonymous and its opening code
-     * is typed by hand, or the selection is no longer the installed grant.
+     * Turns [route] into a lease-bound selection when its connection starts
+     * ([renew] false) or renews, as [ProviderClient.prepare] describes. The
+     * person's choice is read now, so a server chosen while disconnected is used
+     * here. A refusal is also published for the Services screen.
+     */
+    suspend fun prepare(route: ServiceRoute, renew: Boolean): ServiceSelection {
+        try {
+            if (route.role != role) throw ProviderCodec.Refusal("binding")
+            val before = enrollment(route).grant?.grantId
+            val prepared = client().prepare(route.provider, renew) { grant -> openingCode(route.provider, grant) }
+            val after = enrollment(route)
+            if (after.grant?.grantId != prepared.grant.grantId) throw ProviderCodec.Refusal("cancelled")
+            if (prepared.renewalRefusal == null) renewalBackoff.remove(route.provider) else {
+                // Retry within the live lease, well before it ends.
+                val now = clock.now()?.seconds ?: throw ProviderCodec.Refusal("stale")
+                renewalBackoff[route.provider] = now + ((prepared.grant.expiresAt - now) / 4).coerceIn(30L, 300L)
+            }
+            if (before != null && before != prepared.grant.grantId) releaseLater(route.provider)
+            reloadNow()
+            return ServiceSelection.from(after)
+        } catch (error: Exception) {
+            if (error is ProviderCodec.Refusal) stateFlow.update { it.copy(error = error.code) }
+            if (error !is CancellationException) reloadAfterFailure()
+            throw error
+        }
+    }
+
+    private fun enrollment(route: ServiceRoute): ProviderClient.Enrollment {
+        if (!adapter.ensureReady()) throw ProviderCodec.Refusal("storage")
+        return client().enrollments().firstOrNull { it.provider == route.provider && it.epoch == route.epoch }
+            ?: throw ProviderCodec.Refusal("state")
+    }
+
+    /** The replaced grant is revoked once the caller has had time to move its connection. */
+    private fun releaseLater(provider: String) {
+        scope.launch {
+            delay(RELEASE_DELAY_MILLIS)
+            try { client().releaseRetired(provider) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* Retried after the next replacement, and each grant expires anyway. */ }
+        }
+    }
+
+    /**
+     * When [selection]'s grant should be replaced, in UTC seconds. Null when it
+     * cannot be without a person: the provider is anonymous and its opening code
+     * is typed by hand, or the selection is no longer the held grant.
      */
     fun renewAfter(selection: ServiceSelection): Long? {
         // Reads the local store, not the screen state, so a boot-time restart works too.
@@ -258,31 +332,23 @@ class ServiceController<S : AutoCloseable>(
         val entry = client().enrollments().firstOrNull {
             it.provider == selection.provider && it.epoch == selection.epoch && it.grant?.grantId == selection.grant
         }
-        return entry?.grant?.refreshAfter?.takeIf { entry.issuer != null }
+        val due = entry?.grant?.renewAt?.takeIf { entry.issuer != null } ?: return null
+        return maxOf(due, renewalBackoff[selection.provider] ?: 0)
     }
 
-    /**
-     * Renews [selection]'s lease on the same server and selects the new grant.
-     * The provider closes the old grant first, so its connections end and the
-     * caller reconnects with the returned selection. An expired lease gets a
-     * fresh grant. Refusals are thrown and the saved state is republished.
-     */
-    suspend fun renew(selection: ServiceSelection): ServiceSelection {
-        val revision = selectionGeneration.incrementAndGet()
+    /** Anonymous providers hand their opening code over separately, so a person types it. */
+    private suspend fun openingCode(provider: String, grant: ProviderCodec.Grant): CharArray = codePromptLock.withLock {
+        val prompt = CodePrompt(UUID.randomUUID().toString(), provider, grant.grantId)
+        val slot = CodeSlot()
+        check(codes.putIfAbsent(prompt.id, slot) == null)
         try {
-            val catalog = client().catalog(selection.provider)
-            stateFlow.update { it.copy(catalogs = it.catalogs + (selection.provider to catalog)) }
-            client().install(selection.provider, catalog, selection.service, selection.server) {
-                throw ProviderCodec.Refusal("unsupported")
-            }
-            reloadNow()
-            val renewed = state.value.entries.single { it.provider == selection.provider }.selection
-                ?: throw ProviderCodec.Refusal("state")
-            selectNow(renewed, revision)
-            return renewed
-        } catch (error: Exception) {
-            if (error !is CancellationException) reloadAfterFailure()
-            throw error
+            stateFlow.update { it.copy(codePrompt = prompt) }
+            withTimeout(300_000) { slot.signal.await() }
+            slot.take() ?: throw ProviderCodec.Refusal("cancelled")
+        } finally {
+            codes.remove(prompt.id, slot)
+            slot.close()
+            stateFlow.update { if (it.codePrompt?.id == prompt.id) it.copy(codePrompt = null) else it }
         }
     }
 
@@ -311,26 +377,11 @@ class ServiceController<S : AutoCloseable>(
         invalidate(provider)
         selectionGeneration.incrementAndGet()
         cancel(provider)
+        renewalBackoff.remove(provider)
         perform("remove:$provider") {
             client().remove(provider)
             stateFlow.update { it.copy(catalogs = it.catalogs - provider, removed = true) }
             reloadNow()
-        }
-    }
-
-    fun select(selection: ServiceSelection) = synchronized(selectionLock) {
-        val revision = selectionGeneration.incrementAndGet()
-        perform("selection", replace = true) {
-            selectionLane.withLock { selectNow(selection, revision) }
-        }
-    }
-
-    private suspend fun selectNow(selection: ServiceSelection, revision: Long) {
-        client().lease(selection.provider).use { if (!selection.matches(it, role)) throw ProviderCodec.Refusal("binding") }
-        synchronized(selectionLock) {
-            if (selectionGeneration.get() != revision) throw ProviderCodec.Refusal("cancelled")
-            saveSelection(selection.encode().toByteArray(Charsets.UTF_8))
-            stateFlow.update { it.copy(selection = selection, manual = false, loaded = true) }
         }
     }
 
@@ -390,7 +441,8 @@ class ServiceController<S : AutoCloseable>(
         permits.filter { it.provider == provider }.forEach { it.invalidate() }
     }
 
-    private fun perform(key: String, replace: Boolean = false, action: suspend () -> Unit) {
+    /** Runs [action] as the one job for [key]. A second request for a busy key is dropped, unless [replace]. */
+    private fun perform(key: String, replace: Boolean = false, action: suspend () -> Unit): Job {
         val job = scope.launch(start = CoroutineStart.LAZY) {
             val owner = coroutineContext[Job]!!
             synchronized(jobsLock) {
@@ -423,6 +475,7 @@ class ServiceController<S : AutoCloseable>(
                 job.start()
             } else if (jobs.putIfAbsent(key, job) == null) job.start() else job.cancel()
         }
+        return job
     }
 
     override fun close() {
@@ -458,5 +511,7 @@ class ServiceController<S : AutoCloseable>(
 
     companion object {
         private val MANUAL = "manual".toByteArray(Charsets.US_ASCII)
+        /** Long enough for a connection to move to the new grant before the old one is revoked. */
+        private const val RELEASE_DELAY_MILLIS = 30_000L
     }
 }

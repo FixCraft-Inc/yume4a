@@ -54,7 +54,6 @@ fun OverviewScreen(
     val kit = uiState.selectedKit
     val advanced = uiState.appSettings.advancedMode
     val service = uiState.services.selection?.takeIf { !uiState.services.manual }
-    val serviceEntry = service?.let { chosen -> uiState.services.entries.firstOrNull { it.provider == chosen.provider } }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -90,7 +89,7 @@ fun OverviewScreen(
                                     style = MaterialTheme.typography.titleLarge,
                                 )
                                 if (service != null) {
-                                    val place = serverPlace(serviceEntry?.server?.country, strings::providerCountry)
+                                    val place = serverPlace(service.choice?.server?.country, strings::providerCountry)
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -131,7 +130,8 @@ fun OverviewScreen(
                             )
                         }
                         service?.let { chosen ->
-                            FactRow(strings.message(MessageId.PROVIDER_SELECTED), serviceEntry?.label ?: originHost(chosen.provider))
+                            val label = uiState.services.entries.firstOrNull { it.provider == chosen.provider }?.label
+                            FactRow(strings.message(MessageId.PROVIDER_SELECTED), label ?: originHost(chosen.provider))
                         }
                         SessionFacts(strings, vpnState, advanced)
                         if (vpnState.isActive) {

@@ -2,6 +2,8 @@ package com.fixcraft.yume.ui.home
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.indication
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +22,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -134,17 +137,26 @@ private fun WindowSelector(selected: TrafficWindow, onSelect: (TrafficWindow) ->
         TrafficWindow.entries.forEach { option ->
             val active = option == selected
             val label = strings.trafficWindow(option.seconds)
+            val interaction = remember { MutableInteractionSource() }
+            // The whole 48 dp box stays the touch target. Only the compact pill inside is drawn.
             Box(
-                Modifier.clip(RoundedCornerShape(16.dp))
-                    .background(if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface)
-                    .selectable(selected = active, role = Role.RadioButton, onClick = { onSelect(option) })
+                Modifier.selectable(selected = active, interactionSource = interaction, indication = null,
+                        role = Role.RadioButton, onClick = { onSelect(option) })
                     .semantics { contentDescription = strings.trafficWindowDescription(label) }
-                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp).padding(horizontal = 12.dp, vertical = 8.dp),
+                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(label, color = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium)
+                Box(
+                    Modifier.clip(RoundedCornerShape(12.dp))
+                        .background(if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface)
+                        .indication(interaction, ripple())
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(label, color = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium)
+                }
             }
         }
     }

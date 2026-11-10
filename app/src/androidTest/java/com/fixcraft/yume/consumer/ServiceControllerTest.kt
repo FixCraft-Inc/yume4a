@@ -22,6 +22,12 @@ import com.fixcraft.yume.provider.ProviderKitAdapter
 import com.fixcraft.yume.provider.ProviderRegistration
 import com.fixcraft.yume.provider.ProviderStore
 import com.fixcraft.yume.provider.ProviderTransport
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -146,6 +152,8 @@ class ServiceControllerTest {
 
     private lateinit var context: IsolatedContext
     private val clock = Clock()
+    // Connections run their preparation outside the controller, as the VPN does.
+    private val work = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val kits = InertKits()
     private lateinit var transport: Transport
     private lateinit var controller: ServiceController<KitSession>
@@ -180,6 +188,7 @@ class ServiceControllerTest {
     @After
     fun clean() {
         clock.beforeRead = null
+        work.cancel()
         opened.forEach { it.close() }
         controller.close()
         AppVaultManager.lock()
@@ -198,16 +207,28 @@ class ServiceControllerTest {
         return await { provider in it.catalogs && provider !in it.busy }.catalogs.getValue(provider)
     }
 
-    private suspend fun prompt(provider: String = ALPHA): CodePrompt {
-        val catalog = catalog(provider)
-        controller.install(provider, catalog, "service", "server")
-        return requireNotNull(await { it.codePrompt?.provider == provider }.codePrompt)
+    /** Chooses the synthetic server from a loaded list, which selects its provider's route. Local only. */
+    private suspend fun choose(provider: String = ALPHA): ServiceRoute {
+        catalog(provider)
+        controller.choose(provider, "service", "server")
+        return requireNotNull(await { it.selection?.provider == provider && provider !in it.busy }.selection)
     }
 
-    private suspend fun install(provider: String = ALPHA): ServiceSelection {
-        val prompt = prompt(provider)
-        controller.submitCode(prompt.id, CODE.toCharArray())
-        return requireNotNull(await { it.selection?.provider == provider && provider !in it.busy }.selection)
+    private class Pending(val route: ServiceRoute, val prompt: CodePrompt, val prepared: Deferred<ServiceSelection>)
+
+    /** Starts a connection's preparation, which waits for the anonymous provider's opening code. */
+    private suspend fun prompt(provider: String = ALPHA): Pending {
+        val route = choose(provider)
+        val prepared = work.async { controller.prepare(route, renew = false) }
+        return Pending(route, requireNotNull(await { it.codePrompt?.provider == provider }.codePrompt), prepared)
+    }
+
+    private class Installed(val route: ServiceRoute, val selection: ServiceSelection)
+
+    private suspend fun install(provider: String = ALPHA): Installed {
+        val pending = prompt(provider)
+        controller.submitCode(pending.prompt.id, CODE.toCharArray())
+        return Installed(controller.state.value.selection ?: pending.route, withTimeout(10_000) { pending.prepared.await() })
     }
 
     private fun assertManualUntouched() {
@@ -236,36 +257,38 @@ class ServiceControllerTest {
 
     @Test
     fun provisionedSelectionSurvivesControllerReopenWithoutNetworkOrManualCopy() = runBlocking {
-        val selected = install()
-        assertEquals(selected, controller.selectedForRestart())
+        val installed = install()
+        assertEquals(installed.route, controller.selectedForRestart())
         controller.close()
         AppVaultManager.lock()
         reopen()
-        assertEquals(selected, controller.selectedForRestart())
+        assertEquals(installed.route, controller.selectedForRestart())
         assertEquals(0, transport.calls.get())
         controller.reload()
         val loaded = await { it.loaded && "local" !in it.busy }
-        assertEquals(selected, loaded.selection)
+        assertEquals(installed.route, loaded.selection)
         assertFalse(loaded.manual)
-        assertEquals(selected, loaded.entries.single().selection)
+        assertEquals(installed.selection, loaded.entries.single().selection)
+        // A starting connection takes the held grant without the network.
+        assertEquals(installed.selection, controller.prepare(installed.route, renew = false))
         assertEquals(0, transport.calls.get())
         assertManualUntouched()
     }
 
     @Test
-    fun corruptSelectionRefusesRestartAndReloadWithoutManualFallbackOrRewrite() = runBlocking {
+    fun anUnrecognizedSelectionRefusesRestartAndShowsNoRouteWithoutManualFallbackOrRewrite() = runBlocking {
         install()
         val malformed = "{broken authenticated selection".toByteArray()
         try { AppVaultManager.writeBlob(context, SELECTION, malformed) } finally { malformed.fill(0) }
         val stored = File(context.noBackupFilesDir, "app-vault/$SELECTION.bin").readBytes()
         controller.close()
         reopen()
-        assertThrows(Exception::class.java) { controller.selectedForRestart() }
+        assertEquals("state", assertThrows(ProviderCodec.Refusal::class.java) { controller.selectedForRestart() }.code)
         controller.reload()
-        val failed = await { it.error == "storage" && "local" !in it.busy }
-        assertFalse(failed.loaded)
-        assertFalse(failed.manual)
-        assertNull(failed.selection)
+        // The person chooses again. Nothing becomes manual use.
+        val loaded = await { it.loaded && "local" !in it.busy }
+        assertFalse(loaded.manual)
+        assertNull(loaded.selection)
         assertArrayEquals(stored, File(context.noBackupFilesDir, "app-vault/$SELECTION.bin").readBytes())
         assertManualUntouched()
     }
@@ -289,14 +312,14 @@ class ServiceControllerTest {
 
     @Test
     fun corruptProviderStorageCannotTurnThePersistedProviderChoiceIntoManual() = runBlocking {
-        val selected = install()
+        val selected = install().selection
         controller.close()
         val manifest = File(context.noBackupFilesDir, "app-vault/provider-${digest(ALPHA.toByteArray())}-manifest.bin")
         val tampered = manifest.readBytes()
         tampered[tampered.lastIndex] = (tampered.last().toInt() xor 1).toByte()
         manifest.writeBytes(tampered)
         reopen()
-        assertEquals(selected, controller.selectedForRestart())
+        assertThrows(Exception::class.java) { controller.selectedForRestart() }
         controller.reload()
         await { it.error == "storage" && "local" !in it.busy }
         try { controller.open(selected).close(); throw AssertionError("Corrupt provider storage was accepted") }
@@ -308,7 +331,8 @@ class ServiceControllerTest {
 
     @Test
     fun lockedSelectionRefusesRestartAndRunWithoutChangingManualRecords() = runBlocking {
-        val selected = install()
+        val installed = install()
+        val selected = installed.selection
         AppVaultManager.enablePassword(context, PASSWORD).getOrThrow()
         AppVaultManager.lock()
         assertEquals("storage", assertThrows(ProviderCodec.Refusal::class.java) { controller.selectedForRestart() }.code)
@@ -318,15 +342,16 @@ class ServiceControllerTest {
         catch (_: IllegalStateException) { }
         assertFalse(controller.state.value.manual)
         AppVaultManager.unlockWithPassword(context, PASSWORD).getOrThrow()
-        assertEquals(selected, controller.selectedForRestart())
+        assertEquals(installed.route, controller.selectedForRestart())
         assertManualUntouched()
     }
 
     @Test
     fun aManualChoiceDuringProvisioningCannotBeOverwrittenByLateCompletion() = runBlocking {
-        val prompt = prompt()
+        val pending = prompt()
         controller.selectManual()
-        controller.submitCode(prompt.id, CODE.toCharArray())
+        controller.submitCode(pending.prompt.id, CODE.toCharArray())
+        withTimeout(10_000) { pending.prepared.await() }
         await { it.codePrompt == null && ALPHA !in it.busy }
         assertTrue(controller.state.value.manual)
         assertNull(controller.state.value.selection)
@@ -335,39 +360,40 @@ class ServiceControllerTest {
     }
 
     @Test
-    fun aManualChoiceWinsAgainstAPausedProviderSelection() = runBlocking {
-        val selected = install()
+    fun aManualChoiceWinsAgainstAPausedServerChoice() = runBlocking {
+        install()
         controller.selectManual()
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         clock.beforeRead = { entered.countDown(); check(release.await(10, TimeUnit.SECONDS)) }
         try {
-            controller.select(selected)
+            controller.choose(ALPHA, "service", "server")
             assertTrue(entered.await(10, TimeUnit.SECONDS))
             controller.selectManual()
         } finally { clock.beforeRead = null; release.countDown() }
-        await { it.error == "cancelled" && "selection" !in it.busy }
+        // The superseded choice is dropped quietly: the later one is what the person asked for.
+        await { ALPHA !in it.busy }
+        assertNull(controller.state.value.error)
         assertTrue(controller.state.value.manual)
         assertNull(controller.selectedForRestart())
         assertManualUntouched()
     }
 
     @Test
-    fun theLatestProviderChoiceReplacesAPausedSelection() = runBlocking {
-        val alpha = install(ALPHA)
-        val beta = install(BETA)
+    fun theLatestProviderChoiceReplacesAPausedServerChoice() = runBlocking {
+        install(ALPHA)
+        val beta = install(BETA).route
         controller.selectManual()
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         clock.beforeRead = { entered.countDown(); check(release.await(10, TimeUnit.SECONDS)) }
         try {
-            controller.select(alpha)
+            controller.choose(ALPHA, "service", "server")
             assertTrue(entered.await(10, TimeUnit.SECONDS))
-            assertTrue("selection" in controller.state.value.busy)
-            controller.select(beta)
-            assertTrue("selection" in controller.state.value.busy)
+            assertTrue(ALPHA in controller.state.value.busy)
+            controller.useProvider(BETA)
         } finally { clock.beforeRead = null; release.countDown() }
-        await { it.selection == beta && "selection" !in it.busy }
+        await { it.selection == beta && "selection" !in it.busy && ALPHA !in it.busy }
         assertEquals(beta, controller.selectedForRestart())
         assertNull(controller.state.value.error)
         assertManualUntouched()
@@ -375,41 +401,45 @@ class ServiceControllerTest {
 
     @Test
     fun cancellationClearsThePromptWipesLateCodesAndKeepsManualData() = runBlocking {
-        val prompt = prompt()
+        val pending = prompt()
         controller.cancel(ALPHA)
         await { it.codePrompt == null && ALPHA !in it.busy }
+        assertTrue(runCatching { withTimeout(10_000) { pending.prepared.await() } }.isFailure)
         val late = CODE.toCharArray()
-        controller.submitCode(prompt.id, late)
+        controller.submitCode(pending.prompt.id, late)
         assertTrue(late.all { it == '\u0000' })
         assertEquals(0, kits.calls.get())
         controller.reload()
-        val loaded = await { it.entries.singleOrNull()?.suspended == true && "local" !in it.busy }
-        assertTrue(loaded.entries.single().suspended)
+        // Nothing was installed, and the chosen server stays for the next attempt.
+        val loaded = await { it.loaded && "local" !in it.busy }
+        assertFalse(loaded.entries.single().suspended)
         assertNull(loaded.entries.single().selection)
+        assertEquals("server", loaded.entries.single().choice?.server?.id)
         assertManualUntouched()
     }
 
     @Test
     fun invalidCodeLengthIsWipedWhileTheCurrentPromptRemainsUsable() = runBlocking {
-        val prompt = prompt()
+        val pending = prompt()
         val short = CharArray(24) { '7' }
-        controller.submitCode(prompt.id, short)
+        controller.submitCode(pending.prompt.id, short)
         assertTrue(short.all { it == '\u0000' })
-        assertEquals(prompt, controller.state.value.codePrompt)
-        controller.submitCode(prompt.id, CODE.toCharArray())
-        await { it.selection != null && ALPHA !in it.busy }
+        assertEquals(pending.prompt, controller.state.value.codePrompt)
+        controller.submitCode(pending.prompt.id, CODE.toCharArray())
+        withTimeout(10_000) { pending.prepared.await() }
         assertEquals(1, kits.calls.get())
         assertManualUntouched()
     }
 
     @Test
     fun removingDuringThePromptCannotPublishASelectionOrAcceptItsCode() = runBlocking {
-        val prompt = prompt()
+        val pending = prompt()
         transport.offline = true
         controller.remove(ALPHA)
         await { it.removed && it.entries.isEmpty() && it.codePrompt == null && ALPHA !in it.busy && "remove:$ALPHA" !in it.busy }
+        assertTrue(runCatching { withTimeout(10_000) { pending.prepared.await() } }.isFailure)
         val late = CODE.toCharArray()
-        controller.submitCode(prompt.id, late)
+        controller.submitCode(pending.prompt.id, late)
         assertTrue(late.all { it == '\u0000' })
         assertEquals(0, kits.calls.get())
         assertNull(controller.state.value.selection)
@@ -418,10 +448,10 @@ class ServiceControllerTest {
 
     @Test
     fun removalInvalidatesOnlyItsProviderPermitAndNeverSelectsManual() = runBlocking {
-        val alpha = install(ALPHA)
+        val alpha = install(ALPHA).selection
         val beta = install(BETA)
         val alphaRun = open(alpha)
-        val betaRun = open(beta)
+        val betaRun = open(beta.selection)
         assertTrue(alphaRun.permit.valid())
         assertTrue(betaRun.permit.valid())
         transport.offline = true
@@ -430,22 +460,23 @@ class ServiceControllerTest {
         await { it.removed && it.entries.none { entry -> entry.provider == ALPHA } && "remove:$ALPHA" !in it.busy }
         assertTrue(betaRun.permit.valid())
         assertFalse(controller.state.value.manual)
-        assertEquals(beta, controller.selectedForRestart())
+        assertEquals(beta.route, controller.selectedForRestart())
         assertEquals("state", refusal { controller.open(alpha).close() })
         assertManualUntouched()
     }
 
     @Test
     fun aRemovedProvidersChoiceShowsNoRouteAndNeverBecomesManual() = runBlocking {
-        val selected = install()
+        val installed = install()
         transport.offline = true
         controller.remove(ALPHA)
         val removed = await { it.removed && it.entries.isEmpty() && "remove:$ALPHA" !in it.busy }
         assertNull(removed.selection)
         assertFalse(removed.manual)
         // Restart still reads the stored choice and refuses it.
-        assertEquals(selected, controller.selectedForRestart())
-        assertEquals("state", refusal { controller.open(selected).close() })
+        assertEquals(installed.route.copy(choice = null), controller.selectedForRestart())
+        assertEquals("state", refusal { controller.prepare(installed.route, renew = false) })
+        assertEquals("state", refusal { controller.open(installed.selection).close() })
         // Adding the provider again starts a new enrollment. The old choice stays unusable.
         transport.offline = false
         controller.add(ALPHA, null)
@@ -458,26 +489,36 @@ class ServiceControllerTest {
     @Test
     fun anAnonymousProviderNeverRenewsWithoutAPerson() = runBlocking {
         // Its opening code is typed by hand, so renewal is the person's step.
-        assertNull(controller.renewAfter(install()))
+        assertNull(controller.renewAfter(install().selection))
     }
 
     @Test
-    fun aFailedStepShowsTheSuspensionItSaved() = runBlocking {
-        install()
-        val catalog = controller.state.value.catalogs.getValue(ALPHA)
+    fun aFailedRenewalKeepsTheLiveGrantAndShowsNoError() = runBlocking {
+        val installed = install()
         clock.advance(61)
         transport.grantsDown = true
-        controller.install(ALPHA, catalog, "service", "server")
-        val failed = await { it.error == "unavailable" && ALPHA !in it.busy }
-        assertTrue(failed.entries.single { it.provider == ALPHA }.suspended)
+        // The anonymous provider's renewal never starts without a person, so the
+        // live grant is what a running connection keeps.
+        assertEquals(installed.selection, controller.prepare(installed.route, renew = false))
+        assertFalse(controller.state.value.entries.single { it.provider == ALPHA }.suspended)
+        assertManualUntouched()
+    }
+
+    @Test
+    fun anOutageBeforeAnyGrantIsShownAndLeavesTheChoice() = runBlocking {
+        val route = choose()
+        transport.grantsDown = true
+        assertEquals("unavailable", refusal { controller.prepare(route, renew = false) })
+        val failed = await { it.error == "unavailable" }
+        assertEquals("server", failed.entries.single().choice?.server?.id)
         assertManualUntouched()
     }
 
     @Test
     fun substitutedServerBindingCannotMaterializeARunOrSelectManual() = runBlocking {
-        val selected = install()
-        assertEquals("binding", refusal { controller.open(selected.copy(host = "substitution.example")).close() })
-        assertEquals(selected, controller.selectedForRestart())
+        val installed = install()
+        assertEquals("binding", refusal { controller.open(installed.selection.copy(host = "substitution.example")).close() })
+        assertEquals(installed.route, controller.selectedForRestart())
         assertFalse(controller.state.value.manual)
         assertManualUntouched()
     }
@@ -488,16 +529,18 @@ class ServiceControllerTest {
         controller.remove(ALPHA)
         await { it.removed && it.entries.isEmpty() && "remove:$ALPHA" !in it.busy }
         val replacement = install()
-        assertTrue(old.epoch != replacement.epoch)
-        assertEquals("binding", refusal { controller.open(old).close() })
-        open(replacement).use { assertTrue(it.permit.valid()) }
-        assertEquals(replacement, controller.selectedForRestart())
+        assertTrue(old.route.epoch != replacement.route.epoch)
+        assertEquals("binding", refusal { controller.open(old.selection).close() })
+        assertEquals("state", refusal { controller.prepare(old.route, renew = false) })
+        open(replacement.selection).use { assertTrue(it.permit.valid()) }
+        assertEquals(replacement.route, controller.selectedForRestart())
         assertManualUntouched()
     }
 
     @Test
     fun lockedRemovalInvalidatesTheRunAndDoesNotFallBackToManualOnUnlock() = runBlocking {
-        val selected = install()
+        val installed = install()
+        val selected = installed.selection
         val run = open(selected)
         AppVaultManager.enablePassword(context, PASSWORD).getOrThrow()
         AppVaultManager.lock()
@@ -505,14 +548,14 @@ class ServiceControllerTest {
         assertFalse(run.permit.valid())
         await { it.removed && "remove:$ALPHA" !in it.busy }
         AppVaultManager.unlockWithPassword(context, PASSWORD).getOrThrow()
-        assertEquals(selected, controller.selectedForRestart())
+        assertEquals(installed.route.copy(choice = null), controller.selectedForRestart())
         assertEquals("state", refusal { controller.open(selected).close() })
         assertManualUntouched()
     }
 
     @Test
     fun expiryAndClockFailureInvalidateCapturedRunAuthority() = runBlocking {
-        val selected = install()
+        val selected = install().selection
         val run = open(selected)
         assertTrue(run.permit.valid())
         clock.trusted = false
@@ -526,7 +569,7 @@ class ServiceControllerTest {
 
     @Test
     fun closingTheControllerInvalidatesPermitsAndClosingSessionsErasesTheirDirectories() = runBlocking {
-        val run = open(install())
+        val run = open(install().selection)
         val directory = run.session.directory
         assertTrue(directory.isDirectory)
         assertNotNull(File(directory, "synthetic.txt").takeIf { it.isFile })
@@ -552,9 +595,9 @@ class ServiceControllerTest {
         reopen(ProviderRegistration(context.packageName, "synthetic-controller-client", "https://client.example/oauth/callback"))
         catalog()
         repeat(2) {
-            assertEquals("binding", refusal { controller.authorize(ALPHA) })
+            assertEquals("link_unverified", refusal { controller.authorize(ALPHA) })
             assertNull(controller.state.value.authorizing)
-            assertEquals("binding", controller.state.value.error)
+            assertEquals("link_unverified", controller.state.value.error)
         }
         assertManualUntouched()
     }

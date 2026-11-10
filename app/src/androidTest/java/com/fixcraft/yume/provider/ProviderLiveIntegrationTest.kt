@@ -118,7 +118,7 @@ class ProviderLiveIntegrationTest {
         val expected = InstrumentationRegistry.getArguments().getString("expected") ?: "verified"
         if (expected == "disabled") {
             try { ProviderAppLinks.verify(context, registration); fail("Disabled handling was accepted") }
-            catch (refusal: ProviderCodec.Refusal) { assertEquals("binding", refusal.code) }
+            catch (refusal: ProviderCodec.Refusal) { assertEquals("link_unverified", refusal.code) }
         } else ProviderAppLinks.verify(context, registration)
     }
 
@@ -130,16 +130,19 @@ class ProviderLiveIntegrationTest {
         val stopped = mutableListOf<String>()
         val client = ProviderClient(context, registration, store, adapter(), connections =
             ProviderClient.Connections { synchronized(stopped) { stopped += it } }, http = transport())
+        // Connect prepares the chosen server's grant. Every call here renews when due.
+        suspend fun prepare(provider: String, code: suspend (ProviderCodec.Grant) -> CharArray) =
+            client.prepare(provider, renew = true, code).grant
         try {
             client.add(beta, null)
             val initialCatalog = client.catalog(beta)
+            client.choose(beta, initialCatalog, "access", "edge")
             refusal("malformed") {
-                client.install(beta, initialCatalog, "access", "edge") { grant ->
-                    openingCode(grant).also { it[0] = if (it[0] == '0') '1' else '0' }
-                }
+                prepare(beta) { grant -> openingCode(grant).also { it[0] = if (it[0] == '0') '1' else '0' } }
             }
             refusal("state") { client.lease(beta).close() }
-            val b1 = client.install(beta, initialCatalog, "access", "edge", ::openingCode)
+            // A mistyped code keeps the request, so the retry gets the same grant.
+            val b1 = prepare(beta, ::openingCode)
             evidence.put("wrong_code_withheld_and_exact_retry", true)
             client.lease(beta).use { assertTrue(it.bundle.isNotEmpty()) }
             evidence.put("beta_initial", b1.grantId)
@@ -205,15 +208,19 @@ class ProviderLiveIntegrationTest {
             val noCodeHandoff: suspend (ProviderCodec.Grant) -> CharArray = {
                 throw AssertionError("Device-bound enrollment requested a manual opening code")
             }
-            val a1 = client.install(alpha, alphaCatalog, "access", "edge", noCodeHandoff)
+            client.choose(alpha, alphaCatalog, "access", "edge")
+            val a1 = prepare(alpha, noCodeHandoff)
             evidence.put("device_bound_code_delivery_without_host_code", true)
             evidence.put("operator_declared_country", "US")
             val betaRefreshWait = b1.refreshAfter - requireNotNull(AndroidProviderClock.now()).seconds
             if (betaRefreshWait > 0) delay(betaRefreshWait * 1000 + 1000)
-            val b2 = client.install(beta, client.catalog(beta), "access", "edge", ::openingCode)
-            assertEquals(b1.generation + 1, b2.generation)
+            // Renewal is a fresh grant while the old one still works, then the old one is revoked.
+            val b2 = prepare(beta, ::openingCode)
+            assertEquals(1L, b2.generation)
+            assertNotEquals(b1.grantId, b2.grantId)
             assertNotEquals(b1.clientIdentity, b2.clientIdentity)
             assertNotEquals(a1.clientIdentity, b2.clientIdentity)
+            assertTrue(client.releaseRetired(beta))
             evidence.put("beta_refresh", b2.grantId)
             // The issuer's actual 60-second access token expires; transport remains valid.
             delay(62_000)
@@ -221,14 +228,15 @@ class ProviderLiveIntegrationTest {
             client.catalog(alpha) // Real rotating OAuth refresh over normal HTTPS.
             val alphaRefreshWait = a1.refreshAfter - requireNotNull(AndroidProviderClock.now()).seconds
             if (alphaRefreshWait > 0) delay(alphaRefreshWait * 1000 + 1000)
-            val a2 = client.install(alpha, client.catalog(alpha), "access", "edge", noCodeHandoff)
+            val a2 = prepare(alpha, noCodeHandoff)
             assertNotEquals(a1.clientIdentity, a2.clientIdentity)
+            assertTrue(client.releaseRetired(alpha))
             evidence.put("alpha_refresh", a2.grantId)
             evidence.put("account_expiry_preserves_transport", true)
             val untilExpiry = b2.expiresAt - requireNotNull(AndroidProviderClock.now()).seconds
             if (untilExpiry > 0) delay(untilExpiry * 1000 + 1000)
             refusal("revoked") { client.lease(beta).close() }
-            refusal("unauthorized") { client.install(beta, client.catalog(beta), "access", "edge", ::openingCode) }
+            refusal("unauthorized") { prepare(beta, ::openingCode) }
             evidence.put("actual_transport_expiry", true)
             store.read(alpha, store.epoch(alpha)!!)!!.use { snapshot ->
                 val metadata = JSONObject(String(snapshot.metadata, Charsets.UTF_8))
@@ -247,9 +255,11 @@ class ProviderLiveIntegrationTest {
                     }
                 } finally { body.fill(0) }
             }
-            refusal("unauthorized") { client.install(alpha, client.catalog(alpha), "access", "edge", noCodeHandoff) }
-            refusal("revoked") { client.lease(alpha).close() }
-            evidence.put("known_revocation_suspends", true)
+            // A grant the provider revoked is replaced at the next renewal, on the same sign-in.
+            val a3 = prepare(alpha, noCodeHandoff)
+            assertNotEquals(a2.grantId, a3.grantId)
+            client.lease(alpha).use { assertTrue(it.bundle.isNotEmpty()) }
+            evidence.put("revoked_grant_replaced", true)
             store.read(alpha, store.epoch(alpha)!!)!!.use { before ->
                 host("offline-beta")
                 assertFalse(client.remove(beta))

@@ -12,6 +12,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
@@ -38,6 +39,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.fixcraft.yume.data.AppLanguage
 import com.fixcraft.yume.i18n.MessageId
 import com.fixcraft.yume.i18n.ProvideAppStrings
+import com.fixcraft.yume.provider.ProviderClient
 import com.fixcraft.yume.provider.ProviderCodec
 import com.fixcraft.yume.ui.kits.ProviderPanel
 import com.fixcraft.yume.ui.kits.ServiceActions
@@ -60,8 +62,8 @@ class ProviderPanelTest {
         val added = mutableListOf<Pair<String, String?>>()
         val authorized = mutableListOf<String>()
         val catalogs = mutableListOf<String>()
-        val installed = mutableListOf<List<Any>>()
-        val selected = mutableListOf<ServiceSelection>()
+        val chosen = mutableListOf<Triple<String, String, String>>()
+        val used = mutableListOf<String>()
         val cancelled = mutableListOf<String>()
         val removed = mutableListOf<String>()
         val submitted = mutableListOf<Pair<String, Int>>()
@@ -70,10 +72,8 @@ class ProviderPanelTest {
             add = { provider, issuer -> added += provider to issuer },
             authorize = { authorized += it },
             catalog = { catalogs += it },
-            install = { provider, catalog, service, server ->
-                installed += listOf(provider, catalog, service, server)
-            },
-            select = { selected += it },
+            choose = { provider, service, server -> chosen += Triple(provider, service, server) },
+            useProvider = { used += it },
             cancel = { cancelled += it },
             remove = { removed += it },
             code = { id, code ->
@@ -216,6 +216,7 @@ class ProviderPanelTest {
             "not_entitled" to MessageId.PROVIDER_ERROR_NOT_ENTITLED,
             "storage" to MessageId.PROVIDER_ERROR_STORAGE,
             "binding" to MessageId.PROVIDER_ERROR_BINDING,
+            "link_unverified" to MessageId.PROVIDER_ERROR_LINK_UNVERIFIED,
             "revoked" to MessageId.PROVIDER_SUSPENDED,
             "malformed" to MessageId.PROVIDER_ERROR_GENERIC,
             "unavailable" to MessageId.PROVIDER_ERROR_UNAVAILABLE,
@@ -226,6 +227,9 @@ class ProviderPanelTest {
             compose.runOnIdle { state.value = state.value.copy(error = error) }
             compose.onNodeWithText(message.source).performScrollTo().assertExists()
             compose.onNodeWithText(MessageId.PROVIDER_ADD_SERVICE.source).performScrollTo().assertIsEnabled()
+            // Only an unverified sign-in link offers Android's link settings.
+            val settings = compose.onAllNodesWithText(MessageId.PROVIDER_LINK_SETTINGS.source)
+            if (error == "link_unverified") settings.assertCountEquals(1) else settings.assertCountEquals(0)
         }
     }
 
@@ -282,36 +286,46 @@ class ProviderPanelTest {
     }
 
     @Test
-    fun choosingAServerRequestsThatServerAndAnotherStaysUnchangedOnceInstalled() {
-        val chosen = selection("jp-vpn")
+    fun choosingAServerRecordsItAndAnotherCanBeChosenLater() {
         render(ServiceUiState(entries = listOf(entry.copy(authorized = true)), catalogs = mapOf(PROVIDER to catalog()), loaded = true, browserRegistered = true))
         compose.onNodeWithText("United States").performScrollTo().performClick()
         compose.runOnIdle {
-            assertEquals("us2-vpn", actions.installed.single()[3])
-            actions.installed.clear()
-            state.value = state.value.copy(entries = listOf(entry.copy(authorized = true, selection = chosen, expiresAt = FAR, renewAfter = FAR, server = catalog().services[0].servers[0])), selection = chosen)
+            assertEquals(listOf(Triple(PROVIDER, "vpn", "us2-vpn")), actions.chosen)
+            actions.chosen.clear()
+            state.value = state.value.copy(entries = listOf(entry.copy(authorized = true, choice = choice("jp-vpn"))), selection = route("jp-vpn"))
         }
-        compose.onNodeWithText("United States").performScrollTo().performClick()
+        // The server in use is already chosen. Any other one can be chosen, with no removal first.
         compose.onNodeWithText("Japan").performScrollTo().performClick()
-        compose.runOnIdle { assertTrue(actions.installed.isEmpty()) }
+        compose.runOnIdle { assertTrue(actions.chosen.isEmpty()) }
         compose.onNode(hasText("Japan") and isSelected()).assertExists()
-        compose.onNode(hasText("United States") and isNotSelected()).assertExists()
+        compose.onNode(hasText("United States") and isNotSelected()).performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(listOf(Triple(PROVIDER, "vpn", "us2-vpn")), actions.chosen) }
     }
 
     @Test
-    fun aDueLeaseRenewsThroughItsInstalledServer() {
-        val chosen = selection("jp-vpn")
-        render(ServiceUiState(entries = listOf(entry.copy(authorized = true, selection = chosen, expiresAt = FAR, renewAfter = 1, server = catalog().services[0].servers[0])),
-            catalogs = mapOf(PROVIDER to catalog()), selection = chosen, loaded = true, browserRegistered = true))
-        compose.onNodeWithText("Japan").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals("jp-vpn", actions.installed.single()[3]) }
+    fun aCountryWithSeveralServersOpensIntoItsList() {
+        render(ServiceUiState(entries = listOf(entry.copy(authorized = true)), catalogs = mapOf(PROVIDER to catalog(second = true)), loaded = true, browserRegistered = true))
+        compose.onNodeWithText("JP2 VPN").assertDoesNotExist()
+        compose.onNode(hasText("Japan") and hasClickAction()).performScrollTo().performClick()
+        compose.onNodeWithText("JP2 VPN").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(listOf(Triple(PROVIDER, "vpn", "jp2-vpn")), actions.chosen) }
+        // The United States has one server, so its row chooses it directly.
+        compose.onNodeWithText("United States").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(Triple(PROVIDER, "vpn", "us2-vpn"), actions.chosen.last()) }
+    }
+
+    @Test
+    fun aChosenCountryStartsOpenWithItsServerSelected() {
+        render(ServiceUiState(entries = listOf(entry.copy(authorized = true, choice = choice("jp2-vpn", second = true))),
+            catalogs = mapOf(PROVIDER to catalog(second = true)), selection = route("jp2-vpn", second = true), loaded = true, browserRegistered = true))
+        compose.onNode(hasText("JP2 VPN") and isSelected()).performScrollTo().assertExists()
+        compose.onNode(hasText("JP1 VPN") and isNotSelected()).assertExists()
     }
 
     @Test
     fun connectIsTheNextStepOnlyForTheServiceInUseWhileIdle() {
-        val chosen = selection("jp-vpn")
-        val installed = entry.copy(authorized = true, selection = chosen, expiresAt = FAR, renewAfter = FAR, server = catalog().services[0].servers[0])
-        render(ServiceUiState(entries = listOf(installed), catalogs = mapOf(PROVIDER to catalog()), selection = chosen, loaded = true, browserRegistered = true))
+        val chosen = entry.copy(authorized = true, choice = choice("jp-vpn"))
+        render(ServiceUiState(entries = listOf(chosen), catalogs = mapOf(PROVIDER to catalog()), selection = route("jp-vpn"), loaded = true, browserRegistered = true))
         compose.onNodeWithText(MessageId.CONNECT.source).performScrollTo().performClick()
         compose.runOnIdle {
             assertEquals(1, connects)
@@ -319,7 +333,7 @@ class ProviderPanelTest {
         }
         compose.onNodeWithText(MessageId.CONNECT.source).assertDoesNotExist()
         compose.onNodeWithText(MessageId.PROVIDER_SELECT.source).performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(listOf(chosen), actions.selected) }
+        compose.runOnIdle { assertEquals(listOf(PROVIDER), actions.used) }
     }
 
     /** A flag is decoration: only the country name in the row's text may reach a screen reader. */
@@ -411,15 +425,20 @@ class ProviderPanelTest {
     private fun emptyCatalog() = ProviderCodec.Catalog(PROVIDER, "synthetic-device",
         "$PROVIDER/provider/v1", 1_800_000_000, 1_800_000_300, emptyList())
 
-    /** Japan with [country] (or none) and the United States, as the operator declares them. */
-    private fun catalog(country: String? = "JP") = ProviderCodec.Catalog(PROVIDER, "synthetic-device", "$PROVIDER/provider/v1", 1_800_000_000, 1_800_000_300,
-        listOf(ProviderCodec.Service("vpn", "VPN", "vpn", emptyList(), listOf(
+    /** Japan with [country] (or none), optionally a second Japanese server, and the United States, as the operator declares them. */
+    private fun catalog(country: String? = "JP", second: Boolean = false) = ProviderCodec.Catalog(PROVIDER, "synthetic-device",
+        "$PROVIDER/provider/v1", 1_800_000_000, 1_800_000_300,
+        listOf(ProviderCodec.Service("vpn", "VPN", "vpn", emptyList(), listOfNotNull(
             ProviderCodec.Server("jp-vpn", "JP1 VPN", "jp1.operator.example", 443, "b".repeat(64), country),
+            ProviderCodec.Server("jp2-vpn", "JP2 VPN", "jp2.operator.example", 443, "d".repeat(64), country).takeIf { second },
             ProviderCodec.Server("us2-vpn", "US2 VPN", "us2.operator.example", 443, "c".repeat(64), "US"),
         ))))
 
-    private fun selection(server: String) = ServiceSelection(PROVIDER, "00000000-0000-4000-8000-000000000001", "synthetic-device", "vpn", server,
-        "synthetic-grant", "a".repeat(64), "b".repeat(64), "jp1.operator.example", 443, "JP1 VPN", "vpn")
+    private fun choice(server: String, second: Boolean = false) =
+        ProviderClient.Choice("vpn", catalog(second = second).services[0].servers.first { it.id == server })
+
+    private fun route(server: String, second: Boolean = false) =
+        ServiceRoute(PROVIDER, "00000000-0000-4000-8000-000000000001", "vpn", choice(server, second))
 
     private fun prompt() = CodePrompt("synthetic-prompt", PROVIDER, "synthetic-grant")
 
@@ -427,6 +446,5 @@ class ProviderPanelTest {
         const val PROVIDER = "https://operator.example"
         const val ISSUER = "https://issuer.example"
         const val SYNTHETIC_CODE = "7777777777777777777777777"
-        const val FAR = 4_102_444_800L
     }
 }

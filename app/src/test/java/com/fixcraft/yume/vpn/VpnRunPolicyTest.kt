@@ -76,6 +76,15 @@ class VpnRunPolicyTest {
         assertTrue(VpnRunPolicy.startFailureEndsRun(VpnFailure.Unreachable, keepTrying = false))
     }
 
+    /** A server that refuses the kit's limits after a run started is a kit problem, not the device's. */
+    @Test
+    fun anIncompatibleStopIsTheKitsConfiguration() {
+        assertEquals(VpnFailure.Configuration, VpnRunPolicy.stoppedKind(YumeStatusCode.INCOMPATIBLE))
+        for (status in listOf(YumeStatusCode.OK, YumeStatusCode.CLOSED, YumeStatusCode.IO_ERROR)) {
+            assertEquals(VpnFailure.Device, VpnRunPolicy.stoppedKind(status))
+        }
+    }
+
     @Test
     fun retriesBackOffToTheLongestWait() {
         var wait = 1_000L

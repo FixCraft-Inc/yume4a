@@ -135,8 +135,8 @@ class MainActivity : ComponentActivity() {
                             }
                         } },
                         catalog = viewModel.services::catalog,
-                        install = viewModel.services::install,
-                        select = viewModel.services::select,
+                        choose = viewModel.services::choose,
+                        useProvider = viewModel.services::useProvider,
                         cancel = viewModel.services::cancel,
                         remove = viewModel.services::remove,
                         code = viewModel.services::submitCode,

@@ -11,7 +11,9 @@ import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.fixcraft.yume.MainUiState
 import com.fixcraft.yume.consumer.ServiceEntry
-import com.fixcraft.yume.consumer.ServiceSelection
+import com.fixcraft.yume.consumer.ServiceRoute
+import com.fixcraft.yume.provider.ProviderClient
+import com.fixcraft.yume.provider.ProviderCodec
 import com.fixcraft.yume.consumer.ServiceUiState
 import com.fixcraft.yume.i18n.MessageId
 import org.junit.Rule
@@ -41,9 +43,10 @@ class YumeAppStartTest {
     }
 
     @Test fun aChosenServerStaysOnOverview() {
-        val chosen = ServiceSelection(entry.provider, "00000000-0000-4000-8000-000000000001", "device", "vpn", "jp", "grant",
-            "a".repeat(64), "b".repeat(64), "jp1.operator.example", 443, "JP1 VPN", "vpn")
-        show(ServiceUiState(entries = listOf(entry.copy(selection = chosen)), selection = chosen, loaded = true, browserRegistered = true))
+        val server = ProviderCodec.Server("jp", "JP1 VPN", "jp1.operator.example", 443, "b".repeat(64), "JP")
+        val choice = ProviderClient.Choice("vpn", server)
+        val route = ServiceRoute(entry.provider, "00000000-0000-4000-8000-000000000001", "vpn", choice)
+        show(ServiceUiState(entries = listOf(entry.copy(choice = choice)), selection = route, loaded = true, browserRegistered = true))
         onConnectPage().assertDoesNotExist()
         compose.onNodeWithText("JP1 VPN").assertExists()
     }

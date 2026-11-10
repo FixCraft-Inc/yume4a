@@ -1,7 +1,5 @@
 package com.fixcraft.yume.ui.kits
 
-import com.fixcraft.yume.consumer.ServiceEntry
-
 /**
  * A server's operator-declared country as the screen shows it. Both fields are null
  * when the operator gave none or the code names no region. The location is never
@@ -19,32 +17,12 @@ internal fun serverPlace(country: String?, displayName: (String) -> String): Ser
 /** Android draws two of these letters as the region's flag. */
 private const val REGIONAL_INDICATOR_A = 0x1F1E6
 
-/**
- * What the installed server's lease allows, for the service row only. The shared
- * library still checks every lease, renewal and clock itself.
- */
-internal enum class GrantAccess {
-    /** Usable, and too early to renew. */
-    Active,
+/** Servers of one operator-declared country, as indices into the list they came from. */
+internal data class CountryGroup(val country: String?, val indices: List<Int>)
 
-    /** Usable, and choosing the server again renews it. */
-    Renewable,
-
-    /** Expired or suspended. Choosing the server again requests a new lease. */
-    Ended,
-}
-
-/** Null when no server is installed. [nowSeconds] is UTC. */
-internal fun grantAccess(entry: ServiceEntry, nowSeconds: Long): GrantAccess? {
-    if (entry.selection == null) return null
-    val expiresAt = entry.expiresAt
-    val renewAfter = entry.renewAfter
-    return when {
-        entry.suspended || (expiresAt != null && nowSeconds >= expiresAt) -> GrantAccess.Ended
-        renewAfter != null && nowSeconds >= renewAfter -> GrantAccess.Renewable
-        else -> GrantAccess.Active
-    }
-}
+/** Groups by country in order of first appearance. Servers without a country form one group. */
+internal fun countryGroups(countries: List<String?>): List<CountryGroup> =
+    countries.indices.groupBy { countries[it] }.map { (country, indices) -> CountryGroup(country, indices) }
 
 /** Origins are always HTTPS, so the host says everything a sentence needs. */
 internal fun originHost(origin: String): String = origin.removePrefix("https://")
