@@ -1,21 +1,25 @@
 package com.fixcraft.yume.ui.kits
 
+import androidx.annotation.DrawableRes
+import com.fixcraft.yume.consumer.ProviderFlags
+
 /**
  * A server's operator-declared country as the screen shows it. Both fields are null
- * when the operator gave none or the code names no region. The location is never
- * guessed from an address, and it says nothing about where traffic leaves.
+ * when the operator gave none or the code names no region, and [flag] is also null
+ * for a named region without flag art. The location is never guessed from an
+ * address, and it says nothing about where traffic leaves.
  */
-internal data class ServerPlace(val flag: String?, val name: String?)
+internal data class ServerPlace(@DrawableRes val flag: Int?, val name: String?)
 
-/** [displayName] turns a region code into words in the app's language. */
+/**
+ * [displayName] turns a region code into words in the app's language. The flag is
+ * the provider library's flat art, never an emoji, which some phones draw waving.
+ */
 internal fun serverPlace(country: String?, displayName: (String) -> String): ServerPlace {
     if (country == null || country.length != 2 || country.any { it !in 'A'..'Z' }) return ServerPlace(null, null)
     val name = displayName(country).takeIf { it.isNotBlank() && it != country } ?: return ServerPlace(null, null)
-    return ServerPlace(country.map { String(Character.toChars(REGIONAL_INDICATOR_A + (it - 'A'))) }.joinToString(""), name)
+    return ServerPlace(ProviderFlags.drawable(country), name)
 }
-
-/** Android draws two of these letters as the region's flag. */
-private const val REGIONAL_INDICATOR_A = 0x1F1E6
 
 /** Servers of one operator-declared country, as indices into the list they came from. */
 internal data class CountryGroup(val country: String?, val indices: List<Int>)

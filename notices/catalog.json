@@ -34,12 +34,22 @@
     },
     {
       "name": "YUME shared Android provider library",
-      "version": "0.4.0, exact source in providerIdentity",
+      "version": "exact version and source in providerIdentity",
       "license": "AGPL-3.0-or-later",
       "role": "generic provider contract, enrollment and selection state",
       "notices": [
         "COPYRIGHT",
-        "LICENSE"
+        "LICENSE",
+        "flag-icons-MIT.txt"
+      ]
+    },
+    {
+      "name": "flag-icons",
+      "version": "7.6.0",
+      "license": "MIT",
+      "role": "country flag art in the shared provider library",
+      "notices": [
+        "flag-icons-MIT.txt"
       ]
     },
     {
@@ -275,7 +285,7 @@
     },
     "THIRD_PARTY_LICENSES.md": {
       "path": "THIRD_PARTY_LICENSES.md",
-      "sha256": "3f3837520ac2abca7961572633bbd42106de9876d9977b8ea2482fb6296c3e62",
+      "sha256": "cd08911fe848fec62836124317285662a2a817522057be12dce0f77500a58511",
       "origin": "https://github.com/FixCraft-Inc/yume4a/blob/main/THIRD_PARTY_LICENSES.md"
     },
     "YUME-AGPL-3.0.txt": {
@@ -417,6 +427,11 @@
       "path": "notices/texts/zlib-LICENSE.txt",
       "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
       "origin": "vcpkg installed share/zlib/copyright; baseline c2aeddd80357b17592e59ad965d2adf65a19b22f"
+    },
+    "flag-icons-MIT.txt": {
+      "path": "notices/texts/flag-icons-MIT.txt",
+      "sha256": "8f1195d55a2fd315a07d812328470ca9ba2abb78c8d317ff19619d5125e00cea",
+      "origin": "https://registry.npmjs.org/flag-icons/-/flag-icons-7.6.0.tgz!/package/LICENSE"
     }
   },
   "artifacts": {

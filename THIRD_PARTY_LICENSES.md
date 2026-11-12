@@ -23,7 +23,9 @@ The shared Android provider source project is covered by this repository's
 `COPYRIGHT` and `LICENSE` (AGPL-3.0-or-later). Its independent version and exact
 source binding are packaged in `assets/provider-library/provenance.json` and
 the notice manifest's `providerIdentity`. Each variant records the resolved
-AAR hash. It contains no application UI, VPN service or native library.
+AAR hash. It contains no application UI code, VPN service or native library.
+Its country flags are flag-icons 7.6.0 art under the MIT license, packaged as
+`flag-icons-MIT.txt`.
 
 ## Native transport
 

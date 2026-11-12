@@ -2,6 +2,8 @@ package com.fixcraft.yume.ui.kits
 
 import android.content.ActivityNotFoundException
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,10 +14,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -43,10 +45,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -54,8 +56,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.fixcraft.yume.BuildConfig
 import com.fixcraft.yume.R
 import com.fixcraft.yume.consumer.CodePrompt
@@ -416,12 +418,18 @@ private fun ServerRow(
     }
 }
 
-/** The flag, or a plain globe when the place is unknown. Decoration only: the name beside it is what gets read aloud. */
+/**
+ * The flag, or a plain globe when the place has none. Decoration only: the name beside
+ * it is what gets read aloud. A flat flag with rounded corners and a hairline outline,
+ * so a white field still shows on a light surface.
+ */
 @Composable
 internal fun LocationMark(place: ServerPlace) {
     val flag = place.flag
     if (flag != null) {
-        Text(flag, fontSize = 22.sp, modifier = Modifier.widthIn(min = 28.dp).clearAndSetSemantics {})
+        val shape = RoundedCornerShape(3.dp)
+        Image(painterResource(flag), null, Modifier.size(24.dp, 18.dp).clip(shape)
+            .border(Dp.Hairline, MaterialTheme.colorScheme.outlineVariant, shape), contentScale = ContentScale.Crop)
     } else {
         Icon(painterResource(R.drawable.ic_globe), null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }

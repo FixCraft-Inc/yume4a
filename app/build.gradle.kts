@@ -624,7 +624,8 @@ abstract class GenerateDependencyNotices : DefaultTask() {
                         "Shared provider source provenance differs"
                     }
                 }
-                mapOf("sha256" to hash(file), "notices" to listOf("COPYRIGHT", "LICENSE"))
+                // The library ships flag-icons' country flags beside its own AGPL source.
+                mapOf("sha256" to hash(file), "notices" to listOf("COPYRIGHT", "LICENSE", "flag-icons-MIT.txt"))
             } else objectValue(known[coordinate] ?: error("Dependency notice review required: $coordinate"))
             check(hash(file) == entry["sha256"]) { "Dependency notice review required: $coordinate" }
             val notices = strings(entry["notices"])

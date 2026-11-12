@@ -72,8 +72,12 @@ prefill the editable Add service form, and neither adds a service by itself.
 Server lists show the operator-declared country's flag and name in the chosen
 application language, followed by the server label. A server without a declared
 country shows a plain globe and says its location is not given. The flag is
-decoration, so only the name reaches a screen reader. Advanced mode shows the
-endpoint address. Country metadata is not evidence of traffic egress.
+decoration, so only the name reaches a screen reader. It is flat flag-icons art
+from the provider library (`ProviderFlags`) with rounded corners and a hairline
+outline, never an emoji, which some phones draw waving. A region without art
+shows the globe beside its name. The VPN notification names the country in
+text. Advanced mode shows the endpoint address. Country metadata is not
+evidence of traffic egress.
 
 These illustrative values are not a working registration. The callback must
 use HTTPS, its exact app-controlled host and the fixed `/yume/oauth/callback`

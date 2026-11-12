@@ -9,6 +9,9 @@ The module version is `VERSION`. It is independent of the provider protocol,
 native ABI and either application version. All original source is covered by
 the repository's `COPYRIGHT` and AGPL-3.0-or-later `LICENSE`. Dependencies keep
 their own grants, recorded by each application's complete notice inventory.
+The country flags (`ProviderFlags`, `src/main/res/drawable-nodpi/`) are
+flag-icons 7.6.0 art under the MIT license (`src/flags/`), rendered by
+`tools/generate_provider_flags.py`, whose `check` must pass after any change.
 
 ## Consumer boundary
 
