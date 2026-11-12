@@ -7,6 +7,13 @@
         <intent>
             <action android:name="android.support.customtabs.action.CustomTabsService" />
         </intent>
+        <!-- Lets the callback rule see browsers on Android 11, so neither a
+             browser nor the chooser can pass for this application. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
     </queries>
     <application>
         <!-- AppAuth constructs requests and selects browsers. Its stateful

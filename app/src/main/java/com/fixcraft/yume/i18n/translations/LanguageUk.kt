@@ -581,7 +581,7 @@ internal object LanguageUk : LanguageBundle {
         "provider.ready" to "Доступ налаштовано",
         "provider.suspended" to "Доступ призупинено. Щоб продовжити, знову виберіть сервер.",
         "provider.authorization" to "Завершіть вхід у браузері або скасуйте його та почніть знову.",
-        "provider.error.stale" to "Список серверів застарів, або не вдалося підтвердити час на телефоні. Перевірте дату й час і спробуйте ще раз.",
+        "provider.error.stale" to "Список серверів або вхід застаріли. Спробуйте ще раз.",
         "provider.error.unauthorized" to "Щоб продовжити, увійдіть знову.",
         "provider.error.storage" to "Дані сервісу заблоковані або не читаються. Розблокуйте застосунок або видаліть цей сервіс.",
         "provider.error.binding" to "Прив’язка до постачальника, джерела авторизації або сервера не збіглася. Перевірте дані сервісу.",
@@ -621,5 +621,6 @@ internal object LanguageUk : LanguageBundle {
         "provider.error.timeout" to "Вхід тривав занадто довго. Спробуйте ще раз.",
         "provider.error.conflict" to "Інша зміна ще виконується. Незабаром спробуйте ще раз.",
         "provider.error.unsupported" to "Цей постачальник використовує вхід, який ця версія Yume не підтримує.",
+        "provider.error.clock.unavailable" to "Не вдалося підтвердити поточний час. Перевірте підключення до інтернету й спробуйте ще раз.",
     )
 }

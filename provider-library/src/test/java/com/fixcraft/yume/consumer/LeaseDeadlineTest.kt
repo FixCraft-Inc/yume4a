@@ -21,11 +21,21 @@ class LeaseDeadlineTest {
     }
 
     @Test
-    fun anUnavailableTrustedReadingCannotAuthorizeUse() {
+    fun withoutATrustedReadingOnlyTheMonotonicDeadlineApplies() {
         val deadline = LeaseDeadline(expiresAt = 1_100, elapsedDeadline = 200_000)
-        assertFalse(deadline.valid(seconds = null, elapsed = 100_000))
+        assertTrue(deadline.valid(seconds = null, elapsed = 100_000))
+        assertTrue(deadline.valid(seconds = null, elapsed = 199_999))
+        assertFalse(deadline.valid(seconds = null, elapsed = 200_000))
+    }
+
+    @Test
+    fun readingsWithoutTrustedTimeKeepTheElapsedHighWaterMarkAndUtcExpiryReturnsWithTime() {
+        val deadline = LeaseDeadline(expiresAt = 1_100, elapsedDeadline = 200_000)
         assertTrue(deadline.valid(seconds = 1_000, elapsed = 100_000))
-        assertFalse(deadline.valid(seconds = null, elapsed = 100_001))
+        assertTrue(deadline.valid(seconds = null, elapsed = 150_000))
+        assertFalse(deadline.valid(seconds = null, elapsed = 149_999))
+        assertTrue(deadline.valid(seconds = 1_050, elapsed = 150_001))
+        assertFalse(deadline.valid(seconds = 1_100, elapsed = 150_002))
     }
 
     @Test

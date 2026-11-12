@@ -83,19 +83,37 @@ class ProviderClient(
     private var lastTime: ProviderClock.Reading? = null
     @Volatile private var closed = false
 
-    private fun now(): ProviderClock.Reading = synchronized(timeLock) {
-        val reading = clock.now()
+    /** Trusted time, or null while there is none. A regression is refused as `stale`, which stops connections. */
+    private fun reading(): ProviderClock.Reading? = synchronized(timeLock) {
+        val reading = clock.now() ?: return null
         val previous = lastTime
-        if (reading == null || (previous != null && (reading.seconds < previous.seconds ||
-                reading.elapsedMillis < previous.elapsedMillis ||
-                (reading.seconds - previous.seconds) * 1000 + 2000 < reading.elapsedMillis - previous.elapsedMillis))) {
+        if (previous != null && (reading.seconds < previous.seconds || reading.elapsedMillis < previous.elapsedMillis ||
+                (reading.seconds - previous.seconds) * 1000 + 2000 < reading.elapsedMillis - previous.elapsedMillis)) {
             throw ProviderCodec.Refusal("stale")
         }
         lastTime = reading
         reading
     }
 
+    /** Missing trusted time is the local `clock_unavailable`, which stops nothing by itself. */
+    private fun now(): ProviderClock.Reading = reading() ?: throw ProviderCodec.Refusal("clock_unavailable")
+
+    /**
+     * Establishes trusted time before an operation that talks to [provider], in
+     * an operation of its own, so a regression found here stops connections too.
+     */
+    private suspend fun requireTime(provider: String) = operation(provider) { _, _ -> establishTime(provider) }
+
+    /** Without trusted time, fetches [provider]'s descriptor, whose reply anchors a provider-response clock. */
+    private suspend fun establishTime(provider: String) {
+        if (reading() != null) return
+        http.request(provider, descriptorEndpoint(provider)).fill(0)
+        if (reading() == null) throw ProviderCodec.Refusal("clock_unavailable")
+    }
+
     init {
+        // Lets the shared clock keep its anchor across process restarts in this boot.
+        AndroidProviderClock.attach(this.platform)
         store.recover()
         // Keys of removed enrollments are unusable without their tokens. A
         // failed sweep leaves them for the next start and blocks nothing.
@@ -129,15 +147,18 @@ class ProviderClient(
             descriptor
         }
 
-    suspend fun beginAuthorization(provider: String): Intent = operation(provider) { lane, generation ->
-        val registration = registration ?: throw ProviderCodec.Refusal("unsupported")
-        snapshot(provider) { record, epoch, bundles ->
-            revalidate(record, epoch, bundles, lane, generation)
-            requireDeviceBound(record)
-            persist(record, epoch, bundles, lane, generation)
-            synchronized(lane.publication) {
-                checkCurrent(lane, generation)
-                authorization.begin(record.context, record.descriptor, epoch.value, registration, platform, generation)
+    suspend fun beginAuthorization(provider: String): Intent {
+        requireTime(provider)
+        return operation(provider) { lane, generation ->
+            val registration = registration ?: throw ProviderCodec.Refusal("unsupported")
+            snapshot(provider) { record, epoch, bundles ->
+                revalidate(record, epoch, bundles, lane, generation)
+                requireDeviceBound(record)
+                persist(record, epoch, bundles, lane, generation)
+                synchronized(lane.publication) {
+                    checkCurrent(lane, generation)
+                    authorization.begin(record.context, record.descriptor, epoch.value, registration, platform, generation)
+                }
             }
         }
     }
@@ -181,18 +202,21 @@ class ProviderClient(
         }
     }
 
-    suspend fun catalog(provider: String): ProviderCodec.Catalog = operation(provider) { lane, generation ->
-        snapshot(provider) { record, epoch, bundles ->
-            revalidate(record, epoch, bundles, lane, generation)
-            val credential = credential(record, epoch, bundles, lane, generation)
-            val request = ProviderCodec.encode(base(record))
-            val raw = try {
-                signedIn(record, epoch, lane, generation) {
-                    api(credential, "${record.context.audience}/catalog", request, ProviderCodec.METADATA_LIMIT)
-                }
-            } finally { request.fill(0) }
-            try { ProviderCodec.catalog(raw, record.descriptor, record.context, now().seconds) }
-            finally { raw.fill(0) }
+    suspend fun catalog(provider: String): ProviderCodec.Catalog {
+        requireTime(provider)
+        return operation(provider) { lane, generation ->
+            snapshot(provider) { record, epoch, bundles ->
+                revalidate(record, epoch, bundles, lane, generation)
+                val credential = credential(record, epoch, bundles, lane, generation)
+                val request = ProviderCodec.encode(base(record))
+                val raw = try {
+                    signedIn(record, epoch, lane, generation) {
+                        api(credential, "${record.context.audience}/catalog", request, ProviderCodec.METADATA_LIMIT)
+                    }
+                } finally { request.fill(0) }
+                try { ProviderCodec.catalog(raw, record.descriptor, record.context, now().seconds) }
+                finally { raw.fill(0) }
+            }
         }
     }
 
@@ -226,8 +250,17 @@ class ProviderClient(
      * A device-bound provider delivers the opening code to the bound device
      * itself. [openingCode] supplies it only for anonymous providers, whose
      * code arrives through a separately authenticated channel.
+     *
+     * A connection that starts or renews with no trusted time and no provider
+     * in reach uses the held grant, with the refusal `clock_unavailable`, unless
+     * the trusted time last saved with it shows it expired. The node enforces
+     * its expiry (docs/PROVIDER_CLIENT.md, "Trusted time").
      */
     suspend fun prepare(provider: String, renew: Boolean, openingCode: suspend (ProviderCodec.Grant) -> CharArray): Prepared {
+        try { requireTime(provider) } catch (refused: ProviderCodec.Refusal) {
+            if (refused.code !in UNTIMED) throw refused
+            return Prepared(heldGrant(provider) ?: throw refused, "clock_unavailable")
+        }
         val (choice, current) = operation(provider) { _, _ ->
             snapshot(provider) { record, _, _ ->
                 val choice = record.choice ?: throw ProviderCodec.Refusal("state")
@@ -246,6 +279,17 @@ class ProviderClient(
         } catch (refused: ProviderCodec.Refusal) {
             if (current == null || refused.code !in RENEWAL_TRANSIENT || now().seconds >= current.expiresAt) throw refused
             Prepared(current, refused.code)
+        }
+    }
+
+    /** The chosen server's grant, unless the trusted time last saved with it is past its expiry. */
+    private suspend fun heldGrant(provider: String): ProviderCodec.Grant? = operation(provider) { _, _ ->
+        snapshot(provider, timed = false) { record, _, _ ->
+            val choice = record.choice ?: throw ProviderCodec.Refusal("state")
+            record.grant?.takeIf { grant ->
+                !record.suspended && record.savedAt < grant.expiresAt &&
+                    grant.request.serviceId == choice.service && grant.request.serverId == choice.server.id
+            }
         }
     }
 
@@ -322,32 +366,35 @@ class ProviderClient(
      * or answers as already ended, is forgotten. One that cannot be reached
      * stays for a later attempt until its own expiry closes it anyway.
      */
-    suspend fun releaseRetired(provider: String): Boolean = operation(provider) { lane, generation ->
-        snapshot(provider) { record, epoch, bundles ->
-            val current = now().seconds
-            record.retired.removeAll { it.expiresAt <= current }
-            if (record.retired.isEmpty()) return@snapshot true
-            val credential = try { credential(record, epoch, bundles, lane, generation) }
-                catch (refused: ProviderCodec.Refusal) {
-                    // A provider closes a sign-in's grants when it ends that sign-in.
-                    if (refused.code == "unauthorized") record.retired.clear()
-                    persist(record, epoch, bundles, lane, generation)
-                    return@snapshot record.retired.isEmpty()
-                }
-            val closed = withTimeoutOrNull(RELEASE_MILLIS) {
-                record.retired.filter { retired ->
-                    val fields = base(record) + mapOf("request_id" to ProviderAuthorization.randomIdentifier(), "grant_id" to retired.grantId)
-                    val body = ProviderCodec.encode(fields)
-                    try {
-                        val reply = api(credential, "${record.context.audience}/revoke", body)
-                        try { ProviderCodec.decode(reply) == fields + ("status" to "revoked") } finally { reply.fill(0) }
-                    } catch (refused: ProviderCodec.Refusal) { refused.code == "revoked" }
-                    finally { body.fill(0) }
-                }.map { it.grantId }.toSet()
-            }.orEmpty()
-            record.retired.removeAll { it.grantId in closed }
-            persist(record, epoch, bundles, lane, generation)
-            record.retired.isEmpty()
+    suspend fun releaseRetired(provider: String): Boolean {
+        requireTime(provider)
+        return operation(provider) { lane, generation ->
+            snapshot(provider) { record, epoch, bundles ->
+                val current = now().seconds
+                record.retired.removeAll { it.expiresAt <= current }
+                if (record.retired.isEmpty()) return@snapshot true
+                val credential = try { credential(record, epoch, bundles, lane, generation) }
+                    catch (refused: ProviderCodec.Refusal) {
+                        // A provider closes a sign-in's grants when it ends that sign-in.
+                        if (refused.code == "unauthorized") record.retired.clear()
+                        persist(record, epoch, bundles, lane, generation)
+                        return@snapshot record.retired.isEmpty()
+                    }
+                val closed = withTimeoutOrNull(RELEASE_MILLIS) {
+                    record.retired.filter { retired ->
+                        val fields = base(record) + mapOf("request_id" to ProviderAuthorization.randomIdentifier(), "grant_id" to retired.grantId)
+                        val body = ProviderCodec.encode(fields)
+                        try {
+                            val reply = api(credential, "${record.context.audience}/revoke", body)
+                            try { ProviderCodec.decode(reply) == fields + ("status" to "revoked") } finally { reply.fill(0) }
+                        } catch (refused: ProviderCodec.Refusal) { refused.code == "revoked" }
+                        finally { body.fill(0) }
+                    }.map { it.grantId }.toSet()
+                }.orEmpty()
+                record.retired.removeAll { it.grantId in closed }
+                persist(record, epoch, bundles, lane, generation)
+                record.retired.isEmpty()
+            }
         }
     }
 
@@ -357,16 +404,23 @@ class ProviderClient(
         while (record.retired.size > MAX_RETIRED) record.retired.removeAt(0)
     }
 
-    /** Explicit acquisition rechecks a lease. The consumer must stop at its returned deadline. */
+    /**
+     * Explicit acquisition rechecks a lease. The consumer must stop at its returned
+     * deadline. Without trusted time the last trusted time saved with the grant
+     * stands for the present, which can only make the deadline late, and the node
+     * enforces the grant's expiry itself.
+     */
     suspend fun lease(provider: String): Lease = operation(provider) { lane, generation ->
-        snapshot(provider) { record, epoch, bundles ->
-            val current = now()
+        snapshot(provider, timed = false) { record, epoch, bundles ->
+            val current = reading()
+            val seconds = current?.seconds ?: record.savedAt
+            val elapsed = current?.elapsedMillis ?: clock.elapsedMillis()
             val grant = record.grant ?: throw ProviderCodec.Refusal("state")
             val deadline = transportDeadlines.compute(provider) { _, previous ->
                 if (previous?.first == grant.grantId) previous else grant.grantId to
-                    (current.elapsedMillis + maxOf(0, grant.expiresAt - current.seconds) * 1000)
+                    (elapsed + maxOf(0, grant.expiresAt - seconds) * 1000)
             }!!
-            if (record.suspended || current.seconds >= grant.expiresAt || current.elapsedMillis >= deadline.second) {
+            if (record.suspended || seconds >= grant.expiresAt || elapsed >= deadline.second) {
                 connections.stop(provider)
                 throw ProviderCodec.Refusal("revoked")
             }
@@ -458,8 +512,13 @@ class ProviderClient(
             var confirmed = true
             val account = record.account?.tokens?.accessToken
             val token = account ?: record.deviceCredential
-            // A browser-authorized token without its device key cannot authenticate.
-            val credential = token?.takeIf { account == null || key != null }?.let { Credential(ProviderBearer(provider, it), key) }
+            // A browser-authorized token without its device key cannot authenticate,
+            // and nothing is proven to the provider without trusted time. Removal
+            // never waits for the provider's lane, so this runs outside it.
+            val timed = try { establishTime(provider); true }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { false }
+            val credential = token?.takeIf { timed && (account == null || key != null) }?.let { Credential(ProviderBearer(provider, it), key) }
             val live = listOfNotNull(record.grant?.grantId) + record.retired.map { it.grantId }
             if (credential != null) live.forEach { grantId ->
                 val fields = base(record) + mapOf("request_id" to ProviderAuthorization.randomIdentifier(), "grant_id" to grantId)
@@ -486,8 +545,10 @@ class ProviderClient(
             confirmed
         } ?: false
 
+    private fun descriptorEndpoint(provider: String) = "$provider/.well-known/yume-provider"
+
     private suspend fun descriptor(context: ProviderCodec.Context): ProviderCodec.Descriptor {
-        val raw = http.request(context.provider, "${context.provider}/.well-known/yume-provider")
+        val raw = http.request(context.provider, descriptorEndpoint(context.provider))
         return try { ProviderCodec.descriptor(raw, context, now().seconds) } finally { raw.fill(0) }
     }
 
@@ -679,12 +740,17 @@ class ProviderClient(
         } finally { bytes.fill(0) }
     }
 
-    private suspend fun <T> snapshot(provider: String, block: suspend (Record, ProviderStore.Epoch, Map<String, ByteArray>) -> T): T {
+    /** [timed] false admits a read without trusted time. A rollback is refused either way. */
+    private suspend fun <T> snapshot(provider: String, timed: Boolean = true,
+                                     block: suspend (Record, ProviderStore.Epoch, Map<String, ByteArray>) -> T): T {
         val epoch = store.epoch(provider) ?: throw ProviderCodec.Refusal("state")
         val snapshot = store.read(provider, epoch) ?: throw ProviderCodec.Refusal("state")
         snapshot.use {
             val record = decode(snapshot.metadata)
-            if (record.context.provider != provider || now().seconds < record.savedAt) throw ProviderCodec.Refusal("stale")
+            val current = if (timed) now() else reading()
+            if (record.context.provider != provider || (current != null && current.seconds < record.savedAt)) {
+                throw ProviderCodec.Refusal("stale")
+            }
             return block(record, epoch, snapshot.bundles)
         }
     }
@@ -775,7 +841,9 @@ class ProviderClient(
         /** Answers that end a grant request: repeating its body cannot succeed. */
         val DEFINITIVE = setOf("revoked", "not_entitled", "binding", "malformed", "unsupported")
         /** Renewal failures that leave a live grant worth keeping until the next attempt. */
-        val RENEWAL_TRANSIENT = setOf("unavailable", "rate_limited", "conflict", "stale")
+        val RENEWAL_TRANSIENT = setOf("unavailable", "rate_limited", "conflict", "stale", "clock_unavailable")
+        /** Failures to establish trusted time after which a connection uses its held grant. */
+        val UNTIMED = setOf("unavailable", "rate_limited", "clock_unavailable")
         /** Retired grants waiting for revocation. Each expires within an hour regardless. */
         const val MAX_RETIRED = 8
         const val RELEASE_MILLIS = 15_000L

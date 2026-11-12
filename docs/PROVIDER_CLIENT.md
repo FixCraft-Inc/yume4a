@@ -73,9 +73,12 @@ until `Grant.renewAt`, the later of the provider's `refresh_after` and half the
 lease. After that, and for any other server, a fresh grant is issued while the
 current one stays usable; the replaced grant is revoked about 30 seconds later
 or retried until it expires. A renewal the provider cannot answer returns the
-live grant with its refusal. `renewAfter` reports when a running connection
-should call `prepare` again: only device-bound providers qualify, since an
-anonymous provider's opening code is typed by hand.
+live grant with its refusal, and the next attempt waits a quarter of the lease
+left, from 30 seconds to 5 minutes, on the monotonic clock. `renewal` returns a
+`Renewal` whose `due()` tells a running connection when to call `prepare` again,
+judged on [trusted time](#trusted-time) and never the device's wall clock.
+Only device-bound providers qualify, since an anonymous provider's opening code
+is typed by hand.
 
 A consumer may supply a suspend `authorizationAccess` hook. Callback validation
 and single-use consumption happen first; then the provider operation lane owns
@@ -111,15 +114,73 @@ Debug builds permit user-installed CAs only for the three fixed
 Android Settings and remove that certificate after the run. Production uses
 ordinary system trust; no client TLS or hostname check is overridden.
 
-Before opening a browser, the wrapper requires the installed application's
-domain to be OS-verified and enabled, and the exact callback to resolve to that
-application. User-selected domain handling alone is insufficient. A failure
-here is the local refusal `link_unverified`, kept apart from `binding` because
-the person can act on it: `ProviderAppLinks.settingsIntent` opens Android's
-link settings for the application. This check requires Android 12 or later. The default trusted-clock adapter uses Android's
-network time on Android 13 or later and suspends when it is unavailable. An
-older platform needs an independently qualified trusted-clock adapter; manual
-kit import has no provider-clock dependency.
+Before opening a browser, `ProviderAppLinks.verify` requires the exact callback
+to reach this application alone. On Android 12 (API 31) and later, Android must
+report the callback host verified and link handling enabled for the
+application, and the callback must resolve to it. User-selected domain
+handling alone is insufficient there. Android 9 to 11 have no query for
+verification state, so there the callback must resolve to this application,
+which is true when Android verified the link at install or the person chose
+this application for it. The library's manifest declares the https `VIEW`
+query, so on Android 11 browsers are visible to that resolution and cannot be
+mistaken for this application. Below Android 12 a callback that another
+application received anyway is protected as RFC 8252 describes: the code is
+useless without this attempt's PKCE verifier, its `state` must match, and the
+token exchange is bound to the device's DPoP key. A failure is the local
+refusal `link_unverified`, kept apart from `binding` because the person can
+act on it: `ProviderAppLinks.settingsIntent` opens Android's link settings for
+the application. Manual kit import has no link or provider-clock dependency.
+
+## Trusted time
+
+The client needs trusted time to judge descriptors, catalogs, grants, tokens,
+authorization attempts and DPoP proofs. A device wall clock alone is never
+trusted time. `AndroidProviderClock` is the one process-wide clock, which
+`ProviderClient`, `ProviderAuthorization` and `ServiceController` use by
+default, so they share one reading.
+
+On Android 13 (API 33) and later it reads Android's network time. Below
+Android 13 it is anchored to the provider's own responses. `ProviderHttp`
+reports the `Date` header of every response that passed TLS and its header
+checks, before the body is read, together with `elapsedRealtime` just after the
+connection was established and when the status line arrived. The provider
+wrote that `Date` inside this interval and truncated it to the second, so the
+anchor takes it as the time at arrival and never runs ahead of the provider's
+clock. A response whose round trip took more than 10 seconds, or whose `Date`
+is not an RFC 9110 IMF-fixdate, is ignored. The bound keeps the anchor's lag
+well inside the issuer's 60-second proof window. A later response can move the
+anchor forward, never back, because `ProviderClient` refuses any regression as
+`stale`. Between responses the reading advances with `elapsedRealtime`. The
+anchor is saved under `noBackupFilesDir` with `Settings.Global.BOOT_COUNT`, so
+a process that restarts in the same boot keeps it and a reboot discards it.
+
+Feeding the anchor before the body is decoded means a body's own time checks
+run against a reading no earlier than that response's `Date`. FixCraft's API
+sets a catalog's `issued_at` one second before its clock, a grant's when the
+grant is created, and a descriptor's `expires_at` 3599 seconds after its `Date`
+(measured on 2026-11-11), so every check passes without a tolerance. Time is
+trusted from a provider as its other answers are. One whose clock runs ahead
+moves the shared reading ahead for every provider until the next reboot.
+
+Without trusted time, an operation that talks to a provider first fetches that
+provider's descriptor, which anchors the clock. A local operation, such as
+choosing a server, refuses at once with the local code `clock_unavailable`
+rather than waiting on the network. Missing time never stops a running
+connection by itself. A detected regression does, as `stale`.
+
+After a reboot an Android 9 to 12 phone has no trusted time until a provider
+answers. If none can be reached when a connection starts or renews, which a
+blocked API can take up to the 10-second connect deadline to show, `prepare`
+uses the chosen server's held grant, unless the trusted time last saved with
+the enrollment is already past the grant's expiry, and returns it with the
+renewal refusal `clock_unavailable`. That lease's local deadline is the grant's
+expiry minus the saved time, measured on `elapsedRealtime`, so it can run late.
+The node enforces the grant's expiry and revocation itself and refuses an
+expired grant. Without trusted time a renewal is due at once, because its first
+request restores time. Through a running tunnel that request reaches a blocked
+API, and renewal then works as usual. If no provider answers, the connection
+keeps its grant and tries again after 30 seconds. A run permit without a trusted
+reading checks only its monotonic deadline.
 
 ## Storage and removal
 
@@ -148,9 +209,10 @@ Flash erasure is best effort.
 Account-token and anonymous-device API deadlines remain separate from transport
 leases. A lease exposes both its UTC expiry and local monotonic deadline. Its
 consumer must stop the corresponding connection at that deadline and must not
-reuse a closed bundle. Untrusted time, rollback, known revocation and ambiguous
-remote rotation suspend reuse. Descriptor revalidation suspends on a changed or
-refused descriptor, but not when the provider is unreachable or rate limited:
+reuse a closed bundle. Clock rollback, known revocation and ambiguous remote
+rotation suspend reuse. Missing trusted time follows
+[the reboot rule](#trusted-time). Descriptor revalidation suspends on a changed
+or refused descriptor, but not when the provider is unreachable or rate limited:
 an outage says nothing about the provider's identity, and the lease keeps its
 own deadline. A failed grant request retains its exact
 idempotency body for explicit retries until the provider answers it
@@ -209,7 +271,10 @@ The enclosing client still publishes only a successfully validated bundle.
 ## Checks
 
 `ProviderCodecTest` covers closed bounded formats and contract bindings on the
-JVM. `ServiceRoleTest` rejects missing roles and role substitution in persisted
+JVM. `ProviderTimeAnchorTest` covers the trusted-time anchor's round-trip
+bound, date format, forward-only correction and boot binding, and
+`ProviderAppLinksTest` the callback rule's decision on each Android release.
+`ServiceRoleTest` rejects missing roles and role substitution in persisted
 selections and acquired leases. `ProviderBundleCodecTest` preserves the stored
 bundle byte layout. The generic codec, deadline, browser and HTTP tests live
 in `provider-library`; a test-only fixture exposes callback-race construction

@@ -581,7 +581,7 @@ internal object LanguageJa : LanguageBundle {
         "provider.ready" to "設定済み",
         "provider.suspended" to "アクセスが一時停止されています。続けるにはサーバーを選び直してください。",
         "provider.authorization" to "ブラウザでログインを完了するか、キャンセルしてやり直してください。",
-        "provider.error.stale" to "サーバー一覧が古いか、この端末の時刻を確認できませんでした。日付と時刻を確認して、もう一度お試しください。",
+        "provider.error.stale" to "サーバー一覧またはログイン情報が古くなっています。もう一度お試しください。",
         "provider.error.unauthorized" to "続けるには、もう一度ログインしてください。",
         "provider.error.storage" to "サービスのデータがロックされているか、読み取れません。アプリのロックを解除するか、このサービスを削除してください。",
         "provider.error.binding" to "プロバイダー、認可サーバー、またはサーバーの紐付けが一致しません。サービスの詳細を確認してください。",
@@ -621,5 +621,6 @@ internal object LanguageJa : LanguageBundle {
         "provider.error.timeout" to "ログインに時間がかかりすぎました。もう一度お試しください。",
         "provider.error.conflict" to "別の変更を処理中です。しばらくしてからもう一度お試しください。",
         "provider.error.unsupported" to "このプロバイダーのログイン方式は、このバージョンの Yume では利用できません。",
+        "provider.error.clock.unavailable" to "現在の時刻をまだ確認できません。インターネット接続を確認して、もう一度お試しください。",
     )
 }

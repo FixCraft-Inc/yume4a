@@ -68,10 +68,13 @@ deadline, including body reading. One authorization attempt lasts at most 300
 seconds. One attempt and one mutating operation per provider/device may run at
 a time. An app stores at most 8 providers and 32 installed grants in total.
 Cancellation invalidates the operation generation before releasing resources.
-Late callbacks or completions cannot publish state. After clock rollback or an
-untrusted clock at restart, suspend grants until time can be established. While
-running, a monotonic deadline must also prevent wall-clock rollback extending a
-lease. There is no expiry grace period.
+Late callbacks or completions cannot publish state. After clock rollback,
+suspend grants until time can be established. A client with no trusted time
+may start on a held grant that its last trusted time does not show expired,
+since the node enforces expiry. The Android client's
+[trusted time](PROVIDER_CLIENT.md#trusted-time) states its rule. While running,
+a monotonic deadline must also prevent wall-clock rollback extending a lease.
+There is no expiry grace period.
 
 ## Descriptor and capabilities
 
@@ -194,8 +197,10 @@ What this protects: a copied access or refresh token, whether from a log, a
 backup, a proxy or a misdirected request, cannot fetch a catalog, create a
 grant, download a kit, read a code or refresh, because each needs a signature
 from the device key. The authorization code is still bound by PKCE and the
-verified app link. What it does not protect: an attacker who controls the
-device while the application is unlocked can use the key, as they could use
+app's callback link, which must reach this app alone
+([browser authentication](PROVIDER_CLIENT.md#browser-authentication)). What it
+does not protect: an attacker who controls the device while the application is
+unlocked can use the key, as they could use
 the opened credentials. The remedy is account-side revocation of that family
 and its grants. An operator browser page that shows codes to the signed-in
 account, if one exists, is outside this contract.
@@ -341,8 +346,9 @@ Errors have exactly `v: 1`, `error`, `retry_after`. `retry_after` is an integer
 `malformed` (HTTP 400), `binding` (400), `unsupported` (422), `unauthorized`
 (401), `not_entitled` (403), `conflict` (409), `stale` (409), `revoked` (410),
 `rate_limited` (429), `unavailable` (503). No peer text or credential is echoed.
-Local failures add `state`, `storage`, `cancelled` and `link_unverified`, the
-last when Android has not verified the client's own callback link. Refusal
+Local failures add `state`, `storage`, `cancelled`, `link_unverified`, when
+Android has not verified the client's own callback link, and
+`clock_unavailable`, when the client has no trusted time yet. Refusal
 never changes provider, TLS verification, route length or direct-routing
 consent. A single visible error ends the attempt, with no unbounded retry or
 login loop.

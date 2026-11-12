@@ -523,6 +523,7 @@ private fun CodeDialog(prompt: CodePrompt, advanced: Boolean, onCancel: () -> Un
 
 fun providerFailure(strings: AppStrings, code: String): String = strings.message(when (code) {
     "stale" -> MessageId.PROVIDER_ERROR_STALE
+    "clock_unavailable" -> MessageId.PROVIDER_ERROR_CLOCK_UNAVAILABLE
     "unauthorized" -> MessageId.PROVIDER_ERROR_UNAUTHORIZED
     "not_entitled" -> MessageId.PROVIDER_ERROR_NOT_ENTITLED
     "unavailable" -> MessageId.PROVIDER_ERROR_UNAVAILABLE

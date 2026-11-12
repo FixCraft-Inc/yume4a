@@ -88,6 +88,7 @@ class ServiceControllerTest {
             return ProviderClock.Reading(1_800_000_000L + (elapsed - started) / 1000 + secondsOffset,
                 elapsed + elapsedOffset)
         }
+        override fun elapsedMillis() = SystemClock.elapsedRealtime() + elapsedOffset
         fun advance(seconds: Long) { secondsOffset += seconds; elapsedOffset += seconds * 1000 }
     }
 
@@ -489,7 +490,7 @@ class ServiceControllerTest {
     @Test
     fun anAnonymousProviderNeverRenewsWithoutAPerson() = runBlocking {
         // Its opening code is typed by hand, so renewal is the person's step.
-        assertNull(controller.renewAfter(install().selection))
+        assertNull(controller.renewal(install().selection))
     }
 
     @Test
@@ -554,14 +555,15 @@ class ServiceControllerTest {
     }
 
     @Test
-    fun expiryAndClockFailureInvalidateCapturedRunAuthority() = runBlocking {
+    fun withoutTrustedTimeACapturedRunKeepsOnlyItsMonotonicDeadline() = runBlocking {
         val selected = install().selection
         val run = open(selected)
         assertTrue(run.permit.valid())
         clock.trusted = false
+        assertTrue(run.permit.valid())
+        clock.advance(601)
         assertFalse(run.permit.valid())
         clock.trusted = true
-        clock.advance(601)
         assertFalse(run.permit.valid())
         assertEquals("revoked", refusal { controller.open(selected).close() })
         assertManualUntouched()

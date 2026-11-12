@@ -18,6 +18,7 @@ import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.fixcraft.yume.YumeApplication
+import com.fixcraft.yume.consumer.Renewal
 import com.fixcraft.yume.consumer.ServiceRoute
 import com.fixcraft.yume.consumer.ServiceSelection
 import com.fixcraft.yume.provider.ProviderClient
@@ -300,8 +301,8 @@ class YumeVpnService : VpnService() {
         stopSelf()
     }
 
-    private fun renewAfter(selection: ServiceSelection): Long? = try {
-        (application as YumeApplication).services.renewAfter(selection)
+    private fun renewalOf(selection: ServiceSelection): Renewal? = try {
+        (application as YumeApplication).services.renewal(selection)
     } catch (_: Exception) {
         throw RunFailure(VpnFailure.KitUnavailable, "the selected service could not be read")
     }
@@ -345,7 +346,7 @@ class YumeVpnService : VpnService() {
         // A starting connection acquires its grant here, before any interface exists. A live
         // grant is used as it is, so a blocked provider API cannot stop a reconnect.
         val selection = prepared ?: route?.let { prepare(it) }
-        var renewAt = selection?.let { renewAfter(it) }
+        var renewal = selection?.let { renewalOf(it) }
         val selectedId = kitId ?: route?.id ?: KitStore.get(this).selectedId.value.orEmpty()
         val kit = selection?.let { KitSummary(route!!.id, it.label, it.host, it.port, 0) } ?: KitStore.get(this).get(selectedId)
             ?: throw RunFailure(VpnFailure.KitUnavailable, "the selected kit is no longer stored")
@@ -383,7 +384,7 @@ class YumeVpnService : VpnService() {
                     return choice.takeIf { it.service != selection.service || it.server.id != selection.server }
                 }
                 // Renewal waits for the tunnel, which carries its requests past a blocked provider API.
-                fun renewalDue() = renewAt?.let { System.currentTimeMillis() / 1000 >= it } == true &&
+                fun renewalDue() = renewal?.due() == true &&
                     YumeVpnRuntime.state.value.let { it.runId == runId && it.phase == VpnPhase.Connected }
                 while (owningJob.isActive && permit.valid()) {
                     val choice = moved()
@@ -396,7 +397,7 @@ class YumeVpnService : VpnService() {
                             YumeVpnRuntime.appendLog(VpnLogLevel.Warn,
                                 if (choice != null) "Could not move to ${choice.server.label} ($code). Staying on ${kit.name}."
                                 else "Could not renew access to ${kit.name} ($code). It lasts until the lease ends.")
-                            if (choice != null) declined = choice else renewAt = null
+                            if (choice != null) declined = choice else renewal = null
                             continue
                         }
                         if (next.grant != selection.grant) {
@@ -406,7 +407,7 @@ class YumeVpnService : VpnService() {
                             return@launch
                         }
                         // A renewal that failed for now keeps this grant and tries again later.
-                        renewAt = renewAfter(next)
+                        renewal = renewalOf(next)
                     }
                     delay(minOf(250L, maxOf(1L, permit.remainingMillis())))
                 }

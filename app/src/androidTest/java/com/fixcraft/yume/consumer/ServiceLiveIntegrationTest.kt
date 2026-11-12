@@ -383,7 +383,7 @@ class ServiceLiveIntegrationTest {
         assertEquals(routeId(previous), YumeVpnRuntime.state.value.kitId)
         assertEquals(VpnPhase.Connected, YumeVpnRuntime.state.value.phase)
         val run = YumeVpnRuntime.state.value.runId
-        val renewAt = requireNotNull(services.renewAfter(previous))
+        val renewAt = requireNotNull(entry(previous.provider).renewAfter)
         val wait = (renewAt - System.currentTimeMillis() / 1000 + 90).coerceAtLeast(30) * 1000
         withTimeout(wait) {
             while (entry(previous.provider).selection?.grant == previous.grant || YumeVpnRuntime.state.value.runId == run ||

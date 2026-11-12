@@ -581,7 +581,7 @@ internal object LanguageZhHans : LanguageBundle {
         "provider.ready" to "已配置",
         "provider.suspended" to "访问权限已暂停。请重新选择服务器以继续。",
         "provider.authorization" to "请在浏览器中完成登录，或取消后重新开始。",
-        "provider.error.stale" to "服务器列表已过期，或无法确认此手机的时间。请检查日期和时间后重试。",
+        "provider.error.stale" to "服务器列表或登录信息已过期。请重试。",
         "provider.error.unauthorized" to "请重新登录以继续。",
         "provider.error.storage" to "服务数据已锁定或无法读取。请解锁应用或移除此服务。",
         "provider.error.binding" to "服务提供商、授权服务器或服务器的绑定不匹配。请检查服务详情。",
@@ -621,5 +621,6 @@ internal object LanguageZhHans : LanguageBundle {
         "provider.error.timeout" to "登录耗时过长。请重试。",
         "provider.error.conflict" to "另一项更改仍在进行中。请稍后重试。",
         "provider.error.unsupported" to "此服务提供商使用的登录方式不受此版本 Yume 支持。",
+        "provider.error.clock.unavailable" to "暂时无法确认当前时间。请检查网络连接后重试。",
     )
 }

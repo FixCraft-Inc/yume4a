@@ -212,6 +212,7 @@ class ProviderPanelTest {
         render(ServiceUiState(loaded = true, browserRegistered = true), advanced)
         val expected = mapOf(
             "stale" to MessageId.PROVIDER_ERROR_STALE,
+            "clock_unavailable" to MessageId.PROVIDER_ERROR_CLOCK_UNAVAILABLE,
             "unauthorized" to MessageId.PROVIDER_ERROR_UNAUTHORIZED,
             "not_entitled" to MessageId.PROVIDER_ERROR_NOT_ENTITLED,
             "storage" to MessageId.PROVIDER_ERROR_STORAGE,

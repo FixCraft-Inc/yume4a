@@ -7,7 +7,6 @@ import android.content.pm.verify.domain.DomainVerificationManager
 import android.content.pm.verify.domain.DomainVerificationUserState
 import android.net.Uri
 import android.os.Build
-import android.os.SystemClock
 import android.provider.Settings
 import androidx.browser.customtabs.CustomTabsIntent
 import net.openid.appauth.AuthorizationRequest
@@ -30,40 +29,46 @@ import java.util.concurrent.TimeUnit
 /** Supplied by the consuming application, never selected by a descriptor. */
 data class ProviderRegistration(val applicationId: String, val clientId: String, val callback: String)
 
-fun interface ProviderClock {
-    /** Null suspends authority. A device wall clock alone is not trusted time. */
-    fun now(): Reading?
-    data class Reading(val seconds: Long, val elapsedMillis: Long)
-}
-
-/** Android's network clock is independent of user changes to the wall clock. */
-object AndroidProviderClock : ProviderClock {
-    override fun now(): ProviderClock.Reading? {
-        if (Build.VERSION.SDK_INT < 33) return null
-        return try {
-            ProviderClock.Reading(SystemClock.currentNetworkTimeClock().millis() / 1000, SystemClock.elapsedRealtime())
-        } catch (_: java.time.DateTimeException) { null }
-    }
-}
-
+/**
+ * The callback rule of docs/PROVIDER_CLIENT.md, "Browser authentication": the
+ * exact callback must reach this application alone before a browser opens.
+ */
 object ProviderAppLinks {
     fun verify(context: Context, registration: ProviderRegistration) {
         ProviderCodec.endpoint(registration.callback)
         val uri = Uri.parse(registration.callback)
-        if (context.packageName != registration.applicationId || Build.VERSION.SDK_INT < 31) {
-            throw ProviderCodec.Refusal("unsupported")
-        }
-        // Android has not verified this app's callback link, or link handling is off for it.
+        if (context.packageName != registration.applicationId) throw ProviderCodec.Refusal("unsupported")
         // A local code of its own, because the person can act on it, unlike a provider mismatch.
-        val manager = context.getSystemService(DomainVerificationManager::class.java)
-        val state = manager?.getDomainVerificationUserState(context.packageName)
-        if (state?.isLinkHandlingAllowed != true ||
-            state.hostToStateMap[uri.host] != DomainVerificationUserState.DOMAIN_STATE_VERIFIED) {
+        if (!reachesOnlyThis(domainVerified(context, uri), resolvedPackage(context, uri), context.packageName)) {
             throw ProviderCodec.Refusal("link_unverified")
         }
+    }
+
+    /**
+     * Android 12 and later report whether they verified the callback host and
+     * allow link handling. Android 9 to 11 report nothing ([verified] null), and
+     * there the callback's resolution decides alone.
+     */
+    internal fun reachesOnlyThis(verified: Boolean?, resolvedPackage: String?, packageName: String): Boolean =
+        verified != false && resolvedPackage == packageName
+
+    /** Null below Android 12, which has no query for a domain's verification state. */
+    private fun domainVerified(context: Context, uri: Uri): Boolean? {
+        if (Build.VERSION.SDK_INT < 31) return null
+        val manager = context.getSystemService(DomainVerificationManager::class.java)
+        val state = manager?.getDomainVerificationUserState(context.packageName)
+        return state?.isLinkHandlingAllowed == true &&
+            state.hostToStateMap[uri.host] == DomainVerificationUserState.DOMAIN_STATE_VERIFIED
+    }
+
+    /**
+     * The package Android opens the callback in, or its chooser's when several
+     * could. The library manifest's https `VIEW` query makes browsers visible
+     * here on Android 11, so one cannot hide behind package visibility.
+     */
+    private fun resolvedPackage(context: Context, uri: Uri): String? {
         val intent = Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)
-        val resolved = context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
-        if (resolved?.activityInfo?.packageName != context.packageName) throw ProviderCodec.Refusal("link_unverified")
+        return context.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName
     }
 
     /** Android's page for this app's links, where a `link_unverified` refusal can be resolved. */
@@ -135,7 +140,7 @@ class ProviderAuthorization(
         generation: Long = 0,
     ): AuthorizationRequest = synchronized(lock) {
         if (closed || generation < 0) throw ProviderCodec.Refusal("state")
-        val now = clock.now() ?: run { clearLocked(); throw ProviderCodec.Refusal("stale") }
+        val now = clock.now() ?: run { clearLocked(); throw ProviderCodec.Refusal("clock_unavailable") }
         // An expired browser tab must not occupy a provider's one-attempt slot.
         pending.values.filter { expired(it, now) }.forEach { removeLocked(it.context.provider) }
         val auth = descriptor.auth ?: throw ProviderCodec.Refusal("state")
@@ -171,7 +176,7 @@ class ProviderAuthorization(
         if (!denied && query.keys != setOf("iss", "state", "code")) throw ProviderCodec.Refusal("malformed")
         val attempt = pending.values.singleOrNull { equal(it.state, query.getValue("state")) }
             ?: throw ProviderCodec.Refusal("state")
-        val now = clock.now() ?: run { removeLocked(attempt.context.provider); throw ProviderCodec.Refusal("stale") }
+        val now = clock.now() ?: run { removeLocked(attempt.context.provider); throw ProviderCodec.Refusal("clock_unavailable") }
         if (callback.substringBefore('?') != attempt.auth.redirectUri || query["iss"] != attempt.auth.issuer) {
             throw ProviderCodec.Refusal("binding")
         }

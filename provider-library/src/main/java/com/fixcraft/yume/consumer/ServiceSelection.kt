@@ -1,6 +1,7 @@
 package com.fixcraft.yume.consumer
 
 import com.fixcraft.yume.provider.ProviderClient
+import com.fixcraft.yume.provider.ProviderClock
 import com.fixcraft.yume.provider.ProviderCodec
 import org.json.JSONObject
 
@@ -66,7 +67,11 @@ data class ServiceSelection(
     }
 }
 
-/** Both independent lease clocks and their high-water marks are required. */
+/**
+ * Both independent lease clocks and their high-water marks. Without a trusted
+ * reading ([valid] with null seconds) only the monotonic deadline applies, as
+ * docs/PROVIDER_CLIENT.md, "Trusted time", states.
+ */
 internal class LeaseDeadline(private val expiresAt: Long, val elapsedDeadline: Long) {
     private var previousSeconds: Long? = null
     private var previousElapsed: Long? = null
@@ -74,10 +79,16 @@ internal class LeaseDeadline(private val expiresAt: Long, val elapsedDeadline: L
     private var baselineElapsed: Long? = null
 
     @Synchronized fun valid(seconds: Long?, elapsed: Long): Boolean {
-        if (seconds == null || seconds >= expiresAt || elapsed >= elapsedDeadline) return false
-        val oldSeconds = previousSeconds
+        if (elapsed >= elapsedDeadline) return false
         val oldElapsed = previousElapsed
-        if (oldSeconds != null && oldElapsed != null && (seconds < oldSeconds || elapsed < oldElapsed)) return false
+        if (oldElapsed != null && elapsed < oldElapsed) return false
+        if (seconds == null) {
+            previousElapsed = elapsed
+            return true
+        }
+        if (seconds >= expiresAt) return false
+        val oldSeconds = previousSeconds
+        if (oldSeconds != null && seconds < oldSeconds) return false
         val anchorSeconds = baselineSeconds
         val anchorElapsed = baselineElapsed
         if (anchorSeconds != null && anchorElapsed != null) {
@@ -89,5 +100,29 @@ internal class LeaseDeadline(private val expiresAt: Long, val elapsedDeadline: L
         previousSeconds = seconds
         previousElapsed = elapsed
         return true
+    }
+}
+
+/**
+ * When a running connection replaces its grant, from [ServiceController.renewal].
+ * [due] reads trusted time on every call and is cheap enough to poll. Without
+ * trusted time a renewal is due at once, because its first request restores
+ * time (docs/PROVIDER_CLIENT.md, "Trusted time"). After an attempt the provider
+ * could not answer, it also waits until [notBeforeElapsed] on the monotonic clock.
+ */
+class Renewal internal constructor(private val renewAt: Long, private val notBeforeElapsed: Long,
+                                   private val clock: ProviderClock) {
+    fun due(): Boolean =
+        clock.elapsedMillis() >= notBeforeElapsed && clock.now()?.let { it.seconds >= renewAt } != false
+
+    internal companion object {
+        /**
+         * The wait after a renewal the provider could not answer: a quarter of the
+         * lease left, from 30 seconds to 5 minutes, so the next attempt comes well
+         * before the lease ends. Without trusted time ([now] null) what is left is
+         * unknown, and the shortest wait applies.
+         */
+        fun backoffMillis(expiresAt: Long, now: Long?): Long =
+            ((now?.let { expiresAt - it } ?: 0L) / 4).coerceIn(30L, 300L) * 1000
     }
 }

@@ -71,9 +71,12 @@ fallback exists. `relay` defines no calling, signaling or media protocol.
 The consuming application declares the no-display `ProviderCallbackActivity`
 with its exact callback association and exports it only for an explicit public
 registration. This library removes AppAuth's state-saving management activities.
-`ProviderAuthorization` still requires Android's verified, enabled app link
-and exact application resolution before opening the browser. It opens a Custom
-Tab when the selected browser supports one, otherwise that browser itself.
+`ProviderAuthorization` still requires the callback to resolve to this
+application before opening the browser, and Android's verified, enabled app
+link from Android 12 on
+([callback rule](../docs/PROVIDER_CLIENT.md#browser-authentication)). It opens
+a Custom Tab when the selected browser supports one, otherwise that browser
+itself.
 After a live process owner accepts a callback, the callback activity returns
 to the application's launcher activity, which closes the Custom Tab above it.
 

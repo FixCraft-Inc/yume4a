@@ -237,14 +237,14 @@ class ProviderAuthorizationTest {
     }
 
     @Test
-    fun untrustedTimeBlocksAuthorizationAndCallbackExchange() {
+    fun missingTrustedTimeBlocksAuthorizationAndCallbackExchange() {
         val clock = Clock().apply { trusted = false }
         val owner = ProviderAuthorization(clock)
-        refusal("stale") { begin(owner, clock) }
+        refusal("clock_unavailable") { begin(owner, clock) }
         clock.trusted = true
         val request = begin(owner, clock)
         clock.trusted = false
-        refusal("stale") { owner.consume(callback(request)) }
+        refusal("clock_unavailable") { owner.consume(callback(request)) }
         owner.clear()
     }
 
@@ -368,10 +368,13 @@ class ProviderAuthorizationTest {
     @Test
     fun productionRefusesTheUnverifiedHarnessSentinelUsingActualOsState() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        assertTrue("P3 app-link checks require Android 12 or newer", Build.VERSION.SDK_INT >= 31)
-        val state = context.getSystemService(DomainVerificationManager::class.java)
-            .getDomainVerificationUserState(context.packageName)
-        assertTrue(state?.hostToStateMap?.get(Uri.parse(CALLBACK).host) != DomainVerificationUserState.DOMAIN_STATE_VERIFIED)
+        // Android 12 and later also report verification state. Earlier releases
+        // refuse because the callback does not resolve to this test package.
+        if (Build.VERSION.SDK_INT >= 31) {
+            val state = context.getSystemService(DomainVerificationManager::class.java)
+                .getDomainVerificationUserState(context.packageName)
+            assertTrue(state?.hostToStateMap?.get(Uri.parse(CALLBACK).host) != DomainVerificationUserState.DOMAIN_STATE_VERIFIED)
+        }
         val exactApp = registration.copy(applicationId = context.packageName)
         refusal("link_unverified") { ProviderAppLinks.verify(context, exactApp) }
         val clock = Clock()

@@ -87,8 +87,9 @@ release APK.
 The build points the callback intent filter at the configured host and exports
 its receiver only when both properties are configured. With empty defaults, the receiver is
 unexported and its host placeholder is `unregistered.invalid`. Before opening
-the browser, the client requires Android to report the host verified, handling
-enabled and the exact callback resolved to this application. Typing an issuer
+the browser, the client requires the exact callback to resolve to this
+application, and from Android 12 on also Android's report that the host is
+verified and handling enabled. Typing an issuer
 does not create that registration. The reusable client's
 [browser checks](PROVIDER_CLIENT.md#browser-authentication) still apply.
 
@@ -130,11 +131,12 @@ Native YUME owns the authenticated connection and peer checks through the same
 
 Each provider run owns a stop permit with UTC expiry and a monotonic deadline.
 The service checks it during startup and throughout connection and reconnection.
-Expiry, unavailable trusted time, clock rollback, vault lock or provider
-invalidation stops that run through the existing cancellation and native-stop
-path. The guard belongs to the captured run and cannot stop a newer run. A
-restart must acquire authority again. It cannot reuse an expired, removed or
-mismatched grant.
+Expiry, clock rollback, vault lock or provider invalidation stops that run
+through the existing cancellation and native-stop path. Without trusted time
+only the monotonic deadline applies
+([trusted time](PROVIDER_CLIENT.md#trusted-time)). The guard belongs to the
+captured run and cannot stop a newer run. A restart must acquire authority
+again. It cannot reuse an expired, removed or mismatched grant.
 
 Account-token and anonymous-device API expiry remain independent of transport
 expiry. Account access-token expiry, or a refresh that gets no answer, does not

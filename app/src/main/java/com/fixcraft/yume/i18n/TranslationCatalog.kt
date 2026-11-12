@@ -579,7 +579,7 @@ internal object TranslationCatalog {
         "Provisioned" to "provider.ready",
         "Access paused. Choose your server again to continue." to "provider.suspended",
         "Complete sign-in in your browser, or cancel and start again." to "provider.authorization",
-        "The server list is out of date or this phone's time could not be confirmed. Check the date and time, then try again." to "provider.error.stale",
+        "The server list or sign-in is out of date. Try again." to "provider.error.stale",
         "Sign in again to continue." to "provider.error.unauthorized",
         "Service data is locked or unreadable. Unlock the app or remove this service." to "provider.error.storage",
         "The provider, issuer, or server binding did not match. Review the service details." to "provider.error.binding",
@@ -619,6 +619,7 @@ internal object TranslationCatalog {
         "Sign-in took too long. Try again." to "provider.error.timeout",
         "Another change is still in progress. Try again shortly." to "provider.error.conflict",
         "This provider uses a sign-in that this version of Yume does not support." to "provider.error.unsupported",
+        "The current time could not be confirmed yet. Check the internet connection, then try again." to "provider.error.clock.unavailable",
     )
     val idToSource: Map<String, String> = linkedMapOf(
         "nav.back" to "Back",
@@ -1196,7 +1197,7 @@ internal object TranslationCatalog {
         "provider.ready" to "Provisioned",
         "provider.suspended" to "Access paused. Choose your server again to continue.",
         "provider.authorization" to "Complete sign-in in your browser, or cancel and start again.",
-        "provider.error.stale" to "The server list is out of date or this phone's time could not be confirmed. Check the date and time, then try again.",
+        "provider.error.stale" to "The server list or sign-in is out of date. Try again.",
         "provider.error.unauthorized" to "Sign in again to continue.",
         "provider.error.storage" to "Service data is locked or unreadable. Unlock the app or remove this service.",
         "provider.error.binding" to "The provider, issuer, or server binding did not match. Review the service details.",
@@ -1236,6 +1237,7 @@ internal object TranslationCatalog {
         "provider.error.timeout" to "Sign-in took too long. Try again.",
         "provider.error.conflict" to "Another change is still in progress. Try again shortly.",
         "provider.error.unsupported" to "This provider uses a sign-in that this version of Yume does not support.",
+        "provider.error.clock.unavailable" to "The current time could not be confirmed yet. Check the internet connection, then try again.",
     )
 }
 
@@ -1816,7 +1818,7 @@ enum class MessageId(val id: String, val source: String) {
     PROVIDER_READY("provider.ready", "Provisioned"),
     PROVIDER_SUSPENDED("provider.suspended", "Access paused. Choose your server again to continue."),
     PROVIDER_AUTHORIZATION("provider.authorization", "Complete sign-in in your browser, or cancel and start again."),
-    PROVIDER_ERROR_STALE("provider.error.stale", "The server list is out of date or this phone's time could not be confirmed. Check the date and time, then try again."),
+    PROVIDER_ERROR_STALE("provider.error.stale", "The server list or sign-in is out of date. Try again."),
     PROVIDER_ERROR_UNAUTHORIZED("provider.error.unauthorized", "Sign in again to continue."),
     PROVIDER_ERROR_STORAGE("provider.error.storage", "Service data is locked or unreadable. Unlock the app or remove this service."),
     PROVIDER_ERROR_BINDING("provider.error.binding", "The provider, issuer, or server binding did not match. Review the service details."),
@@ -1856,4 +1858,5 @@ enum class MessageId(val id: String, val source: String) {
     PROVIDER_ERROR_TIMEOUT("provider.error.timeout", "Sign-in took too long. Try again."),
     PROVIDER_ERROR_CONFLICT("provider.error.conflict", "Another change is still in progress. Try again shortly."),
     PROVIDER_ERROR_UNSUPPORTED("provider.error.unsupported", "This provider uses a sign-in that this version of Yume does not support."),
+    PROVIDER_ERROR_CLOCK_UNAVAILABLE("provider.error.clock.unavailable", "The current time could not be confirmed yet. Check the internet connection, then try again."),
 }

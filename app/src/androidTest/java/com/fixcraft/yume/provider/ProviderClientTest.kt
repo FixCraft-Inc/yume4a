@@ -66,10 +66,11 @@ class ProviderClientTest {
         @Volatile var seconds = 1_800_000_000L
         @Volatile var elapsedMillis = 100_000L
         @Volatile var trusted = true
-        @Volatile var beforeRead: (() -> Unit)? = null
-        override fun now(): ProviderClock.Reading? {
-            beforeRead?.invoke()
-            return if (trusted) ProviderClock.Reading(seconds, elapsedMillis) else null
+        @Volatile var beforeElapsed: (() -> Unit)? = null
+        override fun now(): ProviderClock.Reading? = if (trusted) ProviderClock.Reading(seconds, elapsedMillis) else null
+        override fun elapsedMillis(): Long {
+            beforeElapsed?.invoke()
+            return elapsedMillis
         }
         fun advance(seconds: Long) { this.seconds += seconds; elapsedMillis += seconds * 1000 }
     }
@@ -106,6 +107,9 @@ class ProviderClientTest {
         var failGrants = false
         var refreshEntered: CompletableDeferred<Unit>? = null
         var refreshRelease: CompletableDeferred<Unit>? = null
+        // Stands in for ProviderHttp's Date feed, which a synthetic transport does not have.
+        var onDescriptorReply: (() -> Unit)? = null
+        val requests = AtomicInteger()
         private var closed = false
 
         @Suppress("UNCHECKED_CAST")
@@ -135,9 +139,13 @@ class ProviderClientTest {
             if (origin == BETA) assertNull(proof)
             assertTrue(body == null || body.size <= ProviderCodec.SMALL_LIMIT)
             if (endpoint.endsWith("/revoke")) revocations += endpoint
+            requests.incrementAndGet()
             if (offline) throw ProviderCodec.Refusal("unavailable")
             val result = when {
-                endpoint.endsWith("/.well-known/yume-provider") -> ProviderCodec.encode(descriptor(origin).fields())
+                endpoint.endsWith("/.well-known/yume-provider") -> {
+                    onDescriptorReply?.invoke()
+                    ProviderCodec.encode(descriptor(origin).fields())
+                }
                 endpoint == "$ISSUER/token" -> {
                     val form = body!!.toString(Charsets.US_ASCII).split('&').associate { part ->
                         val pair = part.split('=', limit = 2)
@@ -220,7 +228,7 @@ class ProviderClientTest {
 
     @After
     fun clean() {
-        clock.beforeRead = null
+        clock.beforeElapsed = null
         storageFault = null
         client.close()
         assertTrue(transport.unprovenAlpha.isEmpty())
@@ -359,6 +367,12 @@ class ProviderClientTest {
         assertFalse(metadata(ALPHA).has("account"))
     }
 
+    /**
+     * The lease pauses after reading its record and bundles, at its elapsed
+     * clock read. It runs without trusted time because only then is that read
+     * outside the client's time lock, which removal takes too. The publication
+     * check it meets afterwards is the same with trusted time.
+     */
     @Test
     fun removalPreventsAPausedLeaseFromPublishingCredentialBytes() = runBlocking {
         client.add(BETA, null)
@@ -367,8 +381,9 @@ class ProviderClientTest {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val published = AtomicReference<ProviderClient.Lease?>()
-        clock.beforeRead = {
-            if (reads.incrementAndGet() == 2) {
+        clock.trusted = false
+        clock.beforeElapsed = {
+            if (reads.incrementAndGet() == 1) {
                 entered.countDown()
                 check(release.await(5, TimeUnit.SECONDS))
             }
@@ -382,7 +397,7 @@ class ProviderClientTest {
             assertFalse(client.remove(BETA))
             assertNull(store.epoch(BETA))
         } finally {
-            clock.beforeRead = null
+            clock.beforeElapsed = null
             release.countDown()
         }
         withTimeout(5_000) { lease.join() }
@@ -392,7 +407,7 @@ class ProviderClientTest {
     }
 
     @Test
-    fun untrustedClockAndRollbackStopExistingTransportAuthority() = runBlocking {
+    fun clockRollbackStopsExistingTransportAuthority() = runBlocking {
         client.add(BETA, null)
         install(BETA)
         client.lease(BETA).close()
@@ -402,11 +417,78 @@ class ProviderClientTest {
         clock.seconds--
         assertEquals("stale", outcome { client.lease(BETA).close() })
         assertTrue(stopped.contains(BETA))
-        clock.seconds++
-        synchronized(stopped) { stopped.clear() }
+    }
+
+    @Test
+    fun missingTrustedTimeKeepsTheLeaseDeadlineAndStopsNoConnection() = runBlocking {
+        client.add(BETA, null)
+        install(BETA)
+        val timed = client.lease(BETA).use { it.elapsedDeadline }
         clock.trusted = false
-        assertEquals("stale", outcome { client.lease(BETA).close() })
-        assertTrue(stopped.contains(BETA))
+        client.lease(BETA).use { assertEquals(timed, it.elapsedDeadline) }
+        synchronized(stopped) { assertTrue(stopped.isEmpty()) }
+    }
+
+    @Test
+    fun aLocalChoiceWithoutTrustedTimeRefusesWithoutTheNetwork() = runBlocking {
+        client.add(BETA, null)
+        val catalog = client.catalog(BETA)
+        clock.trusted = false
+        val before = transport.requests.get()
+        assertEquals("clock_unavailable", outcome { client.choose(BETA, catalog, "service", "server") })
+        assertEquals(before, transport.requests.get())
+    }
+
+    @Test
+    fun aProviderOperationWithoutTrustedTimeTakesItFromTheDescriptorReply() = runBlocking {
+        client.add(BETA, null)
+        clock.trusted = false
+        transport.onDescriptorReply = { clock.trusted = true }
+        assertEquals(BETA, client.catalog(BETA).provider)
+        transport.onDescriptorReply = null
+        clock.trusted = false
+        assertEquals("clock_unavailable", outcome { client.catalog(BETA) })
+        synchronized(stopped) { assertTrue(stopped.isEmpty()) }
+    }
+
+    /** As after a reboot on Android 9 to 12: a fresh process with no trusted time and no reachable provider. */
+    private suspend fun rebootOffline() {
+        client.close()
+        clock.trusted = false
+        reopen()
+        transport.offline = true
+    }
+
+    @Test
+    fun aStartingConnectionAfterARebootUsesItsHeldGrantWhileTheProviderIsUnreachable() = runBlocking {
+        client.add(BETA, null)
+        val grant = install(BETA)
+        val saved = metadata(BETA).getLong("saved")
+        rebootOffline()
+        val prepared = client.prepare(BETA, renew = false) { throw AssertionError("No code is needed for a held grant") }
+        assertEquals(grant, prepared.grant)
+        assertEquals("clock_unavailable", prepared.renewalRefusal)
+        client.lease(BETA).use { lease ->
+            assertEquals(grant.grantId, lease.grant.grantId)
+            // The saved trusted time stands for the present, so the deadline can only be late.
+            assertEquals(clock.elapsedMillis + (grant.expiresAt - saved) * 1000, lease.elapsedDeadline)
+        }
+        // A running connection that cannot restore time keeps its grant and retries later.
+        val renewed = client.prepare(BETA, renew = true) { throw AssertionError("No code is needed for a held grant") }
+        assertEquals(grant, renewed.grant)
+        assertEquals("clock_unavailable", renewed.renewalRefusal)
+        synchronized(stopped) { assertTrue(stopped.isEmpty()) }
+    }
+
+    @Test
+    fun aHeldGrantThatTheSavedTimeShowsExpiredIsNotUsedAfterAReboot() = runBlocking {
+        client.add(BETA, null)
+        val grant = install(BETA)
+        clock.advance(grant.expiresAt - clock.seconds)
+        client.choose(BETA, client.catalog(BETA), "service", "server")
+        rebootOffline()
+        assertEquals("unavailable", outcome { client.prepare(BETA, renew = false) { CharArray(25) } })
+        assertEquals("revoked", outcome { client.lease(BETA).close() })
     }
 
     @Test

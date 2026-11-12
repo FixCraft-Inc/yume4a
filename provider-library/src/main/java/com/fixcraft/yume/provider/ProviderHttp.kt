@@ -1,5 +1,6 @@
 package com.fixcraft.yume.provider
 
+import android.os.SystemClock
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.IOException
@@ -14,9 +15,17 @@ import java.util.concurrent.TimeUnit
 import javax.net.ssl.HttpsURLConnection
 import kotlin.coroutines.resumeWithException
 
-/** The production transport has no DNS, CA, hostname, cookie or redirect override. */
-class ProviderHttp internal constructor(private val beforeConnect: () -> Unit) : ProviderTransport {
-    constructor() : this({})
+/**
+ * The production transport has no DNS, CA, hostname, cookie or redirect override.
+ * Every response that passes TLS and the header checks reports its `Date` to
+ * [timeFeed] before its body is read, so the body's own time checks run against
+ * that response's time (docs/PROVIDER_CLIENT.md, "Trusted time").
+ */
+class ProviderHttp internal constructor(
+    private val timeFeed: ProviderTimeFeed = AndroidProviderClock,
+    private val beforeConnect: () -> Unit,
+) : ProviderTransport {
+    constructor() : this(beforeConnect = {})
 
     private val monitor = Any()
     private val workers = ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS, ArrayBlockingQueue(16))
@@ -164,9 +173,12 @@ class ProviderHttp internal constructor(private val beforeConnect: () -> Unit) :
                 try { current.connect() }
                 catch (_: IOException) { throw ProviderCodec.Refusal("unavailable", unsent = true) }
                 if (!live()) return
+                // TLS is established. The provider writes its Date after this instant.
+                val sentElapsed = SystemClock.elapsedRealtime()
                 body?.let { bytes -> current.outputStream.use { it.write(bytes) } }
                 if (!live()) return
                 val status = current.responseCode
+                val receivedElapsed = SystemClock.elapsedRealtime()
                 if (status in 300..399) throw ProviderCodec.Refusal("binding")
                 val encoding = current.getHeaderField("Content-Encoding")
                 if (encoding != null && encoding != "identity") throw ProviderCodec.Refusal("malformed")
@@ -179,6 +191,7 @@ class ProviderHttp internal constructor(private val beforeConnect: () -> Unit) :
                 if (contentType != expectedType && contentType != "$expectedType; charset=utf-8") {
                     throw ProviderCodec.Refusal("malformed")
                 }
+                timeFeed.observe(current.getHeaderField("Date"), sentElapsed, receivedElapsed)
                 val bound = if (status == 200) limit else ProviderCodec.SMALL_LIMIT
                 if (current.contentLengthLong > bound) throw ProviderCodec.Refusal("malformed")
                 val stream = if (status == 200) current.inputStream else current.errorStream

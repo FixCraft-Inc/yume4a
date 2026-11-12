@@ -90,7 +90,7 @@ class ServiceController<S : AutoCloseable>(
     private val codes = ConcurrentHashMap<String, CodeSlot>()
     private val codePromptLock = Mutex()
     private val browserLane = Mutex()
-    // When a due renewal failed for a transient reason, the next attempt waits until then (UTC seconds).
+    // When a due renewal failed for a transient reason, the next attempt waits until then (monotonic milliseconds).
     private val renewalBackoff = ConcurrentHashMap<String, Long>()
     // Guarded by lifecycle, including cancellation between client return and UI publication.
     private var browserProvider: String? = null
@@ -291,9 +291,8 @@ class ServiceController<S : AutoCloseable>(
             val after = enrollment(route)
             if (after.grant?.grantId != prepared.grant.grantId) throw ProviderCodec.Refusal("cancelled")
             if (prepared.renewalRefusal == null) renewalBackoff.remove(route.provider) else {
-                // Retry within the live lease, well before it ends.
-                val now = clock.now()?.seconds ?: throw ProviderCodec.Refusal("stale")
-                renewalBackoff[route.provider] = now + ((prepared.grant.expiresAt - now) / 4).coerceIn(30L, 300L)
+                renewalBackoff[route.provider] = clock.elapsedMillis() +
+                    Renewal.backoffMillis(prepared.grant.expiresAt, clock.now()?.seconds)
             }
             if (before != null && before != prepared.grant.grantId) releaseLater(route.provider)
             reloadNow()
@@ -322,18 +321,19 @@ class ServiceController<S : AutoCloseable>(
     }
 
     /**
-     * When [selection]'s grant should be replaced, in UTC seconds. Null when it
-     * cannot be without a person: the provider is anonymous and its opening code
-     * is typed by hand, or the selection is no longer the held grant.
+     * When a running connection should replace [selection]'s grant with
+     * [prepare]. Null when it cannot without a person: the provider is anonymous
+     * and its opening code is typed by hand, or the selection is no longer the
+     * held grant.
      */
-    fun renewAfter(selection: ServiceSelection): Long? {
+    fun renewal(selection: ServiceSelection): Renewal? {
         // Reads the local store, not the screen state, so a boot-time restart works too.
         if (!adapter.ensureReady()) throw ProviderCodec.Refusal("storage")
         val entry = client().enrollments().firstOrNull {
             it.provider == selection.provider && it.epoch == selection.epoch && it.grant?.grantId == selection.grant
         }
-        val due = entry?.grant?.renewAt?.takeIf { entry.issuer != null } ?: return null
-        return maxOf(due, renewalBackoff[selection.provider] ?: 0)
+        val renewAt = entry?.grant?.renewAt?.takeIf { entry.issuer != null } ?: return null
+        return Renewal(renewAt, renewalBackoff[selection.provider] ?: Long.MIN_VALUE, clock)
     }
 
     /** Anonymous providers hand their opening code over separately, so a person types it. */
@@ -425,10 +425,10 @@ class ServiceController<S : AutoCloseable>(
         private val blocked = AtomicBoolean(false)
         fun valid(): Boolean {
             val reading = clock.now()
-            return !blocked.get() && deadline.valid(reading?.seconds, reading?.elapsedMillis ?: android.os.SystemClock.elapsedRealtime()) &&
+            return !blocked.get() && deadline.valid(reading?.seconds, reading?.elapsedMillis ?: clock.elapsedMillis()) &&
                 adapter.isUnlocked()
         }
-        fun remainingMillis(): Long = maxOf(0, deadline.elapsedDeadline - android.os.SystemClock.elapsedRealtime())
+        fun remainingMillis(): Long = maxOf(0, deadline.elapsedDeadline - clock.elapsedMillis())
         internal fun invalidate() { blocked.set(true) }
         override fun close() { invalidate(); synchronized(authority) { permits.remove(this) } }
     }
