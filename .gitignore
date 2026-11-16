@@ -26,3 +26,14 @@ local.properties
 
 # Python fixture/tool caches are never source inputs.
 /tools/__pycache__/
+
+# Every Gradle module owns generated output. Signing inputs stay local.
+**/build/
+*.apk
+*.aab
+*.jks
+*.keystore
+*.log
+*.hprof
+*.pcap
+*.pcapng
