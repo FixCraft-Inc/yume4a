@@ -27,14 +27,14 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.YumeVPN">
-        <!-- Without an explicit consuming registration the callback stays private.
-             Lint otherwise requires every VIEW receiver to be exported. -->
+        <!-- Only a registered consumer can receive browser callbacks. -->
         <activity android:name=".provider.ProviderCallbackActivity"
             tools:ignore="AppLinkUrlError"
+            android:enabled="${providerCallbackEnabled}"
             android:exported="${providerCallbackEnabled}" android:noHistory="true"
             android:excludeFromRecents="true" android:theme="@android:style/Theme.NoDisplay">
             <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
+                <action android:name="${providerCallbackAction}" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="${providerCallbackHost}"

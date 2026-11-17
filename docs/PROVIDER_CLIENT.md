@@ -101,7 +101,7 @@ clears the incoming URI at entry and saves no callback state. When a live
 receiver accepts the callback, it starts the application's launcher activity
 with `CLEAR_TOP | SINGLE_TOP`, which closes a Custom Tab left above it in the
 task. A cold callback with no receiver is ignored and opens nothing. The default build
-leaves that Activity unexported. An explicitly configured consuming build uses
+leaves that Activity disabled and unexported. An explicitly configured consuming build uses
 the public client ID and exact HTTPS callback supplied by
 [`yumeProviderClientId` and `yumeProviderCallback`](CONSUMER_SERVICES.md#browser-registration).
 The build supplies the matching verified intent filter. The operator must also

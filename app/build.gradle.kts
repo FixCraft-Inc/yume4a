@@ -220,6 +220,8 @@ android {
         buildConfigField("String", "SUGGESTED_PROVIDER", "\"$suggestedProvider\"")
         buildConfigField("String", "SUGGESTED_ISSUER", "\"$suggestedIssuer\"")
         manifestPlaceholders["providerCallbackEnabled"] = (callbackUri != null).toString()
+        manifestPlaceholders["providerCallbackAction"] = if (callbackUri != null) "android.intent.action.VIEW"
+            else "${applicationId}.provider.UNREGISTERED"
         manifestPlaceholders["providerCallbackHost"] = callbackUri?.host ?: "unregistered.invalid"
         buildConfigField("boolean", "ENABLE_ADB_TEST_CONTROL", "false")
         buildConfigField("boolean", "ML_KIT_TRANSLATION", mlKitTranslation.toString())
