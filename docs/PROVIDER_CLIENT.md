@@ -285,7 +285,7 @@ their identity stub explicitly; they do not qualify the native fingerprint
 adapter. `ProviderStoreProcessTest` has explicit crash/recovery phases that kill
 the real application process before and after manifest publication.
 
-Build and run these tests on the build host, following the repository guide.
+Use the [build prerequisites](../README.md#build) when running these tests.
 A request-construction test, reopened store or synthetic identity stub does not
 qualify OS/browser app-link delivery, actual process death, both live operators
 or a real native identity. Those are separate acceptance gates.

@@ -103,5 +103,3 @@ tests and browser/HTTP instrumentation live in this module. The test-fixture
 source set supplies a narrow callback-race seam and is absent from production
 APKs. yume4a retains its real vault, JNI, process-death, session and VPN flow
 tests. Ito owns equivalent adapter and complete-flow tests for its lifecycle.
-
-All Android builds and instrumentation run on the approved build host.

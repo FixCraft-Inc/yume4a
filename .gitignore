@@ -37,3 +37,7 @@ local.properties
 *.hprof
 *.pcap
 *.pcapng
+
+# Local workspace instructions
+.ai/
+/AGENTS.md
