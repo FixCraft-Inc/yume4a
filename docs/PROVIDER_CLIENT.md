@@ -155,12 +155,20 @@ anchor is saved under `noBackupFilesDir` with `Settings.Global.BOOT_COUNT`, so
 a process that restarts in the same boot keeps it and a reboot discards it.
 
 Feeding the anchor before the body is decoded means a body's own time checks
-run against a reading no earlier than that response's `Date`. FixCraft's API
-sets a catalog's `issued_at` one second before its clock, a grant's when the
-grant is created, and a descriptor's `expires_at` 3599 seconds after its `Date`
-(measured on 2026-11-11), so every check passes without a tolerance. Time is
-trusted from a provider as its other answers are. One whose clock runs ahead
-moves the shared reading ahead for every provider until the next reboot.
+run against a reading no earlier than that response's `Date`. The client
+applies the timestamp bounds of [provider contract 1](PROVIDERS.md) with no
+clock tolerance and refuses a value outside them as `stale`. An `issued_at`
+must not be later than the reading, a descriptor's `expires_at` must be at
+most 3600 seconds after it, and a catalog's `expires_at` at most 300 seconds
+after its `issued_at`. So on the anchored clock a provider passes when it
+dates every `issued_at` no later than its `Date` and sets a descriptor's
+`expires_at` at most 3600 seconds after that `Date`. Android's network time is
+a separate clock, so a provider should keep a margin on these bounds. The
+[reference provider](REFERENCE_PROVIDER.md#isolated-execution) dates a
+catalog's `issued_at` one second early and a descriptor's `expires_at` 3599
+seconds ahead. Time is trusted from a provider as its other answers are. One
+whose clock runs ahead moves the shared reading ahead for every provider until
+the next reboot.
 
 Without trusted time, an operation that talks to a provider first fetches that
 provider's descriptor, which anchors the clock. A local operation, such as
