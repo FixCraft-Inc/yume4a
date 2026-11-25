@@ -182,11 +182,15 @@ and the [client's native validation boundary](PROVIDER_CLIENT.md#native-validati
 describe the durable publication and cleanup limits. Device and complete-flow
 qualification are separate from these implementation contracts.
 
-## Generic flow qualification
+## End-to-end flow test
 
-`ServiceLiveIntegrationTest` is an explicit host-fixture gate excluded from the
-standard instrumentation runner. Its optional `traffic` handoff enables the
-complete flow: actual document import and browser return, both operators,
+`ServiceLiveIntegrationTest` is an optional end-to-end test, excluded from the
+standard instrumentation runner. Like the provider client's
+[live test](PROVIDER_CLIENT.md#checks), it needs provider services that you run
+yourself and a host-side program, not part of this repository, that writes its
+inputs to the test application's `no_backup/consumer-live-handoff/` directory
+and answers its requests during the run. Its optional `traffic` settings enable
+the complete flow: actual document import and browser return, both operators,
 live grant rotation, account/API expiry and refresh, server revocation of an
 established stream, restart, transport expiry and offline removal. It compares
 manual-kit contents and application preferences across those operations.
@@ -195,12 +199,12 @@ The host supplies one non-loopback numeric destination, separate TCP and UDP
 echo ports, expected native peer fingerprints and a bounded expiry wait. Test
 sockets bind to Android's active VPN network. Exact echoed payloads, increasing
 native payload counters and unchanged peer/run/session bindings must all pass.
-A Connected label, handshake or loopback exchange cannot satisfy this gate.
+A Connected label, handshake or loopback exchange cannot satisfy this test.
 Fixture policy permits only the selected destination and resolver in addition
 to loopback. Separate HTTP requests check server authorization independently
 of the UI. Host fixtures, credentials, registration, CA and public association
 are temporary and must be restored or removed after execution.
 
-This gate qualifies only its exact binaries and tested platform. Physical-device,
+This test qualifies only its exact binaries and tested platform. Physical-device,
 TalkBack/cutout, network-handover, ARM64 and signed-release results need their
 own evidence and remain separate from an emulator flow result.

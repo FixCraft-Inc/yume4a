@@ -2,8 +2,9 @@
 
 The host-only tools below exercise [provider contract 1](PROVIDERS.md) with
 real `yume-setup`, `yume` and `yumed`. They are a synthetic conformance fixture,
-with no Android runtime or account backend dependency. Run native integration
-on a build host. Python-only checks need Python 3.10 or later.
+with no Android runtime or account backend dependency. Native integration
+needs `yume`, `yumed` and `yume-setup` built from a YUME checkout. Python-only
+checks need Python 3.10 or later.
 
 `tools/provider_operator.py` owns provisioning. `tools/provider_supervisor.py`
 owns the daemon process and its independent lease deadline. The local HTTPS
@@ -66,10 +67,11 @@ new admission. The adapter never calls a sent signal a successful revocation.
 
 The runner takes explicit `--yume`, `--yumed`, `--setup` and `--source-root`
 paths, and an existing private `--evidence` directory. It refuses binaries
-outside the selected build directory. The native source and binaries must be
-bound by the build-host driver before execution. It creates one private
-temporary directory for keys, journals, sealed kits and the anonymous provider’s
-separate offline opening-code handoff, and removes that owned directory on exit.
+outside the selected build directory. It does not check that the binaries
+were built from `--source-root`, so build them from that checkout before you
+run it. It creates one private temporary directory for keys, journals, sealed
+kits and the anonymous provider’s opening codes, which it keeps apart from the
+kits, and removes that owned directory on exit.
 Alpha requires a fresh signed DPoP proof on every token and resource request,
 and delivers its opening code only through the family/device/grant-bound
 `POST /provider/v1/opening-code` route. The native runner consumes that route
@@ -85,7 +87,8 @@ changed operator role before accepting the original role again. The offline
 `python3 tools/test_provider_roles.py` checks role persistence and the public
 descriptor/catalog/request boundaries with native-command and supervisor
 stubs; its synthetic grant replies do not qualify native provisioning or
-traffic. Those require the build-host runner with exact bound binaries.
+traffic. Those need the native runner with binaries built from the selected
+source.
 
 Descriptor expiry leaves one second below the one-hour maximum, and catalog
 issuance is dated one second before the fixture's current whole second, with
@@ -163,5 +166,6 @@ python3 tools/test_provider_registration.py
 The native runner records each failed attempt and exits nonzero on any unmet
 gate. Its negative controls use temporary source copies, never edits to a
 developer's transport tree. A model or HTTP response alone cannot satisfy a
-daemon enforcement assertion. Full Android builds, app UI, browser/app-link
-verification, production deployment and physical devices are separate work.
+daemon enforcement assertion. The runner does not cover full Android builds,
+app UI, browser or app-link verification, production deployment or physical
+devices.

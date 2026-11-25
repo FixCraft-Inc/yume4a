@@ -104,7 +104,7 @@ Unverified dirty-native APKs are test builds.
 
 ## Archive regression
 
-On the build host, after building a variant:
+After building a variant:
 
 ```sh
 python3 tools/check_apk_notices.py \

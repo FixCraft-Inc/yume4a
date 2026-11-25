@@ -316,7 +316,7 @@ arbitrary download URL. With browser authorization, the bound device fetches
 the 25-character opening code as described under
 [Device-bound enrollment](#device-bound-enrollment). Public provisioning has no
 device-bound account, so its code still arrives through a separate
-authenticated operator channel, such as an offline handoff. A separate HTTP
+authenticated operator channel, such as handing it over offline. A separate HTTP
 request with the same anonymous credential is not a separate trust channel.
 The code must not appear in the descriptor, catalog, callback or logs. Both
 file and code together are transport credentials. Sealing does not

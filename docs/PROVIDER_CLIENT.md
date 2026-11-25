@@ -248,8 +248,8 @@ and local adapters before credential verification. yume4a requires exactly
 adapter bound to `tcp` and optional `udp_service=udp`; device adaptation retains
 its existing controlled listener policy. Other consumers own their separate
 service contracts. Codes and owned plaintext buffers are
-wiped on exit. The code handoff is caller-supplied; production reads no fixture
-handoff file and has no TLS/DNS/CA bypass.
+wiped on exit. The caller supplies the opening code. Production code reads no
+test fixture file and has no TLS, DNS or CA bypass.
 
 `YumeProviderNative.validator(context)` supplies yume4a's supported adapter.
 Its `ProviderNativeIdentityVerifier` writes only the six referenced credentials into a random, private directory
@@ -306,25 +306,30 @@ adapter. The standard instrumentation runner excludes classes annotated
 the first two with independent reference `Operator` instances and the third
 with native init/seal/import. Metadata records `host`, `port`,
 `server_key_sha256`, `client_identity`, `kit_sha256`, `kit_size` and a `files`
-map of relative path to SHA-256. Codes, kits and keys are ephemeral test data;
-never commit or log them. Run the class explicitly with AndroidJUnitRunner
-without the default annotation exclusion, then remove the fixture handoff and
-test application. All cases must execute without skips. This gate verifies
+map of relative path to SHA-256. Codes, kits and keys are throwaway test data.
+Never commit or log them. Run the class explicitly with AndroidJUnitRunner
+without the default annotation exclusion, then remove the fixture directory and
+the test application. All cases must execute without skips. This gate verifies
 private-key-derived identity, invalid credentials and bindings, private-file
 checks, and cleanup after failure/cancellation. It does not qualify browser
 HTTPS delivery or live enrollment.
 
-`ProviderLiveIntegrationTest` is another explicit fixture gate, excluded from
-the standard runner by the same annotation. The host supplies a private
-`no_backup/provider-live-handoff/config.json` with exact alpha, beta, issuer,
-client and callback registration, a separately generated manual kit/code, and
-expected-file metadata through a separate local handoff. The device-bound
-alpha enrollment receives its code only through the proof-bound provider API;
-the host supplies code only for the independent anonymous beta enrollment.
-The test uses the production HTTP transport, Android network clock, real native
-validator, provider vault and independent `KitStore`. Its browser starts only
-after OS verification and must return through `ProviderCallbackActivity`.
-Run the test explicitly against fresh independent services. The host must
-stop the requested fixture services, remove the handoff, uninstall the test
-apps and restore emulator trust/settings. A synthetic transport or ADB callback
-intent cannot satisfy this gate.
+`ProviderLiveIntegrationTest` is an optional end-to-end test, excluded from the
+standard runner by the same annotation. It needs HTTPS provider services that
+you run yourself, such as the [reference provider](REFERENCE_PROVIDER.md): a
+device-bound provider `alpha` with its issuer, an anonymous provider `beta`, and
+a public client registration and callback for the test application. It also
+needs a host-side program that writes the test's inputs and answers its
+requests during the run. That program is not part of this repository. The
+inputs go in the test application's private
+`no_backup/provider-live-handoff/` directory: `config.json` with the exact
+alpha, beta and issuer origins, client ID and callback, a separately generated
+manual kit and code, and the expected file metadata. The alpha enrollment
+receives its code only through the proof-bound provider API. The host supplies
+a code only for the anonymous beta enrollment. The test uses the production
+HTTP transport, Android network clock, real native validator, provider vault
+and independent `KitStore`. Its browser starts only after OS verification and
+must return through `ProviderCallbackActivity`. Run the test explicitly against
+fresh services. Afterwards stop those services, delete that directory,
+uninstall the test apps and restore emulator trust and settings. A synthetic
+transport or ADB callback intent cannot satisfy this test.
