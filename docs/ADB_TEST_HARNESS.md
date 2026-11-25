@@ -1,6 +1,10 @@
-# Android ADB agent harness
+# ADB test harness
 
-`directAgent` is an isolated, debug-signed APK for repeatable physical-device
+`tools/android-agent.sh` drives a phone over ADB. It controls a separate test
+build of the app, the `directAgent` variant, which this guide calls the agent
+APK. "Agent" here names that build, nothing more.
+
+The agent APK is isolated and debug-signed, for repeatable physical-device
 testing. It installs as `com.fixcraft.yume.agent`, so it cannot overwrite the
 normal `com.fixcraft.yume` app or reuse its vault. `libyume` and the JNI
 adapter are release-optimized. Android disables R8 optimization for
@@ -19,8 +23,7 @@ stdin into two mode-0600 `.partial` files named after one command ID and
 renames them into place. The service opens and unlinks each file before it
 reads it, so neither outlives the command, and wipes the bytes on every exit
 path. The host and the APK both cap a kit at sealed kit 1's largest size and
-a code at 128 bytes. Startup deletes the fixed-name inputs an agent build for
-transport v2 used.
+a code at 128 bytes.
 
 Each command has its own ID and result file, and concurrent invocations use
 separate activity tasks, so one launch cannot swallow another. The service
@@ -37,17 +40,26 @@ yumed --config ~/kit/server/yumed.json
 yume --seal-kit ~/kit/client --output device.kit   # prints the 25-character code
 ```
 
-`docs/QUICKSTART.md` in YUME covers ports, the cover site and DNS. A kit
-whose `endpoint.host` is a name is resolved on the phone's network. A test
-server on a private address can be named by its address instead.
+YUME's [quick start](https://github.com/FixCraft-Inc/yume/blob/main/docs/QUICKSTART.md)
+covers ports, the cover site and DNS. A kit whose `endpoint.host` is a name is
+resolved on the phone's network. A test server on a private address can be
+named by its address instead.
 
-## Fast start on the attached phone
+## Build and set up the phone
 
-From this repository, on a host with the device attached:
+`./tools/android-agent.sh build arm64-v8a` builds the APK with one ABI, two
+Gradle workers and a 4 GiB heap. It is still a full Android and NDK build, so
+it needs everything listed under [Build](../README.md#build): the JDK, Android
+SDK, NDK, vcpkg, the YUME checkout and the GnuPG key that verifies it.
+`YUME_UNVERIFIED_SOURCE=1` skips the YUME source check, for example for a copy
+without Git metadata. Use it for testing only and never release that APK.
+
+From this repository, with the phone attached:
 
 ```bash
+./tools/android-agent.sh build arm64-v8a
 ./tools/android-agent.sh doctor
-./tools/android-agent.sh install path/to/app-direct-agent.apk
+./tools/android-agent.sh install            # the newest built APK, or a path
 ./tools/android-agent.sh prepare
 ./tools/android-agent.sh import device.kit < code.txt
 ./tools/android-agent.sh kits
@@ -57,11 +69,6 @@ From this repository, on a host with the device attached:
 each VPN package once. After that, connecting, stopping, snapshots, logs and
 evidence collection need nobody. Set `ANDROID_SERIAL` when more than one
 device is attached.
-
-`build arm64-v8a` builds the APK with one ABI, two Gradle workers and a
-4 GiB heap. It is still a full Android and NDK build, so it runs on the build
-host, not the laptop. `YUME_UNVERIFIED_SOURCE=1` builds from a YUME copy
-without Git metadata, for testing only.
 
 ## Connect, state and downloads
 

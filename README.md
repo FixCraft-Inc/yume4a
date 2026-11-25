@@ -69,6 +69,9 @@ Release builds reject unverified native source.
 | [Services and manual kits](docs/CONSUMER_SERVICES.md) | Selection, connection lifetime and removal |
 | [Provider enrollment](docs/PROVIDERS.md) | Enrollment protocol and provider authority |
 | [Provider client](docs/PROVIDER_CLIENT.md) | Shared client, storage and trust boundaries |
+| [Provider library](provider-library/README.md) | Consumer boundary and source binding of the shared module |
+| [Reference provider](docs/REFERENCE_PROVIDER.md) | Host-only provider fixture for conformance tests |
+| [ADB test harness](docs/ADB_TEST_HARNESS.md) | Scripted device tests with the `directAgent` build |
 | [Dependency notices](THIRD_PARTY_LICENSES.md) | Packaged licenses and corresponding source |
 
 FixCraft Inc.'s original application code is AGPL-3.0-or-later, as stated in
