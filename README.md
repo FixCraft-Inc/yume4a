@@ -11,8 +11,9 @@ or browser registration.
 
 The app shows connection status and payload traffic history, stores kits in
 an encrypted vault, and offers per-kit tuning. The interface is available in
-English, Russian, Japanese, Ukrainian and Simplified Chinese. Android blocks IPv6 while the VPN is up when the tunnel has
-no IPv6 route. Circuit kits are currently refused by the Android adapter.
+English, Russian, Japanese, Ukrainian and Simplified Chinese. Android blocks
+IPv6 while the VPN is up when the tunnel has no IPv6 route. Circuit kits are
+currently refused by the Android adapter.
 See the [native implementation status](https://github.com/FixCraft-Inc/yume/blob/main/docs/IMPLEMENTATION_STATUS.md)
 for YUME's supported surfaces and qualification limits.
 
@@ -35,9 +36,33 @@ git -C yume/basefwx checkout --detach "$basefwx_revision"
 cd apps/Yume
 ```
 
-The vault uses the Java runtime from the pinned BaseFWX checkout. Native
-source verification requires a clean YUME checkout at a signed commit and
-the signer's public key in your GnuPG keyring.
+The vault uses the Java runtime from the pinned BaseFWX checkout.
+
+Before every build, Gradle runs YUME's
+`tools/build_android_shared_abi.sh --verify-source-only`. It refuses a YUME
+tree with uncommitted or untracked files, and runs `git verify-commit` on YUME's
+`HEAD` and on the signed baseline commit the script pins. `git verify-commit`
+checks the signatures against your GnuPG keyring, so import the YUME signing
+key first. YUME ships the public key as
+`third_party/prebuilt/yume-release-key.asc`, and the same key is published at
+<https://github.com/F1xGOD.gpg>. From the app checkout, print the key:
+
+```sh
+gpg --show-keys ../../yume/third_party/prebuilt/yume-release-key.asc
+```
+
+It must be an ed25519 primary key with the fingerprint
+`967278FF6FA436F504CBB0058A1588B5E2598DB1`
+(`9672 78FF 6FA4 36F5 04CB  B005 8A15 88B5 E259 8DB1`, key ID
+`8A1588B5E2598DB1`). If it matches, import it:
+
+```sh
+gpg --import ../../yume/third_party/prebuilt/yume-release-key.asc
+```
+
+For a local test build from a modified or unsigned YUME tree,
+`-PyumeUnverifiedSource=true` skips the source check. Release builds refuse
+that property.
 
 The shared provider library requires an explicit version and source binding.
 From this checkout, generate its manifest and use the returned `version` and
@@ -60,7 +85,6 @@ distribution's explicit client registration and callback, as described in
 `build.sh --apk-dir DIR` signs unsigned release APKs built elsewhere. Keep
 the signing key and the ignored `.release-signing.env` on the signing machine.
 The [example](.release-signing.env.example) names the required fields.
-Release builds reject unverified native source.
 
 ## Documentation and license
 
